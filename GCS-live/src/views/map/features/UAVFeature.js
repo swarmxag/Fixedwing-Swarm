@@ -15,7 +15,6 @@ import DroneImage from '~/../assets/img/plane-icon.png';
 import DroneImageInfo from '~/../assets/img/ArmPlane.png';
 import DroneImageWarning from '~/../assets/img/drone-x-black-warning-32x32.png';
 import DroneImageError from '~/../assets/img/errorPlane.png';
-// import RvtImageIcon from '~/../assets/img/rvt.png';
 import SelectionGlow from '~/../assets/img/GlowPlane.png';
 import { Severity } from '~/model/enums';
 // import GimbalPolygon from '~/../assets/img/up1.png';
@@ -26,8 +25,6 @@ const droneImages = {
   [Severity.ERROR]: DroneImageError,
   [Severity.CRITICAL]: DroneImageError,
 };
-
-const RVTImage = ['26', '27', '28', '29'];
 
 /**
  * Feature that represents an UAV on an OpenLayers map.
@@ -199,9 +196,6 @@ export default class UAVFeature extends Feature {
       rotation: this._headingToRotation(),
       snapToPixel: false,
       src: droneImages[this._status] || DroneImage,
-      // src: RVTImage.includes(this.uavId)
-      //   ? RvtImageIcon
-      //   : droneImages[this._status] || DroneImage,
     });
     this._iconImage = iconImage;
 
@@ -241,17 +235,11 @@ export default class UAVFeature extends Feature {
           color:
             this._labelColor && this._labelColor.length > 0
               ? this._labelColor
-              : RVTImage.includes(this.uavId)
-                ? 'white'
-                : 'black',
+              : 'black',
         }),
-        font: RVTImage.includes(this.uavId)
-          ? '14px sans-serif'
-          : '12px sans-serif',
+        font: '12px sans-serif',
         offsetY: 24,
-        text: RVTImage.includes(this.uavId)
-          ? 'RVT 1'
-          : this.uavId || 'undefined',
+        text: this.uavId || 'undefined',
         textAlign: 'center',
       }),
     });

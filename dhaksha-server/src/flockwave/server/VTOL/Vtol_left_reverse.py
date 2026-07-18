@@ -150,7 +150,7 @@ def generate_XY_Positions(numOfDrones, x, y, origin):
 
 def VTOL_left_reverse(numOfDrones):
     result = kml_read(
-        "C:/Users/vshar/OneDrive/Documents/fullstack/skybrush-server/src/flockwave/server/VTOL/kmls/Reverse-Mission.kml"
+        "D:/Kamikaze-Fuze-GUI/dhaksha-server/src/flockwave/server/VTOL/kmls/Reverse-Mission.kml"
     )
 
     bearing = 0
@@ -290,7 +290,7 @@ def VTOL_left_reverse(numOfDrones):
 
     for i in range(numOfDrones):
         with open(
-            "C:/Users/vshar/OneDrive/Documents/fullstack/skybrush-server/src/flockwave/server/VTOL/csvs/reverse-drone-{}.csv".format(
+            "D:/Kamikaze-Fuze-GUI/dhaksha-server/src/flockwave/server/VTOL/csvs/reverse-drone-{}.csv".format(
                 i + 1
             ),
             "w",

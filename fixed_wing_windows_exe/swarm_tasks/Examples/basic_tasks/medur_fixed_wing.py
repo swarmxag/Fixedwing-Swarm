@@ -13,7 +13,8 @@ from bezier_curve import BezierCurve
 from groupsplitauto import AutoSplitMission
 from bezier_curve_multiple import BezierCurveMultiple
 from groupsplitspecific import SpecificSplitMission
-import socket,json,csv,threading
+import socket,json,csv,threading,yaml,shutil
+from shapely.geometry import Polygon
 import locatePosition
 import netifaces,wmi
 '''
@@ -70,7 +71,9 @@ home_height=[50,60,70,80,90,100,110,120,130,140]
 # 	print("Exception", e)
 # 	pass
     
-sock2.setblocking(0)
+# sock2 is now owned by the dedicated _command_listener thread (added
+# below, after collision_thread) -- it mirrors collision_thread's
+# blocking sock3 read, so sock2 stays blocking here (no setblocking(0)).
 '''			
 try:
 	index,address=sock3.recvfrom(1024)
@@ -100,32 +103,39 @@ while True:
 '''
 master_num==3
 master_flag=True
-file_name="Medur_"
+file_name=None  # no site preset -- operator draws a fence when enabling swarm
 
 disperse_multiple_goals=[]
 start_multiple_goals=[]
 return_multiple_goals=[]
 goal_points=[]
 agg_goal_point=[]
-origin=[]
 removed_uav_homepos_array=[]
 
-if(file_name=="Medur_"):
-	origin=( 12.930835881514867, 80.04155073158569) #(13.308039, 80.146629)#medur_vtol
-	start_multiple_goals=[(4533.359571946137,  4534.582162146959),(5377.564492281329,  4421.370703097977),(5604.1003862181815,  4653.543172566769),(5337.341100049475,  4250.772625520308),(4518.998921425327,  4397.592049580196),(4301.768995360449,  4593.206644467459),(4456.608688538883,  4258.870187083201),(5303.847437392898,  4100.500955291573),(5551.116514904548,  4321.971920374709),(5244.308833824743,  3959.7844666417163),(4461.759579157777,  4109.740202033495)]
-	#plan2[(4533.359571946137,  4534.582162146959),(5541.529225925758,  4398.968678463051),(5799.291002080761,  4651.218705350108),(5574.9320336883175,  4202.708479825763),(4518.998921425327,  4397.592049580196),(4301.768995360449,  4593.206644467459),(4456.608688538883,  4258.870187083201),(5568.515525467282,  4043.4876256302314),(5832.067947226436,  4301.679395717466),(5568.300107458491,  3887.6764008874325),(4461.759579157777,  4109.740202033495)]
-	#plan1[(4525.754124970843,  4540.247117864114),(7042.036495192134,  4081.498042240694),(7572.850233419122,  4397.902557185096),(7054.010568720503,  3704.257212401159),(4525.749341561368,  4133.590978521016),(4043.784895040774,  4386.932320881892),(4415.993330884787,  3743.163108678769),(7008.169948105923,  3213.684247611162),(7724.160895424688,  3593.132632301485),(6991.440577817013,  2718.308185229332),(4459.746148555264,  3106.0575243964504)]
-	multiple_goals=start_multiple_goals
-	goal_points=start_multiple_goals
-		 
-if(file_name=="dce_airport"):
-	origin=(12.858180, 80.030595)#dce
-	start_multiple_goals=[(1161.9877697773895,3952.7219876760137),(1474.0593062047521,3922.1997184867887),(1746.4339033240276,3864.995130599164),(1627.7081983593039,3631.7809497202543),(1315.9537877228481,3750.6044128682397),(1058.1415227872608,3931.8705804860747)]
-	goal_points=start_multiple_goals
-	multiple_goals=start_multiple_goals
-
-
 nextwaypoint=0
+
+def read_origin(filepath):
+	"""Same approach copter_swarm.py uses: read origin straight from the
+	persisted rectangles.yaml on disk at startup, so it's already valid by
+	the time the arm+altitude wait loop calls fetch_location() -- no
+	hardcoded per-site preset, no polling required."""
+	print("Reading YAML from:", filepath)
+	with open(filepath) as f:
+		data = yaml.safe_load(f)
+	origin = data.get("origin")
+	if isinstance(origin, str):
+		origin = origin.strip("()")
+		lat, lon = origin.split(",")
+		origin = (float(lat), float(lon))
+	return origin
+
+rectangles_path = os.path.join(os.path.expanduser("~"), "Documents", "swarm_env", "rectangles.yaml")
+try:
+	origin = read_origin(rectangles_path)
+	print("Origin loaded from rectangles.yaml:", origin)
+except Exception as e:
+	origin = None
+	print(f"No rectangles.yaml yet at {rectangles_path} ({e}) -- origin will be set once a fence is drawn")
 '''
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
@@ -279,6 +289,56 @@ def vehicle_collision_moniter_receive():
 collision_thread = threading.Thread(target=vehicle_collision_moniter_receive)
 collision_thread.daemon=True
 collision_thread.start()
+
+class _CommandMailbox:
+    """Thread-safe single-slot mailbox for the latest not-yet-consumed
+    sock2 command. Mirrors the sock3/collision_thread/index pattern
+    already used above: plain attribute writes are atomic under the
+    GIL, so no lock is needed. seq lets a mission loop tell a command
+    newer than the one it is currently running apart from the command
+    it is currently running.
+    """
+
+    def __init__(self):
+        self.seq = 0
+        self.data = None
+        self.address = None
+
+
+_pending_command = _CommandMailbox()
+
+
+def _command_listener():
+    while 1:
+        data, address = sock2.recvfrom(1050)
+        _pending_command.data = data
+        _pending_command.address = address
+        _pending_command.seq += 1
+
+
+command_listener_thread = threading.Thread(target=_command_listener)
+command_listener_thread.daemon = True
+command_listener_thread.start()
+
+
+class MissionPreempted(Exception):
+    """Raised from inside a mission-flying loop (by
+    check_for_new_command) when a command newer than the one it started
+    with has arrived on sock2 mid-mission. Carries the preempting
+    command so the outer dispatch loop can process it immediately
+    instead of waiting for the interrupted mission to finish."""
+
+    def __init__(self, data, address):
+        self.data = data
+        self.address = address
+
+
+def check_for_new_command(started_seq):
+    """Call once per iteration inside an interruptible mission loop.
+    Raises MissionPreempted if a command newer than started_seq has
+    arrived; otherwise returns None and the loop continues normally."""
+    if _pending_command.seq > started_seq:
+        raise MissionPreempted(_pending_command.data, _pending_command.address)
 
 def CHECK_network_connection():
     global heartbeat_ip_timeout,heartbeat_ip
@@ -648,6 +708,40 @@ split_flag_val=0
 split_flag=False
 
 #Initialize Simulation and GUI 
+
+def _reset_mission_state():
+    """Clear the mission-scoped state shared/leaked across the
+    interruptible mission loops (Goal, Guided Circle, Navigate, Search,
+    Split/Specific Split) so a freshly dispatched command -- whether it
+    arrived normally or preempted a running mission -- never inherits
+    residue from whatever ran before it. Called once per dispatched
+    command, right before the command is matched against the if-chain
+    below. Connection/topology state (vehicles, pos_array, origin, s)
+    is intentionally left alone -- a new mission keeps flying the same
+    connected swarm, it does not drop it.
+    """
+    global landing_flag, removed_uav_grid, removed_grid_path_length
+    global removed_grid_path_array, removed_grid_path_array_start_val
+    global checkall_removed_grid_path_array_start_val, removed_grid_filename
+    global removed_grid_path_array_flag, removed_grid_path_array_index
+    global uncovered_area_points, uncovered_area_filename
+    global group_goal_flag, guided_circle_flag, guided_circle_formation_flag
+
+    landing_flag = False
+    removed_uav_grid = []
+    removed_grid_path_length = []
+    removed_grid_path_array = [0] * len(pos_array)
+    removed_grid_path_array_start_val = [0] * len(pos_array)
+    checkall_removed_grid_path_array_start_val = [0] * len(pos_array)
+    removed_grid_filename = [0] * len(pos_array)
+    removed_grid_path_array_flag = False
+    removed_grid_path_array_index = 0
+    uncovered_area_points = []
+    uncovered_area_filename = []
+    group_goal_flag = False
+    guided_circle_flag = False
+    guided_circle_formation_flag = False
+
 while True:
 	if(uav_home_pos!=[]):
 		print("num_bots",num_bots,uav_home_pos)
@@ -721,14 +815,62 @@ def remove_vehicle():
 							return index
 
 vehicles_thread=[]
+# _next_data/_next_address carry a preempting command straight into the
+# next iteration (see the MissionPreempted except-clause below) so it's
+# dispatched immediately, with no idle wait for a fresh mailbox seq.
+_next_data, _next_address = None, None
+_last_seq = 0
 while(1):
 	if(master_flag):
 		num_bots=len(vehicles)
 	else:
 		num_bots=len(pos_array)
 	try:            
-		data, address = sock2.recvfrom(1050)
+		if _next_data is not None:
+			data, address = _next_data, _next_address
+			_next_data, _next_address = None, None
+		else:
+			while _pending_command.seq <= _last_seq:
+				time.sleep(0.01)
+			data = _pending_command.data
+			address = _pending_command.address
+			_last_seq = _pending_command.seq
+		_reset_mission_state()
 		print ("!!msg", data)
+		if(data.startswith(b"origin")):
+			decoded_index = data.decode('utf-8')
+			_, new_lat, new_lon = decoded_index.split(",")
+			origin = (float(new_lat), float(new_lon))
+			print("Origin updated dynamically:", origin)
+
+		if(data==b"geofence"):
+			try:
+				rectangles_path = os.path.join(os.path.expanduser("~"), "Documents", "swarm_env", "rectangles.yaml")
+				with open(rectangles_path) as f:
+					world_data = yaml.safe_load(f)
+				new_size = (world_data["size"]["x"], world_data["size"]["y"])
+				new_obstacles = [Polygon(o) for o in (world_data.get("obstacles") or [])]
+				s.env.obstacles = new_obstacles
+				s.env.size = new_size
+				s.size = new_size
+
+				# Every s = sim.Simulation(..., env_name=file_name) call
+				# throughout this script (preview rebuilds, vehicle
+				# add/remove, etc.) loads its world via
+				# World(filename=file_name+'.yaml'), which only looks
+				# inside swarm_tasks/envs/worlds/ -- it can't see the
+				# dynamic file above directly. Mirroring it into that
+				# folder and pointing file_name at it means every future
+				# rebuild picks up the current drawn area too, not just
+				# this already-running s.
+				worlds_dir = sim.envs.world.worlds_path
+				shutil.copyfile(rectangles_path, os.path.join(worlds_dir, "rectangles.yaml"))
+				file_name = "rectangles"
+
+				print(f"Obstacles hot-reloaded from {rectangles_path}: {len(new_obstacles)} walls, origin:", origin)
+			except Exception as e:
+				print(f"Error reloading obstacles: {e}")
+
 		if(data==b"store_uav_pos"):
 			if os.path.exists(csv_file_path):
     				os.remove(csv_file_path)
@@ -757,7 +899,15 @@ while(1):
 			    home_pos[i]=(x / 2, y / 2)
 			    if i < len(robots):
 			        robots[i] = (x / 2, y / 2)
-			    msg = ','.join([f"{robot[0]},{robot[1]}" for robot in robots])		       
+			    msg = ','.join([f"{robot[0]},{robot[1]}" for robot in robots])		 
+       
+		if data.startswith(b"origin"):
+			decoded_index = data.decode('utf-8')
+			_, lat, lon = decoded_index.split(",")
+			origin = (float(lat), float(lon))
+			file_name = "rectangles"          # switches env to the dynamically-written world file
+			s = sim.Simulation(uav_home_pos, num_bots=len(pos_array), env_name=file_name)
+			print("Origin + obstacles refreshed:", origin, file_name)      
 			     				
 		if(data.startswith(b"takeoff")):
 			decoded_index=data.decode('utf-8')
@@ -1050,15 +1200,12 @@ while(1):
 					        #uav5.sendto(serialized_data.encode(), #uav5_server_address)
 					    '''
 					s = sim.Simulation(uav_home_pos,num_bots=len(pos_array), env_name=file_name )
-					gui = viz.Gui(s)
-					if goal_xy:
-						gx = [pt[0] for pt in goal_xy]
-						gy = [pt[1] for pt in goal_xy]
-						gui.ax.scatter(gx, gy, color='red', marker='*', s=100, label='Goals')
-					gui.run()
+					# plotting removed
+					my_seq = _last_seq
 
 					while 1:
 						time.sleep(sleep_times.get(num_bots))
+						check_for_new_command(my_seq)
 						if(group_goal_flag):
 							group_goal_flag=False
 							guided_circle_flag=True
@@ -1102,6 +1249,8 @@ while(1):
 							if 'gui' in locals() and gui is not None:
 								gui.close()
 							break	
+				except MissionPreempted:
+					raise
 				except Exception as e:
 					import traceback
 					traceback.print_exc()
@@ -1126,12 +1275,14 @@ while(1):
 				all_bot_reach_flag=False
 				bot_array=[0]*num_bots
 				ind=[0]*num_bots
+				my_seq = _last_seq
 				while 1:					
 					if(guided_circle_formation_flag):
 						guided_circle_formation_flag=False
 						guided_circle_flag=False
 						break					
 					time.sleep(sleep_times.get(num_bots))
+					check_for_new_command(my_seq)
 					for i,b in enumerate(s.swarm):
 						current_position = [b.x,b.y]							
 						goal=multiple_goals[ind[i]]	
@@ -1435,12 +1586,7 @@ while(1):
 					#uav5.sendto(serialized_data.encode(), #uav5_server_address)
 				'''
 			s = sim.Simulation(uav_home_pos,num_bots=len(pos_array), env_name=file_name )
-			gui = viz.Gui(s)
-			if multiple_goals:
-				gx = [pt[0] for pt in multiple_goals]
-				gy = [pt[1] for pt in multiple_goals]
-				gui.ax.plot(gx, gy, color='orange', linestyle=":", marker='x', linewidth=1.2, alpha=0.5, label='waypoints')
-			gui.run()
+			# plotting removed
 			
 			index="data"
 						
@@ -1449,11 +1595,13 @@ while(1):
 				all_bot_reach_flag=False
 				bot_array=[0]*num_bots
 				ind=0
+				my_seq = _last_seq
 				while 1:					
 					if not start_flag:
 						start_flag=False
 						break										
 					time.sleep(sleep_times.get(num_bots))
+					check_for_new_command(my_seq)
 					bot_array=[0]*num_bots
 					for i,b in enumerate(s.swarm):
 						current_position = [b.x,b.y]
@@ -1559,16 +1707,8 @@ while(1):
 					#time.sleep(0.2)
 					#uav5.sendto(serialized_data.encode(), #uav5_server_address)			
 				'''				
-				s = sim.Simulation(uav_home_pos,num_bots=num_bots, env_name=file_name)				
-				gui = viz.Gui(s)
-				colors = ['b','g','r','c', 'm','y','k','purple']
-				for drone_idx in range(num_bots):
-					color = colors[drone_idx % len(colors)]
-					if drone_idx < len(path):
-						bx = [pt[0] for pt in path[drone_idx]]
-						by = [pt[1] for pt in path[drone_idx]]
-						gui.ax.plot(bx, by, color=color, linestyle="-", linewidth=1.5, alpha=0.6)
-				gui.run()
+				s = sim.Simulation(uav_home_pos,num_bots=num_bots, env_name=file_name)
+				# plotting removed
 			print("Search Started")
 			search_flag_val=0
 			f=""
@@ -1576,15 +1716,16 @@ while(1):
 			goal_position=[]
 			cwd = os.getcwd()
 			print("search_flag_val",search_flag_val)
-			grid_path_array=[0]*num_bots
+			grid_path_array=[0]*len(pos_array)
 			if search_flag_val==0:
 				search_flag_val+=1
 				csv_file_paths=[]
 				for i in range(1,len(pos_array)+1):
-					csv_file_paths.append( os.path.join(cwd,f'd{i}.csv'))
-				print("csv_file_paths",csv_file_paths)		
+					csv_file_paths.append( os.path.join(curve.mission_dir,f'drone_{i}_path.csv'))
+				print("csv_file_paths",csv_file_paths)
 			removed_grid_path_array_index=0
 			print('grid_path_array',grid_path_array)
+			my_seq = _last_seq
 			while 1:
 				if(num_bots==10):
 					time.sleep(0.1)
@@ -1606,6 +1747,7 @@ while(1):
 					time.sleep(0.13)
 				elif(num_bots==1):
 					time.sleep(0.13)						
+				check_for_new_command(my_seq)
 				if(vehicle_lost_flag):
 					vehicle_lost_flag=True
 					x=remove_vehicle()
@@ -1700,7 +1842,7 @@ while(1):
 						goal_lat_lon = read_specific_line(all_uav_csv_grid_array[i], grid_path_array[i])
 					x,y = goal_lat_lon[0][0],goal_lat_lon[0][1]
 					goal=(x,y)
-					print(f"CSV goal for bot {i}: {goal}, bot pos: {b.x:.1f}, {b.y:.1f}, ratio: {goal[0]/b.x:.2f}")
+					#print(f"CSV goal for bot {i}: {goal}, bot pos: {b.x:.1f}, {b.y:.1f}, ratio: {goal[0]/b.x:.2f}")
 					cmd =cvg.goal_area_cvg(i,b,goal)
 					value=[b.x*2,b.y*2]
 					current_position=[b.x,b.y]
@@ -1737,7 +1879,7 @@ while(1):
 					break
 					
 						
-		if(data.startswith(b"split")) or (split_flag) or (data.startswith(b"specificsplit")):
+		if(data.startswith(b"split")) or (data.startswith(b"specificsplit")):
 			if (data.startswith(b"specificsplit")):
 			    try:
 			        decoded_index = data.decode('utf-8')  # Assuming utf-8 encoding, adjust if needed
@@ -1755,38 +1897,76 @@ while(1):
 			        coverage_area=msg_parts[4]
 			        coverage_area = json.loads(coverage_area)
 			        print('coverage_area',coverage_area)
-			        split = SpecificSplitMission(origin=origin,center_lat_lons=center_lat_lon_array, drone_array = uav_array, grid_spacing=grid_space,
-                                 coverage_area=coverage_area)
-			        isDone = split.GroupSplitting(
-                        center_lat_lons=center_lat_lon_array,
-                        drone_array=uav_array,
-                        grid_spacing=grid_space,
-                        coverage_area=coverage_area,
-                    )
+			        # Full-coverage gate: every currently-connected UAV (pos_array)
+			        # must be assigned to exactly one group and vice versa -- the
+			        # mission loop below reads uav_{pos_array[i]}_path.csv for every
+			        # i in pos_array, so a connected UAV left out of every group
+			        # would crash that lookup mid-mission.
+			        assigned_uav_ids = [int(u) for group in uav_array for u in group]
+			        if set(assigned_uav_ids) != set(pos_array):
+			            print('[specificsplit] rejected: group assignment', set(assigned_uav_ids), '!= connected pos_array', set(pos_array))
+			            continue
+			        else:
+			            split = SpecificSplitMission(origin=origin,center_lat_lons=center_lat_lon_array, drone_array = uav_array, grid_spacing=grid_space,
+                                     coverage_area=coverage_area)
+			            isDone = split.GroupSplitting(
+                            center_lat_lons=center_lat_lon_array,
+                            drone_array=uav_array,
+                            grid_spacing=grid_space,
+                            coverage_area=coverage_area,
+                        )
 			    except Exception as e:
 			        print('Exception',e)
+			        continue
 			if(data.startswith(b"split")):
-			    decoded_index = data.decode('utf-8')  # Assuming utf-8 encoding, adjust if needed
-			    msg_parts = decoded_index.split('_')
-			    print('msg_parts',msg_parts,len(msg_parts))
-			    f = msg_parts[0]  # First coordinate pair
-			    num_uavs=msg_parts[2]			   
-			    grid_space=msg_parts[3]			 
-			    grid_space = json.loads(grid_space)			
-			    coverage_area=msg_parts[4]		
-			    coverage_area = json.loads(coverage_area)			   
-			    center_lat_lon_array = msg_parts[1]  # All other coordinates			
-			    center_lat_lon_array = json.loads(center_lat_lon_array)			
-			    split = AutoSplitMission(origin=origin,center_lat_lons=center_lat_lon_array, num_of_drones= int(num_uavs), grid_spacing=int(grid_space),
-                             coverage_area=int(coverage_area))			
-			    isDone = split.GroupSplitting(
-                    center_lat_lons=center_lat_lon_array,
-                    num_of_drones=int(num_uavs),
-                    grid_spacing=int(grid_space),
-                    coverage_area=int(coverage_area),
-                )
+			    try:
+			        decoded_index = data.decode('utf-8')  # Assuming utf-8 encoding, adjust if needed
+			        msg_parts = decoded_index.split('_')
+			        print('msg_parts',msg_parts,len(msg_parts))
+			        f = msg_parts[0]  # First coordinate pair
+			        # msg_parts[2] is the operator's actual UAV-id selection from the
+			        # GCS (not just a headcount) -- honored below, gated on it
+			        # matching the swarm computer's own live pos_array exactly.
+			        selected_uav_ids = [int(u) for u in json.loads(msg_parts[2])]
+			        grid_space=msg_parts[3]
+			        grid_space = json.loads(grid_space)
+			        coverage_area=msg_parts[4]
+			        coverage_area = json.loads(coverage_area)
+			        center_lat_lon_array = msg_parts[1]  # All other coordinates
+			        center_lat_lon_array = json.loads(center_lat_lon_array)
+			        if set(selected_uav_ids) != set(pos_array):
+			            print('[split] rejected: GCS selection', set(selected_uav_ids), '!= connected pos_array', set(pos_array))
+			            continue
+			        else:
+			            split = AutoSplitMission(origin=origin,center_lat_lons=center_lat_lon_array, drone_list=selected_uav_ids, grid_spacing=int(grid_space),
+                                     coverage_area=int(coverage_area))
+			            isDone = split.GroupSplitting(
+                            center_lat_lons=center_lat_lon_array,
+                            num_of_drones=len(selected_uav_ids),
+                            grid_spacing=int(grid_space),
+                            coverage_area=int(coverage_area),
+                        )
+			    except Exception as e:
+			        print('Exception',e)
 			
-			split_flag_val=0   
+			split_flag=True
+			split_flag_val=0
+			search_step=1
+			all_uav_csv_grid_array=[0]*len(pos_array)
+			grid_path_array=[0]*len(pos_array)
+			num_lines=[0]*len(pos_array)
+			pop_flag_arr=[1]*len(pos_array)
+			removed_uav_grid=[]
+			removed_grid_path_length=[]
+			uncovered_area_points=[]
+			uncovered_area_filename=[]
+			removed_grid_path_array_flag=False
+			removed_grid_path_array=[0]*len(pos_array)
+			removed_grid_filename=[0]*len(pos_array)
+			removed_grid_path_array_start_val=[0]*len(pos_array)
+			checkall_removed_grid_path_array_start_val=[0]*len(pos_array)
+			remove_bot_flag=False
+			remove_bot_array=[]
 			if master_flag:
 				index="data"
 				uav_home_pos=[]
@@ -1809,47 +1989,37 @@ while(1):
 					#time.sleep(0.2)
 					#uav5.sendto(serialized_data.encode(), #uav5_server_address)			
 				'''
-				s = sim.Simulation(uav_home_pos,num_bots=num_bots, env_name=file_name)				
-				gui = viz.Gui(s)
-				colors = ['b','g','r','c', 'm','y','k','purple']
-				for drone_idx in range(num_bots):
-					color = colors[drone_idx % len(colors)]
-					csv_path = os.path.join(os.getcwd(), 'group_split/bezier', f'd{drone_idx+1}.csv')
-					if os.path.exists(csv_path):
-						try:
-							bx, by = [], []
-							with open(csv_path, 'r') as f:
-								reader = csv.reader(f)
-								for row in reader:
-									if row:
-										bx.append(float(row[0]))
-										by.append(float(row[1]))
-							if bx:
-								gui.ax.plot(bx, by, color=color, linestyle="-", linewidth=1.5, alpha=0.6)
-						except Exception as plot_err:
-							print("Error plotting path in split:", plot_err)
-				gui.run()
+				s = sim.Simulation(uav_home_pos,num_bots=num_bots, env_name=file_name)
+				# plotting removed
 			print("Group Splitting Started")		
 			f=""
-			num_lines=[0]*num_bots
+			num_lines=[0]*len(pos_array)
 			print('num_lines',num_lines)
 			goal_bot_num=0
 			goal_position=[]
 			cwd = os.getcwd()
-			grid_path_array=[0]*num_bots
+			grid_path_array=[0]*len(pos_array)
 			print("split_flag_val",split_flag_val)
 			if split_flag_val==0:
 				split_flag_val+=1
 				csv_file_paths=[]
-				for i in range(1,len(pos_array)+1):
-					csv_file_paths.append( os.path.join(cwd, 'group_split/bezier', f'd{i}.csv'))
-					reader = csv.reader(open(csv_file_paths[i-1]))
-					num_lines[i-1]= len(list(reader))
-				print("csv_file_paths",csv_file_paths,num_lines)		
+				# Both plain split (AutoSplitMission.drone_list=pos_array) and
+				# specific_split (uav_array) now write their per-drone files keyed
+				# by real UAV id, not a sequential slot -- so csv_file_paths[i]
+				# must be looked up by pos_array[i], the same id that indexes
+				# s.swarm[i]/vehicles[i] everywhere else in this loop.
+				for i in range(len(pos_array)):
+					uav_id = pos_array[i]
+					csv_file_paths.append( os.path.join(split.mission_dir, f'uav_{uav_id}_path.csv'))
+					reader = csv.reader(open(csv_file_paths[i]))
+					num_lines[i]= len(list(reader))
+				print("csv_file_paths",csv_file_paths,num_lines)
 			removed_grid_path_array_index=0
+			my_seq = _last_seq
 			print('grid_path_array',grid_path_array)
 			while 1:
 				time.sleep(sleep_times.get(num_bots))
+				check_for_new_command(my_seq)
 				if(vehicle_lost_flag):
 					vehicle_lost_flag=True
 					x=remove_vehicle()
@@ -2133,6 +2303,13 @@ while(1):
 		            home_flag1=False
 		            home_flag=False
 			
+	except MissionPreempted as preempt:
+		# A mission loop noticed a newer command mid-flight (via
+		# check_for_new_command) and unwound here instead of running to
+		# completion. Dispatch the preempting command immediately on the
+		# next iteration -- no idle wait for a fresh mailbox seq.
+		_next_data, _next_address = preempt.data, preempt.address
+		_last_seq = _pending_command.seq
 	except Exception as e:
 		if(search_flag):
 			search_flag=False

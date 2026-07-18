@@ -85,6 +85,7 @@ async def get_tile(z: int, x: int, y: int):
         y: Y coordinate
     """
     args = request.args
+    print(args)
     baseMap = args.get("type")
     Maptype = reverse_lookup.get(baseMap)
     apikey = args.get("apiKey")

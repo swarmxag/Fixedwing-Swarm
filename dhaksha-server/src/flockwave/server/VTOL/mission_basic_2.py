@@ -14,7 +14,7 @@ from trio import sleep
 async def add_mavlink_mission(i: int, alt: int, uav: UAV) -> None:
     manager = AutoMissionManager.for_uav(uav)
     await manager.clear_mission()
-    search_file = "C:/Users/vshar/OneDrive/Documents/fullstack/skybrush-server/src/flockwave/server/VTOL/csvs/search-drone-"
+    search_file = "D:/Kamikaze-Fuze-GUI/dhaksha-server/src/flockwave/server/VTOL/csvs/search-drone-"
     points_coordinate = []
     prev_lat, prev_lon = 0, 0
     with open(
@@ -34,7 +34,7 @@ async def add_mavlink_mission(i: int, alt: int, uav: UAV) -> None:
         [GPSCoordinate(prev_lat, prev_lon, 0, alt, 0), MAVCommand.NAV_LOITER_UNLIM],
     )
     with open(
-        "C:/Users/vshar/OneDrive/Documents/fullstack/skybrush-server/src/flockwave/server/VTOL/csvs/reverse-drone-"
+        "D:/Kamikaze-Fuze-GUI/dhaksha-server/src/flockwave/server/VTOL/csvs/reverse-drone-"
         + str(i)
         + ".csv",
         "r",

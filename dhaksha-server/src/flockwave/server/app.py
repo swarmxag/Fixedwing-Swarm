@@ -2,7 +2,6 @@
 
 from appdirs import AppDirs
 from collections import defaultdict
-from flockwave.server.SADL.main import TrioSocket
 from inspect import isawaitable, isasyncgen
 from os import environ
 from trio import BrokenResourceError, move_on_after, sleep, open_nursery
@@ -155,7 +154,6 @@ class SkybrushServer(DaemonApp):
     """A representation of the "world" in which the flock of UAVs live. By
     default, the world is empty but extensions may extend it with objects.
     """
-    triosocket: TrioSocket
 
     def cancel_async_operations(
         self, receipt_ids: Iterable[str], in_response_to: FlockwaveMessage
@@ -462,27 +460,6 @@ class SkybrushServer(DaemonApp):
 
         return response
 
-    async def create_SDAL_message_for(
-        self, dispatch, in_response_to: Optional[FlockwaveMessage] = None
-    ):
-        while True:
-            body = {
-                "type": "X-SDAL-HEL",
-                "status1": self.triosocket.status1,
-                "status2": self.triosocket.status2,
-                "armed": self.triosocket.armed,
-                "health": self.triosocket.health,
-                "charging": self.triosocket.charging,
-                "DET": self.triosocket.DET,
-            }
-
-            response = self.message_hub.create_response_or_notification(
-                body=body, in_response_to=in_response_to
-            )
-            await dispatch(response)
-
-            await sleep(0.1)
-
     def create_send_reqcontrol(self, in_response_to: Optional[FlockwaveMessage] = None):
         """Creates an UAV-INF message that contains information regarding
         the UAVs with the given IDs.
@@ -740,31 +717,6 @@ class SkybrushServer(DaemonApp):
             points_mission = self.convert_to_missioncmd(points_coordinate)
             await manager.upload_AutoMission(points_mission)
             result = True
-        except RuntimeError as ex:
-            error = str(ex)
-
-        # Update the response
-        if error is not None:
-            response.body["error"] = error
-        else:
-            response.body["result"] = result
-
-        return response
-
-    async def Commands_to_SDAL(
-        self, message: FlockwaveMessage, sender: Client, *, id_property: str = "id"
-    ) -> FlockwaveMessage:
-        response = self.message_hub.create_response_or_notification(
-            body={}, in_response_to=message
-        )
-        parameters = dict(message.body)
-        # position
-        print(parameters)
-        error: Optional[str] = None
-
-        result = False
-        try:
-            result = await self.triosocket.send_command(parameters["message"])
         except RuntimeError as ex:
             error = str(ex)
 
@@ -1147,7 +1099,7 @@ class SkybrushServer(DaemonApp):
                     landingMission,
                     uavs,
                 )
-
+                
         if msg == "skipwaypoint":
             skip = int(parameters.pop("skip"))
             for id in selectedIds:
@@ -1198,7 +1150,7 @@ class SkybrushServer(DaemonApp):
                 coverage_area=int(parameters.pop("coverage")),
                 uavs=uavs,
             )
-
+            
         if msg == "grid":
             from .VTOL import GridFormation
 
@@ -1232,6 +1184,7 @@ class SkybrushServer(DaemonApp):
         parameters = dict(message.body)
         result = ""
         msg = parameters["message"].lower()
+        # print(f"[GUI->SERVER] command={msg} parameters={parameters}")
 
         if msg == "master":
             result = master(int(parameters.get("ids", "")[0]))
@@ -1247,6 +1200,78 @@ class SkybrushServer(DaemonApp):
 
         if msg == "home_lock":
             result = home_lock()
+
+        if msg == "fence":
+            import traceback
+
+            try:
+                from .swarm_autoscript import run_server_exe, is_server_running
+                from .geofence_validator import Fence, GoalFenceValidator
+                from shapely.geometry import Polygon as ObstaclePolygon
+
+                print("[fence] handler entered")
+
+                stop_socket()
+                await sleep(2)
+
+                coords = []
+                label = []
+                features = parameters.get("features")
+                for feature in features:
+                    points = feature["points"]
+                    label_value = feature.get("label", None)
+                    label.append(label_value)
+                    points_array = []
+                    for point in points:
+                        point.reverse()
+                        points_array.append(point)
+                    coords.append(points_array)
+                print(f"[fence] parsed {len(coords)} feature(s), labels={label}")
+
+                obstacle_polygons = [
+                    ObstaclePolygon([(c[1], c[0]) for c in coord_list])
+                    for coord_list, lbl in zip(coords, label)
+                    if lbl != "outer"
+                ]
+                outer_fence = Fence(coords[label.index("outer")], label="outer")
+                validator = GoalFenceValidator(outer_fence)
+                print(f"[fence] outer fence + {len(obstacle_polygons)} obstacle(s) built")
+
+                selected_ids = parameters.get("ids", [])
+                all_uav_ids = (
+                    selected_ids
+                    if selected_ids
+                    else list(self.object_registry.ids_by_type(UAV))
+                )
+                print(f"[fence] checking uav ids: {all_uav_ids}")
+
+                in_obstacle_zone = False
+                for uav_id in all_uav_ids:
+                    uav = self.find_uav_by_id(uav_id)
+                    if uav:
+                        check = validator.is_point_inside(
+                            (uav.status.position.lat, uav.status.position.lon),
+                            obstacles=obstacle_polygons,
+                        )
+                        if check == "in_obstacle":
+                            in_obstacle_zone = True
+                            break
+
+                if in_obstacle_zone:
+                    print("[fence] rejected: uav inside obstacle zone")
+                    result = "in_obstacle"
+                else:
+                    print("[fence] calling process_fence()...")
+                    generated_origin = process_fence(coords, label)
+                    print(f"[fence] rectangles.yaml written, origin={generated_origin}")
+                    if not is_server_running("medur_fixed_wing.exe"):
+                        print("[fence] swarm script not running, launching...")
+                        run_server_exe()
+                    result = coords
+            except Exception:
+                print("[fence] EXCEPTION while handling fence message:")
+                traceback.print_exc()
+                result = "error"
 
         if msg == "home":
             rtl_height = parameters.pop()
@@ -1347,6 +1372,7 @@ class SkybrushServer(DaemonApp):
             result = landing_mission_send(parameters.get("mission"))
 
         if msg == "navigate":
+            print("............................")
             stop_socket()
             await sleep(1)
             center_latlon = parameters.get("coords")
@@ -1388,44 +1414,103 @@ class SkybrushServer(DaemonApp):
             result = await landing_main(landingMission, len(selectedIds), uavs)
 
         if msg == "groupsplit":
-            stop_socket()
-            await sleep(1)
-            coords = parameters.get("coords")
-            selectedIds = parameters.get("ids")
-            log.warning(coords)
-            gridSpacing = parameters.get("gridSpacing")
-            coverage = parameters.get("coverage")
-            result = splitmission(
-                center_latlon=coords,
-                uavs=selectedIds,
-                coverage=coverage,
-                gridspace=gridSpacing,
-            )
+            if get_origin() is None:
+                result = "no_fence_drawn"
+            else:
+                import traceback
+
+                try:
+                    stop_socket()
+                    await sleep(1)
+                    coords = parameters.get("coords")
+                    selectedIds = [int(uav_id) for uav_id in parameters.get("ids")]
+                    log.warning(coords)
+                    gridSpacing = parameters.get("gridSpacing")
+                    coverage = parameters.get("coverage")
+                    print(f"[groupsplit] coords={coords} ids={selectedIds} grid={gridSpacing} coverage={coverage}")
+                    # Full-coverage gate: the swarm computer splits the area across
+                    # exactly this id list, so it must match the currently-connected
+                    # UAVs one-to-one -- otherwise the mission it flies would silently
+                    # diverge from what the operator selected here.
+                    connected_ids = {
+                        int(uav_id) for uav_id in self.object_registry.ids_by_type(UAV)
+                    }
+                    if set(selectedIds) != connected_ids:
+                        print(f"[groupsplit] rejected: selection {set(selectedIds)} != connected {connected_ids}")
+                        result = "uav_selection_mismatch"
+                    else:
+                        result = splitmission(
+                            center_latlon=coords,
+                            uavs=selectedIds,
+                            coverage=coverage,
+                            gridspace=gridSpacing,
+                        )
+                        print("[groupsplit] splitmission() returned, UDP sent")
+                except Exception:
+                    print("[groupsplit] EXCEPTION:")
+                    traceback.print_exc()
+                    result = "error"
 
         if msg == "spificsplit":
-            stop_socket()
-            await sleep(1)
-            group = parameters.get("groups")
-            coverage = parameters.get("coverage")
-            gridSpacing = parameters.get("gridSpacing")
-            sam = dict(group)
-            latlon = []
-            uavs = []
-            print(group)
-            for key, value in sam.items():
-                keys = key.split(",")
-                latlon.append([float(keys[0]), float(keys[1])])
-                for i in range(len(value)):
-                    value[i] = int(value[i])
-                uavs.append(value)
-            path, time = specificsplit(latlon, uavs, gridSpacing, coverage)
-            result = path
-            response.body["time"] = time
+            if get_origin() is None:
+                result = "no_fence_drawn"
+            else:
+                import traceback
+
+                try:
+                    stop_socket()
+                    await sleep(1)
+                    group = parameters.get("groups")
+                    coverage = parameters.get("coverage")
+                    gridSpacing = parameters.get("gridSpacing")
+                    sam = dict(group)
+                    latlon = []
+                    uavs = []
+                    print(group)
+                    for key, value in sam.items():
+                        keys = key.split(",")
+                        latlon.append([float(keys[0]), float(keys[1])])
+                        for i in range(len(value)):
+                            value[i] = int(value[i])
+                        uavs.append(value)
+                    print(f"[spificsplit] latlon={latlon} uavs={uavs} grid={gridSpacing} coverage={coverage}")
+                    # Full-coverage gate: every currently-connected UAV must be
+                    # assigned to exactly one group, and vice versa -- same
+                    # reasoning as the groupsplit gate above.
+                    assigned_ids = {uav_id for grp in uavs for uav_id in grp}
+                    connected_ids = {
+                        int(uav_id) for uav_id in self.object_registry.ids_by_type(UAV)
+                    }
+                    if assigned_ids != connected_ids:
+                        print(f"[spificsplit] rejected: assignment {assigned_ids} != connected {connected_ids}")
+                        result = "uav_coverage_mismatch"
+                    else:
+                        path, time = specificsplit(latlon, uavs, gridSpacing, coverage)
+                        print("[spificsplit] specificsplit() returned, UDP sent")
+                        result = path
+                        response.body["time"] = time
+                except Exception:
+                    print("[spificsplit] EXCEPTION:")
+                    traceback.print_exc()
+                    result = "error"
 
         response.body["message"] = result
         response.body["method"] = msg
 
         return response
+
+    outer_boundary = []
+
+
+    def set_outer_boundary(boundary):
+        global outer_boundary
+        outer_boundary = boundary
+
+
+    def get_outer_boundary():
+        global outer_boundary
+        return outer_boundary
+    
 
     async def check_height(self, ids, alt, speed, res):
         from .socket.globalVariable import changeReachHeight
@@ -1441,7 +1526,7 @@ class SkybrushServer(DaemonApp):
 
                         alts = getAlts()
                         uav = self.find_uav_by_id(id)
-                        alt = alts[uav.id]
+                        alt = alts[int(uav.id)]
                         cur = drone[int(uav.id)] - 1
                         print(cur)
                         coords = GPSCoordinate(
@@ -1530,9 +1615,6 @@ class SkybrushServer(DaemonApp):
             log.warning(str(res))
             self.run_in_background(self.check_height, uav_ids, alt - 1, speed, res)
             # self.run_in_background(self.send_guided_command,uav_ids,speed,res)
-
-        if message_type == "UAV-RTH":
-            await self.triosocket.send_command("ABORT")
 
         # Sort the UAVs being targeted by drivers. If `transport` is a
         # TransportOptions object and it indicates that we should ignore the
@@ -1734,24 +1816,10 @@ class SkybrushServer(DaemonApp):
         """
         self.rate_limiters.request_to_send("UAV-INF", uav_ids)
 
-    def request_to_send_SDAL_message_for(self) -> None:
-        """Requests the application to send an UAV-INF message that contains
-        information regarding the UAVs with the given IDs. The application
-        may send the message immediately or opt to delay it a bit in order
-        to ensure that UAV-INF notifications are not emitted too frequently.
-
-        """
-        self.rate_limiters.request_to_send("X-SDAL-HEL", "Hello")
-
     async def run(self) -> None:
-        self.triosocket = TrioSocket()
         self.run_in_background(self.command_execution_manager.run)
         self.run_in_background(self.message_hub.run)
         self.run_in_background(self.rate_limiters.run)
-        self.run_in_background(self.triosocket.udp_listener)
-        self.run_in_background(
-            self.create_SDAL_message_for, self.message_hub.send_message
-        )
         return await super().run()
 
     def sort_uavs_by_drivers(
@@ -1855,14 +1923,6 @@ class SkybrushServer(DaemonApp):
         self.rate_limiters.register(
             "UAV-INF", UAVMessageRateLimiter(self.create_UAV_INF_message_for)
         )
-        # self.rate_limiters.register(
-        #     "X-SDAL-HEL", SDALMessageRateLimiter(self.create_SDAL_message_for)
-        # )
-
-        # self.rate_limiters.register(
-        #     "X-REQ-CONTROL",
-        # )
-
         # Create an object to hold information about all the objects that
         # the server knows about
         self.object_registry = ObjectRegistry()
@@ -2254,12 +2314,6 @@ def handle_SYS_VER(message: FlockwaveMessage, sender: Client, hub: MessageHub):
 def handle_UAV_INF(message: FlockwaveMessage, sender: Client, hub: MessageHub):
     return app.create_UAV_INF_message_for(message.get_ids(), in_response_to=message)
 
-
-@app.message_hub.on("X-SDAL-HEL")
-def handle_UAV_INF(message: FlockwaveMessage, sender: Client, hub: MessageHub):
-    return app.create_SDAL_message_for(in_response_to=message)
-
-
 @app.message_hub.on("UAV-LIST")
 def handle_UAV_LIST(message: FlockwaveMessage, sender: Client, hub: MessageHub):
     return {"ids": list(app.object_registry.ids_by_type(UAV))}
@@ -2333,11 +2387,5 @@ async def handleCameraMission(
 @app.message_hub.on("X-AUTO-MISSION")
 async def handleHomeLock(message: FlockwaveMessage, sender: Client, hub: MessageHub):
     return await app.upload_mission(message, sender)
-
-
-@app.message_hub.on("X-SDAL")
-async def download_mission(message: FlockwaveMessage, sender: Client, hub: MessageHub):
-    return await app.Commands_to_SDAL(message, sender)
-
 
 # ######################################################################## #

@@ -103,7 +103,6 @@ def start(
 
     # Log that we have stopped cleanly.
     log.info("Shutdown finished")
-    # app.triosocket.sock.close()
     log.info("Socket closed")
 
 

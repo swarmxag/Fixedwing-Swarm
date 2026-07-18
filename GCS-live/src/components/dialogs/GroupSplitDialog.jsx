@@ -95,11 +95,7 @@ const MultipleSelectChip = ({
     setInputs(
       inputs.map((input) => {
         if (input.id === id) {
-          const newUavs = input.uavs.includes(uavslist)
-            ? input.uavs.filter((uav) => uav !== uavslist) // Remove UAV if it exists
-            : [...input.uavs, uavslist]; // Add UAV if it doesn't exist
-
-          return { ...input, uavs: newUavs };
+          return { ...input, uavs: uavslist };
         }
         return input;
       })
@@ -107,36 +103,59 @@ const MultipleSelectChip = ({
   };
 
   const creategroup = () => {
+    const nextGroup = {};
     for (const val in inputs) {
-      const alreadyExist = markerExists(inputs[val].value);
-      const uavExist = valueExists(inputs[val].uavs);
+      if (!inputs[val].value) {
+        showErrorMsg(`Select an area for every group`);
+        return null;
+      }
+      if (inputs[val].uavs?.length == 0) {
+        showErrorMsg(`There is No UAV Selected`);
+        return null;
+      }
+      const value = featurePoints(inputs[val].value);
+      const groupKey = String(value);
+      const alreadyExist = Object.prototype.hasOwnProperty.call(nextGroup, groupKey);
+      const uavExist = inputs[val].uavs.some((uav) =>
+        Object.values(nextGroup).some((arr) => arr.includes(uav))
+      );
       if (alreadyExist || uavExist) {
         showErrorMsg(
           `${inputs[val].value} is already in a Group or uav is already exist in one of the group`
         );
-        return;
-      } else {
-        if (inputs[val].uavs?.length == 0) {
-          showErrorMsg(`There is No UAV Selected`);
-          return;
-        }
-        const value = featurePoints(inputs[val].value);
-        SplitGroup({ id: value, uavs: inputs[val].uavs });
-        showMsg(`${inputs[val].value} is added to a Group`);
+        return null;
       }
+      nextGroup[groupKey] = inputs[val].uavs;
+      SplitGroup({ id: value, uavs: inputs[val].uavs });
+      showMsg(`${inputs[val].value} is added to a Group`);
     }
+    return nextGroup;
   };
 
   const handleSubmit = async () => {
-    creategroup();
+    deleteAllGroup();
+    const nextGroup = creategroup();
+    if (!nextGroup) {
+      return;
+    }
     try {
       const res = await messageHub.sendMessage({
         type: 'X-UAV-socket',
         message: 'spificsplit',
-        groups: getState().socket.group,
+        groups: nextGroup,
         coverage: coverage,
         gridSpacing: gridSpacing,
       });
+      const splitErrorMessages = {
+        no_fence_drawn: 'Draw a geofence (Set Origin) before splitting the group',
+        uav_coverage_mismatch:
+          'Every connected UAV must be assigned to exactly one group',
+        error: 'Split Mission failed on the server',
+      };
+      if (splitErrorMessages[res?.body?.message]) {
+        showErrorMsg(splitErrorMessages[res.body.message]);
+        return;
+      }
       if (Boolean(res?.body?.message)) {
         showMsg('split Mission Message sent');
       }
@@ -197,7 +216,7 @@ const MultipleSelectChip = ({
                 <FormControl fullWidth>
                   <Select
                     id='demo-multiple-chip'
-                    multiples
+                    multiple
                     style={{ flex: 1 }}
                     value={input.uavs}
                     onChange={(e) => updateUav(input.id, e.target.value)}
@@ -301,7 +320,7 @@ const GroupSplitDialog = connect(
     features: getFeatureByPoints(state),
     group: getGroup(state),
     markerExists: (markerToCheck) => {
-      return state.socket.group.hasOwnProperty(markerToCheck);
+      return getState().socket.group.hasOwnProperty(markerToCheck);
     },
     selectedTab: state.socket.selectedTab,
     coverage: state.socket.coverage,

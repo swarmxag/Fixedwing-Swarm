@@ -1,7 +1,8 @@
-import socket, time, csv
+import os, json, socket, time, csv
 from math import radians, cos, sin, sqrt, atan2
 from .search import BezierCurve
 from .AutoMission import AutoSplitMission
+from .SpecificSplitMission import SpecificSplitMission
 from .time import TimeCalculation
 
 
@@ -29,9 +30,12 @@ def fetch_file_content(file_path):
 
 master_udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-adderss = {1: ("192.168.6.203", 12002), 2: ("192.168.6.203", 12008)}
+adderss = {1: ("192.168.6.220", 12002), 2: ("192.168.6.220", 12008)}
 
 master_num = 0
+origin = None  # set by process_fence() once a fence has been drawn; consumed
+               # directly by splitmission()/specificsplit() below, same
+               # pattern as the copter server's swarm.py
 # udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 # server_address1 = ('192.168.6.151', 12008)
 # udp_socket2 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -146,6 +150,57 @@ mavlink_server_address5 = ("192.168.6.155", 12045)
 
 mavlink_sock10 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 mavlink_server_address10 = ("192.168.6.160", 12045)
+
+from .YamlCreation import FenceToYAML
+
+
+def _origin_file_path():
+    swarm_folder = os.path.join(os.path.expanduser("~"), "Documents", "swarm_env")
+    os.makedirs(swarm_folder, exist_ok=True)
+    return os.path.join(swarm_folder, "rectangles.yaml")
+
+
+server_address_220 = ("192.168.6.220", 12008)
+
+def push_origin_and_geofence(origin1):
+    """Broadcast a fresh origin + geofence-refresh signal to all swarm computers,
+    same ports/pattern as clear_csv()/start_socket() above."""
+    data = "origin,{},{}".format(origin1[0], origin1[1])
+    udp_socket3.sendto(data.encode(), server_address3)
+    time.sleep(0.1)
+    udp_socket5.sendto(data.encode(), server_address5)
+    time.sleep(0.1)
+    udp_socket10.sendto(data.encode(), server_address10)
+    time.sleep(0.1)
+    udp_socket3.sendto(data.encode(), server_address_220)
+    time.sleep(0.1)
+
+    sync = b"geofence"
+    udp_socket3.sendto(sync, server_address3)
+    udp_socket5.sendto(sync, server_address5)
+    udp_socket10.sendto(sync, server_address10)
+    udp_socket3.sendto(sync, server_address_220)
+    return True
+
+
+def get_origin():
+    """Getter, not a bare name -- app.py does `from .swarm import *`, which
+    would otherwise capture a frozen copy of `origin` at import time instead
+    of staying linked to this module's live value. A function call resolves
+    it fresh, inside this module's own namespace, every time."""
+    return origin
+
+
+def process_fence(coords, labels):
+    """coords/labels: parsed the same way app.py's "fence" handler parses them.
+    Writes rectangles.yaml (origin + obstacle walls) and pushes the refresh."""
+    global origin
+    fence_yaml = FenceToYAML(fence_coordinates=coords, labels=labels)
+    fence_yaml.process_fences()
+    new_origin, _ = fence_yaml.generate_yaml(_origin_file_path())
+    origin = new_origin
+    push_origin_and_geofence(origin)
+    return origin
 
 
 def haversine(lat1, lon1, lat2, lon2):
@@ -591,7 +646,7 @@ def takeoff_socket(alt):
 
 
 def search_socket(points, gridspacing, coverage, ids):
-    global master_udp
+    global master_udp, origin
     # global udp_socket,server_address1,server_address2,udp_socket2
     print("Searching........")
     # udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -608,11 +663,12 @@ def search_socket(points, gridspacing, coverage, ids):
         + ","
         + str(gridspacing)
         + ","
-        + str(coverage)
+        + json.dumps(coverage)
     )
     print(points, len(ids), gridspacing, coverage)
     master_udp.sendto(data.encode(), adderss.get(2))
     curve = BezierCurve(
+        origin=origin,
         center_latitude=points[0][0],
         center_longitude=points[0][1],
         coverage_area=coverage,
@@ -621,6 +677,7 @@ def search_socket(points, gridspacing, coverage, ids):
     )
     curve.GridFormation()
     curve.generate_bezier_curve()
+    # curve.plot_curve()
     path = curve.return_latlon()
     time_sample = TimeCalculation(
         missions=curve.search_grid, speed=18, loiter_radius=200
@@ -1166,7 +1223,7 @@ def navigate(center_latlon, gridspacing, coverage, ids):
         + ","
         + str(gridspacing)
         + ","
-        + str(coverage)
+        + json.dumps(coverage)
     )
 
     master_udp.sendto(data.encode(), adderss.get(2))
@@ -1211,26 +1268,29 @@ def send_alts(alts):
 
 
 def splitmission(center_latlon, uavs, gridspace, coverage):
-    global master_udp
+    global master_udp, origin
     # group_split_center_lat_lon_array_len(uavs)_grid_space_coverage_area
     for latlon in center_latlon:
         latlon.reverse()
+        latlon[0] = float(latlon[0])
+        latlon[1] = float(latlon[1])
     data = str(
         "split"
         + "_"
-        + str(center_latlon)
+        + json.dumps(center_latlon)
         + "_"
-        + str(len(uavs))
+        + json.dumps(uavs)
         + "_"
-        + str(gridspace)
+        + json.dumps(gridspace)
         + "_"
-        + str(coverage)
+        + json.dumps(coverage)
     )
     master_udp.sendto(data.encode(), adderss.get(2))
     split = AutoSplitMission(
+        origin=origin,
         center_lat_lons=center_latlon,
         coverage_area=coverage,
-        num_of_drones=len(uavs),
+        drone_list=uavs,
         grid_spacing=gridspace,
     )
     path = split.return_latlon()
@@ -1238,33 +1298,41 @@ def splitmission(center_latlon, uavs, gridspace, coverage):
 
 
 def specificsplit(center_latlon, uavs, gridspace, coverage):
-    global master_udp
+    global master_udp, origin
     grid = []
     coverageSpace = []
     for i in range(len(uavs)):
         grid.append(gridspace)
         coverageSpace.append(coverage)
     print(center_latlon, uavs, gridspace, coverage)
-    split = AutoSplitMission(
+    split = SpecificSplitMission(
+        origin=origin,
         center_lat_lons=center_latlon,
-        coverage_area=coverage,
-        num_of_drones=len(uavs),
-        grid_spacing=gridspace,
+        drone_array=uavs,
+        grid_spacing=grid,
+        coverage_area=coverageSpace,
+    )
+    split.GroupSplitting(
+        center_lat_lons=center_latlon,
+        drone_array=uavs,
+        grid_spacing=grid,
+        coverage_area=coverageSpace,
     )
     path = split.return_latlon()
     data = str(
         "specificsplit"
         + "_"
-        + str(center_latlon)
+        + json.dumps(center_latlon)
         + "_"
-        + str(uavs)
+        + json.dumps(uavs)
         + "_"
-        + str(grid)
+        + json.dumps(grid)
         + "_"
-        + str(coverageSpace)
+        + json.dumps(coverageSpace)
     )
     master_udp.sendto(data.encode(), adderss.get(2))
-    time_sample = TimeCalculation(
-        missions=split.search_grid, speed=20, loiter_radius=200
-    )
+    # split.waypoints/path store (lon, lat) pairs; TimeCalculation's haversine
+    # call expects (lat, lon), so swap before estimating flight time.
+    missions = [[(lat, lon) for lon, lat in segment] for segment in path]
+    time_sample = TimeCalculation(missions=missions, speed=20, loiter_radius=200)
     return path, time_sample.max_time()

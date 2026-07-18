@@ -4,21 +4,17 @@ import simplekml
 from geopy.distance import distance
 from geopy.point import Point
 from locatePosition import geoToCart,cartToGeo
+from mission_paths import mission_dir
 import matplotlib.pyplot as plt
 
 class BezierCurveMultiple():
     def __init__(self,origin,center_latitude,center_longitude,num_of_drones,grid_space,coverage_area):
         self.initial_heading = np.radians(0)  # Initial heading angle in radians
         self.G = 9.81  # Gravity (m/s²)
-        self.MAX_BANK_ANGLE = np.radians(20)  # 40 degrees in radians
+        self.MAX_BANK_ANGLE = np.radians(20)  # 20 degrees in radians
         self.SPEED = 18  # Aircraft speed in m/s
         self.TURN_RATE = (self.G * np.tan(self.MAX_BANK_ANGLE)) / self.SPEED  # rad/s
-        # self.grid_csv_path = "grid_{}.csv"
-        # self.curve_csv_file = "d{}.csv"
-        # self.search_csv_name = "search_{}.kml"
-        self.grid_csv_path = os.path.join(os.getcwd(), "grid_{}.csv")
-        self.curve_csv_file = os.path.join(os.getcwd(), "d{}.csv")
-        self.search_csv_name = os.path.join(os.getcwd(), "search_{}.kml")
+        self.mission_dir = mission_dir("search")
         self.origin = origin
         self.center_latitude = center_latitude
         self.center_longitude = center_longitude
@@ -28,9 +24,21 @@ class BezierCurveMultiple():
         self.path = []
         self.waypoints = []
         self.sample_points = []
-    
+
+    def _grid_csv(self, drone_num):
+        return os.path.join(self.mission_dir, f"drone_{drone_num}_grid.csv")
+
+    def _path_csv(self, drone_num):
+        return os.path.join(self.mission_dir, f"drone_{drone_num}_path.csv")
+
+    def _grid_kml(self, drone_num):
+        return os.path.join(self.mission_dir, f"drone_{drone_num}_grid.kml")
+
+    def _path_kml(self, drone_num):
+        return os.path.join(self.mission_dir, f"drone_{drone_num}.kml")
+
     def write_to_csv(self, data,num):
-        with open(self.curve_csv_file.format(num), "w", newline="") as csvfile:
+        with open(self._path_csv(num), "w", newline="") as csvfile:
             csv_writer = csv.writer(csvfile)
             for row in data:
                 csv_writer.writerow(row)
@@ -155,17 +163,14 @@ class BezierCurveMultiple():
                 current_lat = (
                     distance(meters=grid_spacing).destination(current_point, 0).latitude
                 )
-            kml_filename = f"search-drone-{i+1}.kml"
-            kml.save(
-                kml_filename
-            )
+            kml.save(self._grid_kml(i+1))
             csv_datas.append(csv_data)
 
         minimum_waypoints = len(min(csv_datas, key=len))
         for i in range(len(csv_datas)):
             number_of_waypoints = 0
             with open(
-                self.grid_csv_path.format(i+1),
+                self._grid_csv(i+1),
                 mode="w",
                 newline="",
             ) as file:
@@ -224,7 +229,7 @@ class BezierCurveMultiple():
     def generate_bezier_curve(self):
         for num in range(self.num_of_drones):
             waypoints = []
-            with open(self.grid_csv_path.format(num+1), "r") as file:
+            with open(self._grid_csv(num+1), "r") as file:
                 csv_reader = csv.reader(file)
                 for row in csv_reader:
                     self.waypoints.append([float(row[0]),float(row[1])])
@@ -281,7 +286,7 @@ class BezierCurveMultiple():
                     ]
                 )
             kml.newpoint(name="{}".format(i),coords=[(kml_data[i][1], kml_data[i][0])])
-        kml.save(self.search_csv_name.format(num))
+        kml.save(self._path_kml(num))
     
     def plot_curve(self):
         for num in range(self.num_of_drones):

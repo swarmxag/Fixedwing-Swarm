@@ -33,48 +33,139 @@ import {
   setMissionFromServer,
 } from '~/features/uavs/details';
 
+// const SwarmPanel = ({
+//   selectedUAVIds,
+//   selectedFeatureIds,
+//   getFeatureBySelected,
+//   dispatch,
+//   socketData,
+//   landingFeature,
+//   features,
+//   connection,
+//   onOpen,
+// }) => {
+//   const handleLandingMission = async () => {
+//     const landingMission = landingFeature();
+//     let msg = 'Landing Misson and Command';
+//     try {
+//       const res = await messageHub.sendMessage({
+//         type: 'X-UAV-socket',
+//         message: 'landingMission',
+//         landing: landingMission,
+//         ids: selectedUAVIds,
+//       });
+
+//       if (Boolean(res?.body?.message)) {
+//         dispatch(
+//           showNotification({
+//             message: `${msg} Message sent`,
+//             semantics: MessageSemantics.SUCCESS,
+//           })
+//         );
+//       }
+//     } catch (e) {
+//       dispatch(
+//         showNotification({
+//           message: `${msg} ${e?.message}`,
+//           semantics: MessageSemantics.ERROR,
+//         })
+//       );
+//     }
+//   };
+
 const SwarmPanel = ({
   selectedUAVIds,
   selectedFeatureIds,
   getFeatureBySelected,
   dispatch,
   socketData,
+  antennaBearing,
   landingFeature,
   features,
   connection,
   onOpen,
 }) => {
-  const handleLandingMission = async () => {
-    const landingMission = landingFeature();
-    let msg = 'Landing Misson and Command';
+  const handleFenceMission = async () => {
+    const featuresInMap = selectedFeatureIds.map((i) => {
+      return getFeatureBySelected(i);
+    });
+
+    if (featuresInMap.length == 0) {
+      showError('Select the Polygon or a Point in the Map');
+      return;
+    }
+    // const validateFence = featuresInMap.filter((item) => item.label == 'outer' && item.type == 'polygon' && item.points.length == 4);
+    // if(validateFence.length == 0){
+    //   dispatch(showError('Fence name must be "outer" Only 4-point polygons are supported'));
+    //   return;
+    // }
+    const validateFence = featuresInMap.filter(
+      (item) =>
+        item.label == 'outer' &&
+        item.type == 'polygon' &&
+        item.points.length >= 3  // ← any valid polygon needs at least 3 points
+    );
+
+    if (validateFence.length == 0) {
+      dispatch(showError('Fence name must be "outer". Minimum 3-point polygon required.'));
+      return;
+    }
+
+
     try {
       const res = await messageHub.sendMessage({
         type: 'X-UAV-socket',
-        message: 'landingMission',
-        landing: landingMission,
+        message: 'fence',
         ids: selectedUAVIds,
+        features: featuresInMap,
+        ...socketData,
       });
+      console.log('RES>>>>>>>>>>', res);
 
+      if (res?.body?.message === 'in_obstacle') {
+        dispatch(
+          showNotification({
+            message: 'UAV is inside an obstacle zone — geofence command ignored',
+            semantics: MessageSemantics.WARNING,
+          })
+        );
+        return;
+      }
       if (Boolean(res?.body?.message)) {
         dispatch(
           showNotification({
-            message: `${msg} Message sent`,
+            message: `Fence Mission Message sent`,
             semantics: MessageSemantics.SUCCESS,
           })
         );
       }
-    } catch (e) {
+      if (res?.body?.message[0]?.length == 0) {
+        dispatch(
+          showNotification({
+            message: `Read a Empty Mission`,
+            semantics: MessageSemantics.WARNING,
+          })
+        );
+        return;
+      }
+      console.log('Fence Mission Message Data', res.body.message);
+      dispatch(setMissionFromServer(res.body.message));
       dispatch(
         showNotification({
-          message: `${msg} ${e?.message}`,
-          semantics: MessageSemantics.ERROR,
+          message: `${res.body.message[0].length}`,
+          semantics: MessageSemantics.WARNING,
         })
       );
+    } catch (e) {
+      console.log(e);
+      dispatch(showError(`Fence Mission Message failed to send`));
     }
   };
 
+
   const handleSplitMission = async () => {
-    const coords = features.filter((item) => item.type === 'points');
+    const selectedFeatures = selectedFeatureIds.map((i) => getFeatureBySelected(i));
+    const coords = selectedFeatures.filter((item) => item.type === 'points');
     const points = coords.map((coord) => coord.points[0]);
     if (coords.length === 0) {
       showError('There is No Point in the map for Searching Area');
@@ -88,6 +179,15 @@ const SwarmPanel = ({
         ids: selectedUAVIds,
         ...socketData,
       });
+      const splitErrorMessages = {
+        no_fence_drawn: 'Draw a geofence (Set Origin) before splitting the group',
+        uav_selection_mismatch: "Selected UAVs don't match connected UAVs",
+        error: 'Split Mission failed on the server',
+      };
+      if (splitErrorMessages[res?.body?.message]) {
+        dispatch(showError(splitErrorMessages[res.body.message]));
+        return;
+      }
       if (Boolean(res?.body?.message)) {
         dispatch(
           showNotification({
@@ -160,6 +260,8 @@ const SwarmPanel = ({
             semantics: MessageSemantics.SUCCESS,
           })
         );
+      } else {
+        dispatch(showError(`${message} failed to send`));
       }
 
       if (message == 'search' || message == 'navigate') {
@@ -298,9 +400,9 @@ const SwarmPanel = ({
             {/*<Button variant='contained' onClick={async () => await handleMsg('clear_csv')}>*/}
             {/*  Clear CSV*/}
             {/*</Button>*/}
-            <Button variant='contained' onClick={handleLandingMission}>
+            {/* <Button variant='contained' onClick={}>
               Home
-            </Button>
+            </Button> */}
           </FormControl>
         </Box>
         <Box style={{ display: 'flex', gap: 20, alignItems: 'center' }}>
@@ -317,6 +419,12 @@ const SwarmPanel = ({
               onClick={async () => await handlePoint('goal')}
             >
               Goal Point
+            </Button>
+            <Button
+              variant='contained'
+              onClick={handleFenceMission}
+            >
+              Set Origin
             </Button>
           </FormControl>
         </Box>

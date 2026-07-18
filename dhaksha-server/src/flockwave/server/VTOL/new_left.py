@@ -127,7 +127,7 @@ def generate_XY_Positions(numOfDrones, x, y, origin):
 async def main(Drones: int, uavs: dict[str, UAV]) -> None:
 
     result = kml_read(
-        "C:/Users/vshar/OneDrive/Documents/fullstack/skybrush-server/src/flockwave/server/VTOL/kmls/Forward-Mission.kml"
+        "D:/Kamikaze-Fuze-GUI/dhaksha-server/src/flockwave/server/VTOL/kmls/Forward-Mission.kml"
     )
 
     numOfDrones = Drones
@@ -267,7 +267,7 @@ async def main(Drones: int, uavs: dict[str, UAV]) -> None:
 
     for i in range(numOfDrones):
         with open(
-            "C:/Users/vshar/OneDrive/Documents/fullstack/skybrush-server/src/flockwave/server/VTOL/csvs/forward-drone-{}.csv".format(
+            "D:/Kamikaze-Fuze-GUI/dhaksha-server/src/flockwave/server/VTOL/csvs/forward-drone-{}.csv".format(
                 i + 1
             ),
             "w",
@@ -283,7 +283,7 @@ async def main(Drones: int, uavs: dict[str, UAV]) -> None:
     # for i in range(numOfDrones):
     #     lat_lons[i] = lat_lons[i][::-1]
     #     with open(
-    #         "C:/Users/vshar/OneDrive/Documents/fullstack/skybrush-server/src/flockwave/server/VTOL/csvs/reverse-drone-{}.csv".format(
+    #         "D:/Kamikaze-Fuze-GUI/dhaksha-server/src/flockwave/server/VTOL/csvs/reverse-drone-{}.csv".format(
     #             i + 1
     #         ),
     #         "w",

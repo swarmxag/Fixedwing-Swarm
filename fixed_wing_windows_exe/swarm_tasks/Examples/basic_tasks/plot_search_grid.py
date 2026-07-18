@@ -1,10 +1,12 @@
 """
 Standalone script to visualize the generated search grid + Bezier paths.
-Run AFTER a search command has been issued so that grid_*.csv and d*.csv files exist.
+Run AFTER a search command has been issued so that the mission's
+drone_*_grid.csv and drone_*_path.csv files exist.
 
 Usage:
     python plot_search_grid.py
     python plot_search_grid.py --num_drones 3
+    python plot_search_grid.py --run 20260717_143012
 """
 import sys, os, csv, argparse
 import numpy as np
@@ -14,22 +16,48 @@ import matplotlib.cm as cm
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE_DIR)
 
+SEARCH_MISSIONS_DIR = os.path.join(
+    os.path.expanduser("~"), "Documents", "swarm_env", "missions", "search"
+)
+
 parser = argparse.ArgumentParser()
 parser.add_argument("--num_drones", type=int, default=None)
+parser.add_argument(
+    "--run", type=str, default=None,
+    help="Specific run_id folder under missions/search/ to plot; defaults to the most recent.",
+)
 args = parser.parse_args()
 
-# Auto-detect number of drones from d*.csv files
+if not os.path.isdir(SEARCH_MISSIONS_DIR):
+    print(f"ERROR: {SEARCH_MISSIONS_DIR} not found. Run a search command first.")
+    sys.exit(1)
+
+if args.run:
+    RUN_DIR = os.path.join(SEARCH_MISSIONS_DIR, args.run)
+else:
+    runs = sorted(
+        d for d in os.listdir(SEARCH_MISSIONS_DIR)
+        if os.path.isdir(os.path.join(SEARCH_MISSIONS_DIR, d))
+    )
+    if not runs:
+        print(f"ERROR: No search runs found under {SEARCH_MISSIONS_DIR}.")
+        sys.exit(1)
+    RUN_DIR = os.path.join(SEARCH_MISSIONS_DIR, runs[-1])
+
+print(f"Plotting run: {RUN_DIR}")
+
+# Auto-detect number of drones from drone_*_grid.csv files
 if args.num_drones:
     num_drones = args.num_drones
 else:
     num_drones = 0
     for i in range(1, 20):
-        if os.path.exists(os.path.join(BASE_DIR, f"d{i}.csv")):
+        if os.path.exists(os.path.join(RUN_DIR, f"drone_{i}_grid.csv")):
             num_drones += 1
         else:
             break
     if num_drones == 0:
-        print("ERROR: No d*.csv files found. Run a search command first.")
+        print(f"ERROR: No drone_*_grid.csv files found in {RUN_DIR}.")
         sys.exit(1)
 
 print(f"Plotting grid for {num_drones} drone(s) ...")
@@ -47,8 +75,8 @@ for drone_idx in range(num_drones):
     color = COLORS(drone_idx)
     label = f"Drone {drone_idx + 1}"
 
-    # --- Grid waypoints (grid_N.csv) ---
-    grid_csv = os.path.join(BASE_DIR, f"grid_{drone_idx + 1}.csv")
+    # --- Grid waypoints (drone_N_grid.csv) ---
+    grid_csv = os.path.join(RUN_DIR, f"drone_{drone_idx + 1}_grid.csv")
     grid_pts = []
     if os.path.exists(grid_csv):
         with open(grid_csv, "r") as f:
@@ -66,8 +94,8 @@ for drone_idx in range(num_drones):
     else:
         print(f"  WARNING: {grid_csv} not found")
 
-    # --- Bezier path (d_N.csv) ---
-    bezier_csv = os.path.join(BASE_DIR, f"d{drone_idx + 1}.csv")
+    # --- Bezier path (drone_N_path.csv) ---
+    bezier_csv = os.path.join(RUN_DIR, f"drone_{drone_idx + 1}_path.csv")
     bezier_pts = []
     if os.path.exists(bezier_csv):
         with open(bezier_csv, "r") as f:
@@ -95,7 +123,7 @@ ax.text(0.01, 0.01,
         transform=ax.transAxes, fontsize=7, color="gray", verticalalignment="bottom")
 
 plt.tight_layout()
-out_path = os.path.join(BASE_DIR, "search_grid_plot.png")
+out_path = os.path.join(RUN_DIR, "search_grid_plot.png")
 plt.savefig(out_path, dpi=150)
 print(f"Saved: {out_path}")
 plt.show(block=True)

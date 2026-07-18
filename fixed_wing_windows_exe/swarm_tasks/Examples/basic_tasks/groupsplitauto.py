@@ -3,25 +3,23 @@ import simplekml
 from geopy.distance import distance
 from geopy.point import Point
 from locatePosition import geoToCart,cartToGeo
+from mission_paths import mission_dir
 import numpy as np
 import matplotlib.pyplot as plt
 
 class AutoSplitMission():
-    def __init__(self, origin,center_lat_lons, num_of_drones, grid_spacing, coverage_area):
-        self.base_dir = os.getcwd()
+    def __init__(self, origin,center_lat_lons, drone_list, grid_spacing, coverage_area):
         self.origin = origin
         self.center_lat_lons = center_lat_lons
-        self.num_of_drones = num_of_drones
+        # drone_list: the swarm computer's own actual connected UAV ids
+        # (pos_array), not a bare headcount -- so each rectangle can be
+        # written and read back keyed by real UAV identity instead of an
+        # arbitrary sequential slot. Matches copter_swarm's AutoSplitMission.
+        self.drone_list = drone_list
+        self.num_of_drones = len(drone_list)
         self.grid_spacing = grid_spacing
         self.coverage_area = coverage_area
-        # self.path_kml = "/home/casr-3/Documents/fixed_wing/swarm_tasks/Examples/basic_tasks/group_split/"
-        # self.path_csv = "/home/casr-3/Documents/fixed_wing/swarm_tasks/Examples/basic_tasks/group_split/"
-        # self.search_curve = "/home/casr-3/Documents/fixed_wing/swarm_tasks/Examples/basic_tasks/group_split/bezier/search_{}.kml"
-        # self.curve_csv_file = "/home/casr-3/Documents/fixed_wing/swarm_tasks/Examples/basic_tasks/group_split/bezier/d{}.csv"
-        self.path_kml = os.path.join(self.base_dir, "group_split")
-        self.path_csv = os.path.join(self.base_dir, "group_split")
-        self.search_curve = os.path.join(self.base_dir, "group_split", "bezier", "search_{}.kml")
-        self.curve_csv_file = os.path.join(self.base_dir, "group_split", "bezier", "d{}.csv")
+        self.mission_dir = mission_dir("split")
         self.initial_heading = np.radians(0)  # Initial heading angle in radians
         self.G = 9.81  # Gravity (m/s²)
         self.MAX_BANK_ANGLE = np.radians(40)  # 40 degrees in radians
@@ -31,10 +29,17 @@ class AutoSplitMission():
         self.path = []
         self.waypoints = []
 
-        os.makedirs(self.path_kml, exist_ok=True)
-        os.makedirs(self.path_csv, exist_ok=True)
-        os.makedirs(os.path.dirname(self.search_curve), exist_ok=True)
-        os.makedirs(os.path.dirname(self.curve_csv_file), exist_ok=True)
+    def _grid_csv(self, uav_id):
+        return os.path.join(self.mission_dir, f"uav_{uav_id}_grid.csv")
+
+    def _path_csv(self, uav_id):
+        return os.path.join(self.mission_dir, f"uav_{uav_id}_path.csv")
+
+    def _grid_kml(self, uav_id):
+        return os.path.join(self.mission_dir, f"uav_{uav_id}_grid.kml")
+
+    def _path_kml(self, uav_id):
+        return os.path.join(self.mission_dir, f"uav_{uav_id}.kml")
 
     def CreateGridsForSpecifiedAreaAndSpecifiedDrones(
             self,
@@ -43,9 +48,9 @@ class AutoSplitMission():
             num_of_drones: int,
             grid_space: int,
             coverage_area: int,
-            start_index: int,
+            drone_ids_for_area: list,
     ) -> None:
-        
+
         center_lat = center_latitude
         center_lon = center_longitude
 
@@ -60,7 +65,6 @@ class AutoSplitMission():
         center_point = Point(center_lat, center_lon)
 
         west_edge = distance(meters=full_width / 2).destination(center_point, 270)
-        index = start_index
         print("center",center_lat,center_lon)
 
         for i in range(num_rectangles):
@@ -154,23 +158,21 @@ class AutoSplitMission():
                     distance(meters=grid_spacing).destination(current_point, 0).latitude
                 )
 
-            kml_filename = f"search-drone-{index}.kml"
-            kml.save(os.path.join(self.path_kml, kml_filename))
-            csv_filename = f"grid_{index}.csv"
+            uav_id = drone_ids_for_area[i]
+            kml.save(self._grid_kml(uav_id))
             xy = []
             for data in csv_data:
                 x,y = geoToCart(self.origin,500000,data)
                 xy.append((x/2.0,y/2.0))
             print(xy,"xy")
             with open(
-                    os.path.join(self.path_csv, csv_filename),
+                    self._grid_csv(uav_id),
                     mode="w",
                     newline="",
             ) as file:
                 writer = csv.writer(file)
                 writer.writerows(xy)
-                self.generate_bezier_curve(xy,index)
-            index += 1
+                self.generate_bezier_curve(xy,uav_id)
 
     def write_kml(self,data,num):
         kml = simplekml.Kml()
@@ -193,7 +195,7 @@ class AutoSplitMission():
                     ]
                 )
             kml.newpoint(name="{}".format(i),coords=[(kml_data[i][1], kml_data[i][0])])
-        kml.save(self.search_curve.format(num))
+        kml.save(self._path_kml(num))
 
     def get_heading_to_target(self,current_pos, target_pos):
         """Compute the heading angle required to face the target waypoint."""
@@ -305,7 +307,7 @@ class AutoSplitMission():
         plt.show(block=True)  # Ensures the window stays open
 
     def write_to_csv(self, data,num):
-        with open(self.curve_csv_file.format(num), "w", newline="") as csvfile:
+        with open(self._path_csv(num), "w", newline="") as csvfile:
             csv_writer = csv.writer(csvfile)
             for row in data:
                 csv_writer.writerow(row)
@@ -317,24 +319,34 @@ class AutoSplitMission():
             grid_spacing,
             coverage_area
     ) -> bool:
+        # Ensure subdivision order always matches drone_list order, so each
+        # marker's rectangles are keyed by the real UAV ids assigned to it
+        # (not an arbitrary sequential slot). Matches copter_swarm's
+        # AutoSplitMission.GroupSplitting.
         drones_array = [0] * len(center_lat_lons)
-        for i in range(num_of_drones):     
+        for i in range(len(self.drone_list)):
             drones_array[i % len(center_lat_lons)] += 1
         print("drone_array",drones_array)
-        start = 1
+
+        current_drone_idx = 0
         for i in range(len(center_lat_lons)):
             if drones_array[i] == 0:
                 continue
+
+            assigned_drones = self.drone_list[
+                current_drone_idx : current_drone_idx + drones_array[i]
+            ]
+
             self.CreateGridsForSpecifiedAreaAndSpecifiedDrones(
                 center_lat_lons[i][0],
                 center_lat_lons[i][1],
                 drones_array[i],
                 grid_spacing,
                 coverage_area,
-                start,
+                assigned_drones,
             )
-            start += drones_array[i]
-        
+            current_drone_idx += drones_array[i]
+
         return True
 
 
@@ -346,14 +358,14 @@ class AutoSplitMission():
 #     [13.373029, 80.236966],
 # ]
 # origin = ( 13.210665, 80.099739) #[13.375812,80.225549]
-# num_of_drones = 8
+# drone_list = [3, 7, 12, 4, 9, 1, 8]  # actual connected UAV ids (pos_array)
 # grid_spacing = 50
 # coverage_area = 200
-# split = AutoSplitMission(origin=origin,center_lat_lons=center_latlon, num_of_drones=num_of_drones, grid_spacing=grid_spacing,
+# split = AutoSplitMission(origin=origin,center_lat_lons=center_latlon, drone_list=drone_list, grid_spacing=grid_spacing,
 #                          coverage_area=coverage_area)
 # isDone = split.GroupSplitting(
 #     center_lat_lons=center_latlon,
-#     num_of_drones=num_of_drones,
+#     num_of_drones=len(drone_list),
 #     grid_spacing=grid_spacing,
 #     coverage_area=coverage_area,
 # )

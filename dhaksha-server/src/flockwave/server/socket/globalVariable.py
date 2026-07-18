@@ -39,9 +39,20 @@ vtol_takeoff_height = {
     7: 35,
     8: 40,
     9: 45,
-    10:50
+    10: 50,
 }
-alts: dict[int, int] = {}
+alts: dict[int, int] = {
+    1: 50,
+    2: 60,
+    3: 70,
+    4: 80,
+    5: 90,
+    6: 100,
+    7: 110,
+    8: 120,
+    9: 130,
+    10: 140,
+}
 
 drone = {
     # 5:1,
@@ -63,7 +74,7 @@ drone = {
     7: 7,
     8: 8,
     9: 9,
-    10:10
+    10: 10,
 }
 
 
@@ -87,7 +98,7 @@ vtol_rtl_height = {
     7: 35,
     8: 40,
     9: 45,
-    10: 50
+    10: 50,
 }
 
 past_distance: int | float = 0.0
@@ -102,43 +113,53 @@ airspeed_failure_ms = 26
 radius = 200
 clock_anticlock = 1
 
+
 def changeRadius(rad):
     global radius
     radius = rad
+
 
 def getRadius():
     global radius
     return radius
 
+
 def changeClockOrAnticlock(clock):
     global clock_anticlock
     clock_anticlock = clock
 
+
 def getClock():
     global clock_anticlock
     return clock_anticlock
+
 
 def changeAlts(paramalts):
     global alts
     alts = paramalts
     return alts
 
-def changeSingleAlt(id,alt):
+
+def changeSingleAlt(id, alt):
     global alts
     alts[id] = alt
     return alts
+
 
 def getAlts():
     global alts
     return alts
 
-def changeReachHeight(value:bool):
-    global  reached_height
+
+def changeReachHeight(value: bool):
+    global reached_height
     reached_height = value
+
 
 def getReachHeight():
     global reached_height
     return reached_height
+
 
 def get_target_confirm():
     global target_confirmation
@@ -310,3 +331,58 @@ def find_value_in_dict(value_to_find, data_dict):
         if value_to_find in values:
             return key
     return None
+
+
+class GobalVariable:
+    vtol_takeoff_height: dict[int, int]
+    alts: dict[int, int]
+    drone: dict[int, int]
+    
+    def __init__(self):
+        self.vtol_takeoff_height = {
+            1: 30,
+            2: 35,
+            3: 40,
+            4: 45,
+            5: 50,
+            6: 30,
+            7: 35,
+            8: 40,
+            9: 45,
+            10: 50,
+        }
+        
+        self.alts = {
+            1: 50,
+            2: 60,
+            3: 70,
+            4: 80,
+            5: 90,
+            6: 100,
+            7: 110,
+            8: 120,
+            9: 130,
+            10: 140,
+        }
+
+        self.drone = {
+            1: 1,
+            2: 2,
+            3: 3,
+            4: 4,
+            5: 5,
+            6: 6,
+            7: 7,
+            8: 8,
+            9: 9,
+            10: 10,
+        }
+        
+    def getAlts(self):
+        return self.alts
+    
+    def getVtolAlts(self):
+        return self.vtol_takeoff_height
+    
+    def getDrone(self):
+        return self.drone
