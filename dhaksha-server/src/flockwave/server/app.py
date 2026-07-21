@@ -1284,15 +1284,21 @@ class SkybrushServer(DaemonApp):
             result = disperse_socket()
 
         if msg == "search":
-            stop_socket()
-            await sleep(1)
-            points = parameters.get("coords")
-            gridSpacing = parameters.get("gridSpacing")
-            coverage = parameters.get("coverage")
-            ids = list(app.object_registry.ids_by_type(UAV))
-            path, time_min = search_socket(points, gridSpacing, coverage, ids)
-            result = path
-            response.body["time"] = time_min
+            if get_origin() is None:
+                print("[origin reminder] Set Origin/Geofence before sending search")
+                result = "origin_not_set"
+            else:
+                requested_ids = [int(uav_id) for uav_id in parameters.get("ids", [])]
+                ids = requested_ids or [int(uav_id) for uav_id in app.object_registry.ids_by_type(UAV)]
+                if not requested_ids:
+                    stop_socket()
+                    await sleep(1)
+                points = parameters.get("coords")
+                gridSpacing = parameters.get("gridSpacing")
+                coverage = parameters.get("coverage")
+                path, time_min = search_socket(points, gridSpacing, coverage, ids)
+                result = path
+                response.body["time"] = time_min
 
         if msg == "aggregate":
             result = aggregate_socket()
@@ -1327,15 +1333,22 @@ class SkybrushServer(DaemonApp):
             result = specific_bot_goal_socket(parameters["uav"], parameters["goal"])
 
         if msg == "goal":
-            stop_socket()
-            await sleep(1)
-            dir = parameters.get("Direction", "")
-            direction = (
-                1 if parameters.get("Direction", "").lower().startswith("c") else -1
-            )
-            result = goal_socket(
-                parameters.get("coords"), direction, parameters.get("radius")
-            )
+            if get_origin() is None:
+                print("[origin reminder] Set Origin/Geofence before sending goal")
+                result = "origin_not_set"
+            else:
+                requested_ids = [int(uav_id) for uav_id in parameters.get("ids", [])]
+                ids = requested_ids or [int(uav_id) for uav_id in app.object_registry.ids_by_type(UAV)]
+                if not requested_ids:
+                    stop_socket()
+                    await sleep(1)
+                dir = parameters.get("Direction", "")
+                direction = (
+                    1 if parameters.get("Direction", "").lower().startswith("c") else -1
+                )
+                result = goal_socket(
+                    parameters.get("coords"), direction, parameters.get("radius"), ids
+                )
 
         if msg == "home_goto":
             result = home_goto_socket()
@@ -1351,15 +1364,11 @@ class SkybrushServer(DaemonApp):
             result = fetch_file_content(get_log_file_path())
 
         if msg == "remove_link":
-            stop_socket()
-            await sleep(1)
             uav = int(parameters.get("id"))
             result = mavlink_remove(uav)
             result = True
 
         if msg == "add_link":
-            stop_socket()
-            await sleep(1)
             uav = int(parameters.get("id"))
             result = mavlink_add(uav)
 
@@ -1372,16 +1381,21 @@ class SkybrushServer(DaemonApp):
             result = landing_mission_send(parameters.get("mission"))
 
         if msg == "navigate":
-            print("............................")
-            stop_socket()
-            await sleep(1)
-            center_latlon = parameters.get("coords")
-            gridSpacing = parameters.get("gridSpacing")
-            coverage = parameters.get("coverage")
-            ids = parameters.get("ids")
-            path, time = navigate(center_latlon, gridSpacing, coverage, ids)
-            result = path
-            response.body["time"] = time
+            if get_origin() is None:
+                print("[origin reminder] Set Origin/Geofence before sending navigate")
+                result = "origin_not_set"
+            else:
+                print("............................")
+                ids = [int(uav_id) for uav_id in app.object_registry.ids_by_type(UAV)]
+                print("[navigate] all connected UAVs selected:", ids)
+                stop_socket()
+                await sleep(1)
+                center_latlon = parameters.get("coords")
+                gridSpacing = parameters.get("gridSpacing")
+                coverage = parameters.get("coverage")
+                path, time = navigate(center_latlon, gridSpacing, coverage, ids)
+                result = path
+                response.body["time"] = time
 
         if msg == "loiter":
             stop_socket()
@@ -2389,3 +2403,5 @@ async def handleHomeLock(message: FlockwaveMessage, sender: Client, hub: Message
     return await app.upload_mission(message, sender)
 
 # ######################################################################## #
+
+

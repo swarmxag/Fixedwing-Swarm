@@ -231,6 +231,23 @@ def vehicle_collision_moniter_receive():
         	print ("msg!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!", index)    
         	decoded_index=index.decode('utf-8')
         	print("decoded_index",decoded_index)           
+        	if decoded_index.startswith("remove_bot"):
+        		try:
+        			f, remove_id = decoded_index.split(',', 1)
+        			remove_cmd = ('remove,' + remove_id).encode()
+        			_pending_command.data = remove_cmd
+        			_pending_command.address = address
+        			_pending_command.seq += 1
+        			print('[control remove] queued', remove_cmd)
+        		except Exception as e:
+        			print('[control remove] failed', e)
+        	if decoded_index == "stop":
+        		try:
+        			with active_goal_tasks_lock:
+        				active_goal_tasks.clear()
+        			print("[goal-task] cleared by control stop")
+        		except NameError:
+        			pass
         	if decoded_index.startswith("master"):
         		m,master_num=decoded_index.split("-")
         		print("m,master_num",m,master_num)
@@ -333,11 +350,254 @@ class MissionPreempted(Exception):
         self.address = address
 
 
+_handled_concurrent_command_seq = 0
+uav_registry = {}  # sys_id -> stable vehicle/topology state
+uav_task_state = {}  # sys_id -> IDLE/GOAL/SEARCH/SPLIT/SPECIFIC_SPLIT
+pending_work_queue = []  # unfinished search/split segments awaiting reassignment
+
+
+def handle_concurrent_goal_command(command_data):
+	if not command_data.startswith(b"goal"):
+		return False
+	try:
+		decoded_index = command_data.decode('utf-8')
+		msg_parts = decoded_index.split('_')
+		if len(msg_parts) < 5:
+			return False
+		goal_latlon = json.loads(msg_parts[1])
+		selected_uav_ids = parse_selected_uav_ids(msg_parts[4])
+		if not selected_uav_ids:
+			return False
+		selected_indexes = selected_swarm_indexes(selected_uav_ids)
+		goal_xy = []
+		for goal_point in goal_latlon:
+			x, y = locatePosition.geoToCart(origin, endDistance, [float(goal_point[0]), float(goal_point[1])])
+			goal_xy.append((x / 2, y / 2))
+		assign_goal_tasks(selected_indexes, goal_xy)
+		print("[concurrent goal] accepted during running mission", selected_uav_ids, selected_indexes)
+		return True
+	except Exception as e:
+		print("[concurrent goal] failed", e)
+		return False
+
+
+def connection_string_for_sysid(sys_id):
+	if int(sys_id) not in port_dict:
+		raise KeyError(f"SYS_ID {sys_id} not found in port_dict")
+	return f"udpin:{ip}:{port_dict[int(sys_id)]}"
+
+
+def register_active_uavs():
+	for idx, sys_id in enumerate(pos_array):
+		entry = uav_registry.setdefault(int(sys_id), {})
+		entry["sys_id"] = int(sys_id)
+		entry["active"] = True
+		entry.setdefault("original_index", idx)
+		entry["index"] = idx
+		entry["connection"] = connection_string_for_sysid(int(sys_id)) if int(sys_id) in port_dict else entry.get("connection")
+		if idx < len(vehicles):
+			entry["vehicle"] = vehicles[idx]
+		uav_task_state.setdefault(int(sys_id), "IDLE")
+
+
+def rebuild_uav_home_positions():
+	global uav_home_pos, num_bots
+	uav_home_pos = []
+	for vehicle in vehicles:
+		lat = vehicle.location.global_relative_frame.lat
+		lon = vehicle.location.global_relative_frame.lon
+		x, y = locatePosition.geoToCart(origin, endDistance, [lat, lon])
+		uav_home_pos.append((x / 2, y / 2))
+	num_bots = len(pos_array)
+	return uav_home_pos
+
+
+
+def normalize_active_uav_order():
+	global pos_array, vehicles, different_height, pop_flag_arr
+	if len(pos_array) != len(vehicles):
+		print('[uav-order] skipped: pos_array/vehicles length mismatch', pos_array, len(vehicles))
+		return False
+	combined = []
+	for idx, sys_id in enumerate(pos_array):
+		height = different_height[idx] if idx < len(different_height) else 300
+		pop_flag = pop_flag_arr[idx] if idx < len(pop_flag_arr) else 1
+		combined.append((int(sys_id), vehicles[idx], height, pop_flag))
+	combined.sort(key=lambda item: item[0])
+	pos_array[:] = [item[0] for item in combined]
+	vehicles[:] = [item[1] for item in combined]
+	different_height[:] = [item[2] for item in combined]
+	pop_flag_arr[:] = [item[3] for item in combined]
+	rebuild_uav_home_positions()
+	register_active_uavs()
+	print('[uav-order] active order normalized', pos_array)
+	return True
+
+def add_uav_to_swarm(sys_id):
+	global vehicles, pos_array, s, num_bots, uav_home_pos
+	try:
+		sys_id = int(sys_id)
+		connection_str = connection_string_for_sysid(sys_id)
+		print("[add-link] connection", sys_id, connection_str)
+		if sys_id in pos_array:
+			idx = pos_array.index(sys_id)
+			try:
+				vehicles[idx].close()
+			except Exception:
+				pass
+			vehicles[idx] = connect(connection_str, baud=115200, heartbeat_timeout=30)
+			uav_registry.setdefault(sys_id, {})["vehicle"] = vehicles[idx]
+			uav_registry[sys_id]["active"] = True
+			uav_registry[sys_id]["index"] = idx
+			uav_task_state[sys_id] = "IDLE"
+			print("[add-link] reconnected active UAV", sys_id, "index", idx)
+			return True
+		vehicle = connect(connection_str, baud=115200, heartbeat_timeout=30)
+		lat = vehicle.location.global_relative_frame.lat
+		lon = vehicle.location.global_relative_frame.lon
+		x, y = locatePosition.geoToCart(origin, endDistance, [lat, lon])
+		insert_index = len(pos_array)
+		pos_array.append(sys_id)
+		vehicles.append(vehicle)
+		s.add_bot(insert_index, (x / 2, y / 2))
+		if different_height:
+			different_height.append(different_height[-1])
+		else:
+			different_height.append(300)
+		pop_flag_arr.append(1)
+		rebuild_uav_home_positions()
+		uav_registry[sys_id] = {
+			"sys_id": sys_id,
+			"active": True,
+			"index": insert_index,
+			"connection": connection_str,
+			"vehicle": vehicle,
+		}
+		uav_task_state[sys_id] = "IDLE"
+		print("[add-link] added UAV as IDLE", sys_id, "index", insert_index, "pos_array", pos_array)
+		return True
+	except Exception as e:
+		print("[add-link] failed", sys_id, e)
+		return False
+
+
+def calculate_drones_needed(remaining_points, points_per_drone, total_drones):
+	if remaining_points <= 0:
+		return 0
+	if remaining_points <= 4:
+		return 1
+	points_per_drone = max(1, int(points_per_drone))
+	return min(total_drones, (int(remaining_points) + points_per_drone - 1) // points_per_drone)
+
+
+def allocate_drones(total_points, covered_points, total_drones):
+	if isinstance(total_points, int):
+		total_points = [total_points] * len(covered_points)
+	remaining_points_list = [max(0, int(tp) - int(cp)) for tp, cp in zip(total_points, covered_points)]
+	points_per_drone = [max(1, int(tp / 2)) for tp in total_points]
+	uncovered_areas = [(i, points) for i, points in enumerate(remaining_points_list) if points > 0]
+	allocation = {i: 0 for i in range(len(covered_points))}
+	if total_drones <= 0:
+		return allocation, remaining_points_list
+	if total_drones <= len(uncovered_areas):
+		for i, _ in uncovered_areas:
+			if total_drones <= 0:
+				break
+			allocation[i] = 1
+			total_drones -= 1
+	else:
+		for i, _ in uncovered_areas:
+			if total_drones <= 0:
+				break
+			needed = calculate_drones_needed(remaining_points_list[i], points_per_drone[i], total_drones)
+			allocation[i] = needed
+			total_drones -= needed
+	print("[redistribution] allocation", allocation, "remaining", remaining_points_list)
+	return allocation, remaining_points_list
+def remove_uav_from_swarm(remove_bot_num):
+	global pos_array, vehicles, s, different_height, pop_flag_arr, num_bots
+	global remove_bot_flag, remove_bot_index, remove_bot_array, pop_bot_index
+	global uav_home_pos, remove_flag, uav_removed, origin, endDistance, uav_registry, uav_task_state
+	try:
+		remove_bot_num = int(remove_bot_num)
+		if remove_bot_num not in pos_array:
+			print("[remove-link] not found", remove_bot_num, "pos_array", pos_array)
+			return False
+		pop_bot_index = pos_array.index(remove_bot_num)
+		remove_bot_index = pop_bot_index
+		print("[remove-link] removing", remove_bot_num, "at index", pop_bot_index)
+		entry = uav_registry.setdefault(remove_bot_num, {})
+		entry["sys_id"] = remove_bot_num
+		entry.setdefault("original_index", pop_bot_index)
+		entry["active"] = False
+		entry["index"] = None
+		entry["connection"] = connection_string_for_sysid(remove_bot_num) if remove_bot_num in port_dict else entry.get("connection")
+		uav_task_state[remove_bot_num] = "IDLE"
+		remove_bot_flag = True
+		remove_bot_array.append(pop_bot_index)
+		pos_array.pop(pop_bot_index)
+		try:
+			vehicles[pop_bot_index].close()
+		except Exception as e:
+			print("[remove-link] vehicle close failed", e)
+		vehicles.pop(pop_bot_index)
+		s.remove_bot(pop_bot_index)
+		remove_goal_task_index(pop_bot_index)
+		if pop_bot_index < len(different_height):
+			different_height.pop(pop_bot_index)
+		if pop_bot_index < len(pop_flag_arr):
+			pop_flag_arr.pop(pop_bot_index)
+		num_bots = len(pos_array)
+		uav_home_pos = []
+		for vehicle in vehicles:
+			lat = vehicle.location.global_relative_frame.lat
+			lon = vehicle.location.global_relative_frame.lon
+			x, y = locatePosition.geoToCart(origin, endDistance, [lat, lon])
+			uav_home_pos.append((x / 2, y / 2))
+		remove_flag = False
+		uav_removed = True
+		pop_bot_index = None
+		register_active_uavs()
+		print("[remove-link] remaining pos_array", pos_array, "num_bots", num_bots)
+		return True
+	except Exception as e:
+		print("[remove-link] failed", remove_bot_num, e)
+		return False
+
+
+def handle_concurrent_remove_command(command_data):
+	if not command_data.startswith(b"remove"):
+		return False
+	try:
+		decoded_index = command_data.decode("utf-8")
+		f, remove_bot_num = decoded_index.split(",", 1)
+		return remove_uav_from_swarm(remove_bot_num)
+	except Exception as e:
+		print("[concurrent remove] failed", e)
+		return False
+
+def handle_concurrent_add_command(command_data):
+	if not command_data.startswith(b"add"):
+		return False
+	try:
+		decoded_index = command_data.decode("utf-8")
+		f, sys_id = decoded_index.split(",", 1)
+		return add_uav_to_swarm(sys_id)
+	except Exception as e:
+		print("[concurrent add] failed", e)
+		return False
 def check_for_new_command(started_seq):
     """Call once per iteration inside an interruptible mission loop.
-    Raises MissionPreempted if a command newer than started_seq has
-    arrived; otherwise returns None and the loop continues normally."""
+    Selected goal commands are handled concurrently; other newer commands
+    still preempt the running global mission."""
+    global _handled_concurrent_command_seq, _last_seq
     if _pending_command.seq > started_seq:
+        if _pending_command.seq > _handled_concurrent_command_seq and (handle_concurrent_goal_command(_pending_command.data) or handle_concurrent_remove_command(_pending_command.data) or handle_concurrent_add_command(_pending_command.data)):
+            _handled_concurrent_command_seq = _pending_command.seq
+            _last_seq = _pending_command.seq
+            return None
+        if _pending_command.seq <= _handled_concurrent_command_seq:
+            return None
         raise MissionPreempted(_pending_command.data, _pending_command.address)
 
 def CHECK_network_connection():
@@ -534,6 +794,30 @@ sleep_times = {
     1: 0.13
 }
 
+def parse_selected_uav_ids(raw_ids):
+	if raw_ids is None:
+		return []
+	try:
+		return [int(uav_id) for uav_id in json.loads(raw_ids)]
+	except Exception:
+		try:
+			cleaned = str(raw_ids).strip().strip("[]")
+			if not cleaned:
+				return []
+			return [int(part.strip().strip("\"").strip("'")) for part in cleaned.split(",") if part.strip()]
+		except Exception as e:
+			print("[selected UAV parse] failed", raw_ids, e)
+			return []
+
+def selected_swarm_indexes(selected_uav_ids):
+	if not selected_uav_ids:
+		return list(range(len(pos_array)))
+	selected = {int(uav_id) for uav_id in selected_uav_ids}
+	indexes = [i for i, uav_id in enumerate(pos_array) if int(uav_id) in selected]
+	missing = selected.difference({int(uav_id) for uav_id in pos_array})
+	if missing:
+		print("[selected UAV] IDs not connected/in pos_array:", sorted(missing), "pos_array:", pos_array)
+	return indexes
 def fetch_location():
 	global vehicles,home_pos_lat_lon,home_pos,uav_home_pos
 	global robots
@@ -576,6 +860,7 @@ def fetch_location():
 	'''
 if master_flag:
 	vehicle_connection()
+	register_active_uavs()
 	while True:
 	    all_armed = [False]*len(vehicles)  # Assume all vehicles are armed initially
 	    for i,vehicle in enumerate(vehicles):
@@ -680,6 +965,7 @@ search_step=1
 percentage=0			
 removed_uav_grid=[]
 removed_grid_path_length=[]
+removed_numlines=[]
 removed_grid_path_array=[0]*len(pos_array)
 removed_grid_path_array_start_val=[0]*len(pos_array)
 checkall_removed_grid_path_array_start_val=[0]*len(pos_array)
@@ -742,10 +1028,89 @@ def _reset_mission_state():
     guided_circle_flag = False
     guided_circle_formation_flag = False
 
+active_goal_tasks = {}
+active_goal_tasks_lock = threading.Lock()
+
+
+def assign_goal_tasks(selected_indexes, goal_xy):
+	with active_goal_tasks_lock:
+		for bot_index in selected_indexes:
+			active_goal_tasks[bot_index] = {
+				"goals": list(goal_xy),
+				"goal_index": 0,
+			}
+	print("[goal-task] assigned", selected_indexes, goal_xy)
+
+
+def remove_goal_task_index(removed_index):
+	with active_goal_tasks_lock:
+		if removed_index in active_goal_tasks:
+			del active_goal_tasks[removed_index]
+		shifted_tasks = {}
+		for bot_index, task in active_goal_tasks.items():
+			new_index = bot_index - 1 if bot_index > removed_index else bot_index
+			shifted_tasks[new_index] = task
+		active_goal_tasks.clear()
+		active_goal_tasks.update(shifted_tasks)
+	print("[goal-task] compacted after remove", removed_index, sorted(active_goal_tasks.keys()))
+
+
+def _goal_task_runner():
+	while True:
+		time.sleep(sleep_times.get(len(pos_array), 0.1))
+		try:
+			with active_goal_tasks_lock:
+				tasks_snapshot = list(active_goal_tasks.items())
+			if not tasks_snapshot:
+				continue
+			completed = []
+			for i, task in tasks_snapshot:
+				if i >= len(s.swarm) or i >= len(pos_array):
+					completed.append(i)
+					continue
+				goals = task.get("goals", [])
+				goal_index = task.get("goal_index", 0)
+				if goal_index >= len(goals):
+					completed.append(i)
+					continue
+				b = s.swarm[i]
+				goal_position = goals[goal_index]
+				dx = abs(goal_position[0] - b.x)
+				dy = abs(goal_position[1] - b.y)
+				if dx <= 5 and dy <= 5:
+					goal_index += 1
+					if goal_index >= len(goals):
+						completed.append(i)
+						print("[goal-task] completed UAV", pos_array[i])
+						continue
+					with active_goal_tasks_lock:
+						if i in active_goal_tasks:
+							active_goal_tasks[i]["goal_index"] = goal_index
+					goal_position = goals[goal_index]
+				b.set_goal(goal_position[0], goal_position[1])
+				cmd = cvg.goal_area_cvg(i, b, goal_position)
+				cmd.exec(b)
+				if master_flag and i < len(vehicles):
+					current_position = (b.x * 2, b.y * 2)
+					lat, lon = locatePosition.cartToGeo(origin, endDistance, current_position)
+					if same_alt_flag:
+						point1 = LocationGlobalRelative(lat, lon, same_height)
+					else:
+						point1 = LocationGlobalRelative(lat, lon, different_height[i])
+					vehicles[i].simple_goto(point1)
+			if completed:
+				with active_goal_tasks_lock:
+					for i in completed:
+						active_goal_tasks.pop(i, None)
+		except Exception as e:
+			print("[goal-task] runner exception", e)
 while True:
 	if(uav_home_pos!=[]):
 		print("num_bots",num_bots,uav_home_pos)
 		s = sim.Simulation(uav_home_pos,num_bots=len(pos_array), env_name=file_name)
+		goal_task_thread = threading.Thread(target=_goal_task_runner)
+		goal_task_thread.daemon = True
+		goal_task_thread.start()
 		break
 	else:
 		pass
@@ -837,6 +1202,11 @@ while(1):
 			_last_seq = _pending_command.seq
 		_reset_mission_state()
 		print ("!!msg", data)
+		if(data==b"stop"):
+			with active_goal_tasks_lock:
+				active_goal_tasks.clear()
+			print("[goal-task] cleared by stop")
+			continue
 		if(data.startswith(b"origin")):
 			decoded_index = data.decode('utf-8')
 			_, new_lat, new_lon = decoded_index.split(",")
@@ -943,76 +1313,18 @@ while(1):
 			    msg = ','.join([f"{robot[0]},{robot[1]}" for robot in robots])		       
 			    			     
 					
-		if(data.startswith(b"remove")) or (remove_flag):		
-				print("bot_goal!!!!!!!!!!!!")
-				decoded_index = data.decode('utf-8')  # Assuming utf-8 encoding, adjust if needed
-				f,remove_bot_num = decoded_index.split(",")
-				print(f,remove_bot_num)
-				print("remove_bot_num",remove_bot_num,pos_array)						
-				remove_bot_flag=True
-				print ("msg", index)
-				for l in range(0,len(pos_array)):	
-					if(int(remove_bot_num)==pos_array[l]):
-						pop_bot_index=l
-						print(l)
-						break
-				if(pop_bot_index!=None):
-				    remove_bot_index=pop_bot_index
-				    print(pop_bot_index)
-				    pos_array.pop(pop_bot_index)
-				    print(len(pos_array))
-				    vehicles.pop(pop_bot_index)
-				    s.remove_bot(pop_bot_index)
-				    different_height.pop(pop_bot_index)
-				    print(num_bots)
-				    print("!!!!!!!!!!!!pop_flag_arr!!!!!!!!!!!",pop_flag_arr)
-				    print("pop index",pop_bot_index)				    
-				    uav_home_pos=[]
-				    for vehicle in vehicles:
-				        lat = vehicle.location.global_relative_frame.lat
-				        lon = vehicle.location.global_relative_frame.lon
-				        #print(f"Vehicle - Latitude: {lat}, Longitude: {lon}")
-				        x,y = locatePosition.geoToCart (origin, endDistance, [lat,lon])
-				        uav_home_pos.append((x / 2, y / 2))						
-				    print("uav_home_pos",uav_home_pos)    
-				    remove_flag=False
-				    uav_removed=True
-				    msg=str(remove_bot_num)+"- vehicle removed"
-				    pop_bot_index=None
-				else:
-				    print("Not found")
-				data="index"
+		if(data.startswith(b"remove")) or (remove_flag):
+			decoded_index = data.decode("utf-8")
+			f, remove_bot_num = decoded_index.split(",", 1)
+			print("remove_bot_num", remove_bot_num, pos_array)
+			remove_uav_from_swarm(remove_bot_num)
+			data="index"
 				
-		if(data.startswith(b"add")):		        
-		        try:
-			        decoded_index = data.decode('utf-8')
-			        f,sys_id = decoded_index.split(",")			        
-			        try:
-			            system_id = [int(id) for id in pos_array].index(int(sys_id))
-			            if int(sys_id) in port_dict:
-			                connection_str = f"udpin:{ip}:{port_dict[int(sys_id)]}"
-			                print(f"Connection string for sys_id {int(sys_id)}: {connection_str}")
-			            else:
-			                print(f"sys_id {int(sys_id)} not found in port_dict.")
-
-			            vehicles[system_id] = connect(connection_str,baud=115200,heartbeat_timeout=30)
-			            print('vehicles[system_id]',vehicles[system_id],vehicles)
-			        except:
-			            print("sys id not found in pos_array")
-			            if int(sys_id) in port_dict:
-			                connection_str = f"udpin:{ip}:{port_dict[int(sys_id)]}"
-			                print(f"Connection string for sys_id {int(sys_id)}: {connection_str}")
-			            else:
-			                print(f"sys_id {int(sys_id)} not found in port_dict.")
-
-			            vehicle11 = connect(connection_str,baud=115200,heartbeat_timeout=30)
-			            vehicles.append(vehicle11)
-			            print("KKK",len(vehicles),vehicles)
-			        data="index"
-		        except Exception as e:
-		            pass
-		            print("System array not found ",e )		            
-		        data="index"
+		if(data.startswith(b"add")):
+			decoded_index = data.decode("utf-8")
+			f, sys_id = decoded_index.split(",", 1)
+			add_uav_to_swarm(sys_id)
+			data="index"
 		
 		if data.startswith(b'specific_bot_goal'): 
 				index="data"
@@ -1167,6 +1479,10 @@ while(1):
 					guided_circle_radius=msg_parts[3]
 					goal_array = msg_parts[1]  # All other coordinates
 					goal_latlon = json.loads(goal_array)
+					selected_uav_ids = parse_selected_uav_ids(msg_parts[4] if len(msg_parts) > 4 else None)
+					selected_indexes = selected_swarm_indexes(selected_uav_ids)
+					selected_index_set = set(selected_indexes)
+					print('[goal] selected_uav_ids', selected_uav_ids, 'selected_indexes', selected_indexes)
 					goal_xy=[]
 					bot_reached=[0]*num_bots
 					for x in goal_latlon:
@@ -1175,6 +1491,9 @@ while(1):
 					    goal_xy.append((x/2,y/2))
 					    print(goal_xy,"goal_xy")
 					print(goal_xy,goal_xy[0],"goal")
+					assign_goal_tasks(selected_indexes, goal_xy)
+					data=b"index"
+					continue
 					goal_xy_index=0
 					if master_flag:
 					    uav_home_pos=[]
@@ -1214,6 +1533,8 @@ while(1):
 							break
 						goal_position=goal_xy[goal_xy_index]
 						for i,b in enumerate(s.swarm):
+							if i not in selected_index_set:
+								continue
 							current_position=[b.x,b.y]
 							dx=abs(goal_position[0]-current_position[0])
 							dy=abs(goal_position[1]-current_position[1])
@@ -1556,8 +1877,16 @@ while(1):
 		if(data.startswith(b"navigate")) or (start_flag):
 			print("data",data)
 			decoded_index = data.decode('utf-8')  # Assuming utf-8 encoding, adjust if needed
-			f,center_lat,center_lon,num_uavs,grid_space,coverage_area = decoded_index.split(",")
-			curve= BezierCurve(origin, float(center_lat), float(center_lon),int(num_uavs),int(grid_space), int(coverage_area))
+			msg_parts = decoded_index.split(",", 6)
+			selected_uav_raw = msg_parts[6] if len(msg_parts) > 6 else None
+			f,center_lat,center_lon,num_uavs,grid_space,coverage_area = msg_parts[:6]
+			normalize_active_uav_order()
+			selected_uav_ids = parse_selected_uav_ids(selected_uav_raw)
+			selected_indexes = list(range(len(pos_array)))
+			selected_index_set = set(selected_indexes)
+			effective_num_uavs = 1
+			print('[navigate] one grid path assigned to all active UAVs', 'received_ids', selected_uav_ids, 'active_indexes', selected_indexes)
+			curve= BezierCurve(origin, float(center_lat), float(center_lon),effective_num_uavs,int(grid_space), int(coverage_area))
 			val = curve.GridFormation()
 			path = curve.generate_bezier_curve()
 			multiple_goals=path
@@ -1604,6 +1933,8 @@ while(1):
 					check_for_new_command(my_seq)
 					bot_array=[0]*num_bots
 					for i,b in enumerate(s.swarm):
+						if i not in selected_index_set:
+							continue
 						current_position = [b.x,b.y]
 						if(skip_wp_flag):
 							with open(csv_path, 'a') as csvfile:
@@ -1679,8 +2010,16 @@ while(1):
 			print("data",data)
 			decoded_index = data.decode('utf-8')  # Assuming utf-8 encoding, adjust if needed
 			print('decoded_index',decoded_index)
-			f,center_lat,center_lon,num_uavs,grid_space,coverage_area = decoded_index.split(",")
-			curve= BezierCurveMultiple(origin, float(center_lat), float(center_lon),int(num_uavs),int(grid_space), int(coverage_area))
+			msg_parts = decoded_index.split(",", 6)
+			selected_uav_raw = msg_parts[6] if len(msg_parts) > 6 else None
+			f,center_lat,center_lon,num_uavs,grid_space,coverage_area = msg_parts[:6]
+			normalize_active_uav_order()
+			selected_uav_ids = parse_selected_uav_ids(selected_uav_raw)
+			selected_indexes = selected_swarm_indexes(selected_uav_ids)
+			selected_index_set = set(selected_indexes)
+			effective_num_uavs = max(1, len(selected_indexes) if selected_uav_ids else int(num_uavs))
+			print('[search] selected_uav_ids', selected_uav_ids, 'selected_indexes', selected_indexes)
+			curve= BezierCurveMultiple(origin, float(center_lat), float(center_lon),effective_num_uavs,int(grid_space), int(coverage_area))
 			val = curve.GridFormation()
 			path = curve.generate_bezier_curve()
 			search_step=1
@@ -1720,7 +2059,7 @@ while(1):
 			if search_flag_val==0:
 				search_flag_val+=1
 				csv_file_paths=[]
-				for i in range(1,len(pos_array)+1):
+				for i in range(1,effective_num_uavs+1):
 					csv_file_paths.append( os.path.join(curve.mission_dir,f'drone_{i}_path.csv'))
 				print("csv_file_paths",csv_file_paths)
 			removed_grid_path_array_index=0
@@ -1756,26 +2095,34 @@ while(1):
 				num_lines= len(list(reader))
 				if(remove_bot_flag):
 					print("remove_bot_flag,remove_bot_array",remove_bot_flag,remove_bot_array)
-					for m in remove_bot_array:
-					    removed_uav_grid.append(all_uav_csv_grid_array.pop(m))
-					    removed_grid_path_length.append(grid_path_array.pop(m))
+					removed_indexes = sorted(remove_bot_array, reverse=True)
+					for m in removed_indexes:
+						if 0 <= m < len(all_uav_csv_grid_array):
+							removed_uav_grid.append(all_uav_csv_grid_array.pop(m))
+						if 0 <= m < len(grid_path_array):
+							removed_grid_path_length.append(grid_path_array.pop(m))
+					for removed_index in removed_indexes:
+						selected_indexes = [idx - 1 if idx > removed_index else idx for idx in selected_indexes if idx != removed_index]
+					selected_index_set = set(selected_indexes) # compact after remove
 					remove_bot_array=[]
 					remove_bot_flag=False
 					 				
 				if(search_step==1):
-					for i,b in enumerate(s.swarm):
-						all_uav_csv_grid_array[i]=csv_file_paths[i]
+					for path_slot, bot_index in enumerate(selected_indexes):
+						all_uav_csv_grid_array[bot_index]=csv_file_paths[path_slot]
 					print("all_uav_csv_grid_array",all_uav_csv_grid_array)
 					search_step+=1
 				for i,b in enumerate(s.swarm):
+					if i not in selected_index_set:
+						continue
 					if(len(checkall_removed_grid_path_array_start_val)==len(pos_array)):
 					    if all(c==1 for c in checkall_removed_grid_path_array_start_val):
 						    landing_flag=True
 					else:
 					    pass
-					if all(x >= int(num_lines) for x in grid_path_array) and removed_grid_path_length!=[] and not removed_grid_path_array_flag:						
+					if all(grid_path_array[x] >= int(num_lines) for x in selected_indexes) and removed_grid_path_length!=[] and not removed_grid_path_array_flag:						
 						print("removed_grid_path_length",removed_grid_path_length)						
-						allocation,remaining_points_list  = allocate_drones(int(num_lines), removed_grid_path_length, len(pos_array))
+						allocation,remaining_points_list  = allocate_drones(int(num_lines), removed_grid_path_length, len(selected_indexes))
 						print("allocation,remaining_points_list",allocation,remaining_points_list)						
 						for x,v in enumerate(remaining_points_list):
 						    print("x",x)
@@ -1811,7 +2158,7 @@ while(1):
 						print("removed_grid_path_array!!!!!",removed_grid_path_array,removed_grid_path_array_start_val,removed_grid_filename)
 						removed_grid_path_array_flag=True
 						
-					if all(x >= int(num_lines) for x in grid_path_array) and not removed_grid_path_length!=[]:
+					if all(grid_path_array[x] >= int(num_lines) for x in selected_indexes) and not removed_grid_path_length!=[]:
 						landing_flag=True
 					if(removed_grid_path_array_flag):						
 						if(removed_grid_path_array_start_val[i]==0):
@@ -1880,6 +2227,7 @@ while(1):
 					
 						
 		if(data.startswith(b"split")) or (data.startswith(b"specificsplit")):
+			normalize_active_uav_order()
 			if (data.startswith(b"specificsplit")):
 			    try:
 			        decoded_index = data.decode('utf-8')  # Assuming utf-8 encoding, adjust if needed
@@ -2026,12 +2374,15 @@ while(1):
 					print(x)
 				if(remove_bot_flag):
 					print("remove_bot_flag",remove_bot_flag)
-					for m in remove_bot_array:
-					    print("LLLLLL",remove_bot_array,m)
-					    removed_uav_grid.append(all_uav_csv_grid_array.pop(m))
-					    removed_grid_path_length.append(grid_path_array.pop(m))
+					removed_indexes = sorted(remove_bot_array, reverse=True)
+					for m in removed_indexes:
+						print("LLLLLL",remove_bot_array,m)
+						if 0 <= m < len(all_uav_csv_grid_array):
+							removed_uav_grid.append(all_uav_csv_grid_array.pop(m))
+						if 0 <= m < len(grid_path_array):
+							removed_grid_path_length.append(grid_path_array.pop(m))
 					remove_bot_array=[]
-					remove_bot_flag=False 
+					remove_bot_flag=False
 					
 				if(search_step==1):
 					for i,b in enumerate(s.swarm):
@@ -2039,6 +2390,8 @@ while(1):
 					print("all_uav_csv_grid_array",all_uav_csv_grid_array)
 					search_step+=1
 				for i,b in enumerate(s.swarm):
+					if i >= len(all_uav_csv_grid_array) or not all_uav_csv_grid_array[i] or i >= len(num_lines):
+						continue
 					if(len(checkall_removed_grid_path_array_start_val)==len(pos_array)):
 					    if all(c==1 for c in checkall_removed_grid_path_array_start_val):
 						    landing_flag=True
@@ -2323,4 +2676,13 @@ while(1):
 			home_flag=False
 		if(home_goto_flag):
 			home_goto_flag=False
-		pass				
+		pass
+
+
+
+
+
+
+
+
+
