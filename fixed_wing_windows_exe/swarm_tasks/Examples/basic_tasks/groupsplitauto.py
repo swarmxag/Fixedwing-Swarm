@@ -80,13 +80,14 @@ class AutoSplitMission():
 
             current_lat = bottom.latitude
             line_number = 0
+            expected_rows = max(1, int(rectangle_height / grid_spacing) + 1)
             line = kml.newlinestring()
             line.altitudemode = simplekml.AltitudeMode.clamptoground
             line.style.linestyle.color = simplekml.Color.black
             line.style.linestyle.width = 2
             waypoint_number = 1
 
-            while current_lat <= top.latitude:
+            while line_number < expected_rows:
                 line_number += 1
                 current_point = Point(current_lat, west_edge.longitude)
                 east_point = distance(meters=full_width).destination(current_point, 90)
@@ -371,4 +372,5 @@ class AutoSplitMission():
 # )
 # split.plot_curve()
 # print(isDone)
+
 
