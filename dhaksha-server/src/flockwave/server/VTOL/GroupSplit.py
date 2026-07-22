@@ -121,13 +121,13 @@ def CreateGridsForSpecifiedAreaAndSpecifiedDrones(
 
         kml_filename = f"search-drone-{index}.kml"
         kml.save(
-            "D:/Kamikaze-Fuze-GUI/dhaksha-server/src/flockwave/server/VTOL/kmls/"
+            "F:/Tharun/SWARM/VTOL_SWARM/Fixedwing-Swarm/dhaksha-server/src/flockwave/server/VTOL/kmls/"
             + kml_filename
         )
 
         csv_filename = f"search-drone-{index}.csv"
         with open(
-            "D:/Kamikaze-Fuze-GUI/dhaksha-server/src/flockwave/server/VTOL/csvs/"
+            "F:/Tharun/SWARM/VTOL_SWARM/Fixedwing-Swarm/dhaksha-server/src/flockwave/server/VTOL/csvs/"
             + csv_filename,
             mode="w",
             newline="",

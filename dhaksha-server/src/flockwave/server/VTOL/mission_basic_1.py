@@ -11,7 +11,7 @@ async def add_mavlink_mission1(
 ) -> None:
     manager = AutoMissionManager.for_uav(uav)
     await manager.clear_mission()
-    search_file = "D:/Kamikaze-Fuze-GUI/dhaksha-server/src/flockwave/server/VTOL/csvs/search-drone-"
+    search_file = "F:/Tharun/SWARM/VTOL_SWARM/Fixedwing-Swarm/dhaksha-server/src/flockwave/server/VTOL/csvs/search-drone-"
     flag = 0
     points_coordinate = [
         # [
@@ -24,7 +24,7 @@ async def add_mavlink_mission1(
         # ],
     ]
     # with open(
-    #     "D:/Kamikaze-Fuze-GUI/dhaksha-server/src/flockwave/server/VTOL/csvs/forward-drone-{}.csv".format(
+    #     "F:/Tharun/SWARM/VTOL_SWARM/Fixedwing-Swarm/dhaksha-server/src/flockwave/server/VTOL/csvs/forward-drone-{}.csv".format(
     #         i
     #     ),
     #     "r",
@@ -65,7 +65,7 @@ async def add_mavlink_mission1(
     # )
     reverse_waypoints = 0
     with open(
-        "D:/Kamikaze-Fuze-GUI/dhaksha-server/src/flockwave/server/VTOL/csvs/reverse-drone-"
+        "F:/Tharun/SWARM/VTOL_SWARM/Fixedwing-Swarm/dhaksha-server/src/flockwave/server/VTOL/csvs/reverse-drone-"
         + str(i)
         + ".csv",
         "r",
@@ -76,7 +76,7 @@ async def add_mavlink_mission1(
     count = 0
     print("reverse_waypoints",reverse_waypoints)
     with open(
-        "D:/Kamikaze-Fuze-GUI/dhaksha-server/src/flockwave/server/VTOL/csvs/reverse-drone-"
+        "F:/Tharun/SWARM/VTOL_SWARM/Fixedwing-Swarm/dhaksha-server/src/flockwave/server/VTOL/csvs/reverse-drone-"
         + str(i)
         + ".csv",
         "r",
@@ -125,7 +125,7 @@ async def add_mavlink_mission1(
 async def add_mavlink_mission(i: int, alt: int, uav: UAV, initial_takeoff: int) -> None:
     manager = AutoMissionManager.for_uav(uav)
     await manager.clear_mission()
-    search_file = "D:/Kamikaze-Fuze-GUI/dhaksha-server/src/flockwave/server/VTOL/csvs/search-drone-"
+    search_file = "F:/Tharun/SWARM/VTOL_SWARM/Fixedwing-Swarm/dhaksha-server/src/flockwave/server/VTOL/csvs/search-drone-"
     flag = 0
     lath, lonh = uav.status.position.lat, uav.status.position.lon
     points_coordinate = [
@@ -139,7 +139,7 @@ async def add_mavlink_mission(i: int, alt: int, uav: UAV, initial_takeoff: int) 
         ],
     ]
     with open(
-        "D:/Kamikaze-Fuze-GUI/dhaksha-server/src/flockwave/server/VTOL/csvs/forward-drone-{}.csv".format(
+        "F:/Tharun/SWARM/VTOL_SWARM/Fixedwing-Swarm/dhaksha-server/src/flockwave/server/VTOL/csvs/forward-drone-{}.csv".format(
             i
         ),
         "r",
@@ -179,7 +179,7 @@ async def add_mavlink_mission(i: int, alt: int, uav: UAV, initial_takeoff: int) 
         [GPSCoordinate(prev_lat, prev_lon, 0, alt, 0), MAVCommand.NAV_LOITER_UNLIM]
     )
     with open(
-        "D:/Kamikaze-Fuze-GUI/dhaksha-server/src/flockwave/server/VTOL/csvs/reverse-drone-"
+        "F:/Tharun/SWARM/VTOL_SWARM/Fixedwing-Swarm/dhaksha-server/src/flockwave/server/VTOL/csvs/reverse-drone-"
         + str(i)
         + ".csv",
         "r",

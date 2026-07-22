@@ -30,7 +30,7 @@ def fetch_file_content(file_path):
 
 master_udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-adderss = {1: ("192.168.6.220", 12002), 2: ("192.168.6.220", 12008)}
+adderss = {1: ("192.168.2.103", 12002), 2: ("192.168.2.103", 12008)}
 
 master_num = 0
 origin = None  # set by process_fence() once a fence has been drawn; consumed
@@ -1212,7 +1212,7 @@ def landing_mission_send(mission):
 
 
 def navigate(center_latlon, gridspacing, coverage, ids):
-    global master_udp
+    global master_udp, origin
     latlng = str(str(center_latlon[0][1]) + "," + str(center_latlon[0][0]))
     data = str(
         "navigate"
@@ -1228,6 +1228,7 @@ def navigate(center_latlon, gridspacing, coverage, ids):
 
     master_udp.sendto(data.encode(), adderss.get(2))
     curve = BezierCurve(
+        origin=origin,
         center_latitude=center_latlon[0][1],
         center_longitude=center_latlon[0][0],
         coverage_area=coverage,

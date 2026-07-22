@@ -125,7 +125,7 @@ def GridFormation(
             )
         kml_filename = f"search-drone-{i+1}.kml"
         kml.save(
-            "D:/Kamikaze-Fuze-GUI/dhaksha-server/src/flockwave/server/VTOL/kmls/"
+            "F:/Tharun/SWARM/VTOL_SWARM/Fixedwing-Swarm/dhaksha-server/src/flockwave/server/VTOL/kmls/"
             + kml_filename
         )
         csv_datas.append(csv_data)
@@ -135,7 +135,7 @@ def GridFormation(
         csv_filename = f"search-drone-{i+1}.csv"
         number_of_waypoints = 0
         with open(
-            "D:/Kamikaze-Fuze-GUI/dhaksha-server/src/flockwave/server/VTOL/csvs/"
+            "F:/Tharun/SWARM/VTOL_SWARM/Fixedwing-Swarm/dhaksha-server/src/flockwave/server/VTOL/csvs/"
             + csv_filename,
             mode="w",
             newline="",

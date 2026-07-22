@@ -136,6 +136,7 @@ try:
 except Exception as e:
 	origin = None
 	print(f"No rectangles.yaml yet at {rectangles_path} ({e}) -- origin will be set once a fence is drawn")
+
 '''
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
@@ -206,7 +207,7 @@ def get_wifi_ip(iface_map):
             for addr in ipv4_info:
                 ip = addr.get('addr')
                 if ip and (adapter == "Ethernet" or adapter=="Wi-Fi" or iface == "eth0" or iface == "ensp20" or iface == "wlan0") and ip.startswith("192.168."):
-                    return "192.168.6.220"
+                    return "192.168.2.103"
         except Exception as e:
             print(f"Error on interface {iface}: {e}")
     return None

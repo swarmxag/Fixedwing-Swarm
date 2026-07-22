@@ -159,7 +159,7 @@ def Grid_Pattern(cols,rows,origin):
 
 def VTOL_right_reverse(numOfDrones):
     result = kml_read(
-        "D:/Kamikaze-Fuze-GUI/dhaksha-server/src/flockwave/server/VTOL/kmls/Reverse-Mission.kml"
+        "F:/Tharun/SWARM/VTOL_SWARM/Fixedwing-Swarm/dhaksha-server/src/flockwave/server/VTOL/kmls/Reverse-Mission.kml"
     )
 
     bearing = 0
@@ -293,7 +293,7 @@ def VTOL_right_reverse(numOfDrones):
 
     for i in range(numOfDrones):
         with open(
-            "D:/Kamikaze-Fuze-GUI/dhaksha-server/src/flockwave/server/VTOL/csvs/reverse-drone-{}.csv".format(
+            "F:/Tharun/SWARM/VTOL_SWARM/Fixedwing-Swarm/dhaksha-server/src/flockwave/server/VTOL/csvs/reverse-drone-{}.csv".format(
                 i + 1
             ),
             "w",

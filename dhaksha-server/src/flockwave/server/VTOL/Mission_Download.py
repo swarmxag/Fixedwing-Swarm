@@ -21,11 +21,11 @@ async def main(
 ) -> bool:
     if len(mission) > 0:
         download_mission_kml(
-            "D:/Kamikaze-Fuze-GUI/dhaksha-server/src/flockwave/server/VTOL/kmls/Forward-Mission.kml",
+            "F:/Tharun/SWARM/VTOL_SWARM/Fixedwing-Swarm/dhaksha-server/src/flockwave/server/VTOL/kmls/Forward-Mission.kml",
             mission,
         )
         download_mission_kml(
-            "D:/Kamikaze-Fuze-GUI/dhaksha-server/src/flockwave/server/VTOL/kmls/Reverse-Mission.kml",
+            "F:/Tharun/SWARM/VTOL_SWARM/Fixedwing-Swarm/dhaksha-server/src/flockwave/server/VTOL/kmls/Reverse-Mission.kml",
             landingMission,
         )
         if selected_turn == "left":
@@ -38,7 +38,7 @@ async def main(
 async def landing_main(landingMission,numOfDrones,uavs):
     if len(landingMission) > 0:
         download_mission_kml(
-            "D:/Kamikaze-Fuze-GUI/dhaksha-server/src/flockwave/server/VTOL/kmls/Reverse-Mission.kml",
+            "F:/Tharun/SWARM/VTOL_SWARM/Fixedwing-Swarm/dhaksha-server/src/flockwave/server/VTOL/kmls/Reverse-Mission.kml",
             landingMission,
         )
     await VPR(numOfDrones, uavs)

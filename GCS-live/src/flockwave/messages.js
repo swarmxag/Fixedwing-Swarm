@@ -378,7 +378,10 @@ class PendingCommandExecution {
   };
 
   /**
-   * Function to call when a status update of the command execution request was
+   * Function to call when a status update of the comman
+   * 
+   * 
+   * d execution request was
    * received.
    *
    * @param  {Object} body the body of the status update message
@@ -483,7 +486,7 @@ class MessageHubRelatedComponent {
    * Callback function that is called when the object is attached to a new
    * message hub. Must be overridden in subclasses.
    */
-  _onAttachedToHub() {}
+  _onAttachedToHub() { }
 
   /**
    * Callback function that is called when the object is detached from a
@@ -930,7 +933,7 @@ class DeviceTreeSubscriptionManager extends MessageHubRelatedComponent {
     if (this._subscriptionsOnServer === null) {
       console.warn(
         '_updateSubscriptions() was called before acquiring' +
-          ' information about the subscriptions on the server'
+        ' information about the subscriptions on the server'
       );
       return;
     }
@@ -971,7 +974,7 @@ class DeviceTreeSubscriptionManager extends MessageHubRelatedComponent {
       if (response?.body?.error) {
         console.warn(
           'Failed to unsubscribe from one or more paths: ' +
-            JSON.stringify(response.body.error)
+          JSON.stringify(response.body.error)
         );
         shouldRetry = true;
       }
@@ -991,7 +994,7 @@ class DeviceTreeSubscriptionManager extends MessageHubRelatedComponent {
       if (response?.body?.error) {
         console.warn(
           'Failed to subscribe to one or more device tree paths: ' +
-            JSON.stringify(response.body.error)
+          JSON.stringify(response.body.error)
         );
         shouldRetry = true;
       }
@@ -1302,7 +1305,7 @@ export default class MessageHub {
     if (!this._emitter) {
       console.warn(
         'sendMessage() was called before associating an emitter ' +
-          'to the message hub. Message was discarded.'
+        'to the message hub. Message was discarded.'
       );
       throw new NoEmitterError();
     }
@@ -1336,7 +1339,7 @@ export default class MessageHub {
     if (!this._emitter) {
       console.warn(
         'sendNotification() was called before associating a ' +
-          'socket to the message hub. Message was discarded.'
+        'socket to the message hub. Message was discarded.'
       );
       return;
     }
@@ -1508,8 +1511,7 @@ export default class MessageHub {
       throw new Error('Response has no body');
     } else if (response.body.type === 'ACK-NAK') {
       throw new Error(
-        `Execution rejected by server; reason: ${
-          response.body.reason || 'unknown'
+        `Execution rejected by server; reason: ${response.body.reason || 'unknown'
         }`
       );
     } else if (response.body.type !== expectedType) {

@@ -1,3 +1,4 @@
+
 """Application object for the Skybrush server."""
 
 from appdirs import AppDirs
