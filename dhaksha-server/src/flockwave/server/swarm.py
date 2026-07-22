@@ -647,8 +647,9 @@ def takeoff_socket(alt):
 
 def search_socket(points, gridspacing, coverage, ids):
     global master_udp, origin
-    ids = ids or []
+    # global udp_socket,server_address1,server_address2,udp_socket2
     print("Searching........")
+    # udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     for num in points:
         num.reverse()
     data = str(
@@ -658,15 +659,13 @@ def search_socket(points, gridspacing, coverage, ids):
         + ","
         + str(points[0][1])
         + ","
-        + str(1)
+        + str(len(ids))
         + ","
         + str(gridspacing)
         + ","
         + json.dumps(coverage)
-        + ","
-        + json.dumps(ids)
     )
-    print(points, len(ids), gridspacing, coverage, ids)
+    print(points, len(ids), gridspacing, coverage)
     master_udp.sendto(data.encode(), adderss.get(2))
     curve = BezierCurve(
         origin=origin,
@@ -1055,12 +1054,11 @@ def specific_bot_goal_socket(drone_num, goal_num):
     return True
 
 
-def goal_socket(goal_num, direction, radius, ids=None):
+def goal_socket(goal_num, direction, radius):
     print("***Group goal*****!!!!!")
-    ids = ids or []
     for num in goal_num:
         num.reverse()
-    data = str("goal" + "_" + json.dumps(goal_num) + "_" + str(direction) + "_" + str(radius) + "_" + json.dumps(ids))
+    data = str("goal" + "_" + str(goal_num) + "_" + str(direction) + "_" + str(radius))
     print("d", data)
     master_udp.sendto(data.encode(), adderss.get(2))
     # udp_socket.sendto(str(d).encode(), server_address1)
@@ -1215,7 +1213,6 @@ def landing_mission_send(mission):
 
 def navigate(center_latlon, gridspacing, coverage, ids):
     global master_udp, origin
-    ids = ids or []
     latlng = str(str(center_latlon[0][1]) + "," + str(center_latlon[0][0]))
     data = str(
         "navigate"
@@ -1227,8 +1224,6 @@ def navigate(center_latlon, gridspacing, coverage, ids):
         + str(gridspacing)
         + ","
         + json.dumps(coverage)
-        + ","
-        + json.dumps(ids)
     )
 
     master_udp.sendto(data.encode(), adderss.get(2))
@@ -1342,6 +1337,3 @@ def specificsplit(center_latlon, uavs, gridspace, coverage):
     missions = [[(lat, lon) for lon, lat in segment] for segment in path]
     time_sample = TimeCalculation(missions=missions, speed=20, loiter_radius=200)
     return path, time_sample.max_time()
-
-
-
