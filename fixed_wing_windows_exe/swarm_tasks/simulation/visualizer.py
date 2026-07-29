@@ -30,27 +30,64 @@ class Gui:
 		self.coverage_text1 = None
 		self.uav_trajectories=[]
 		self.uav_positions = {'uav_1': [], 'uav_2': [], 'uav_3': [], 'uav_4': [], 'uav_5': [], 'uav_6':[], 'uav_7':[], 'uav_8':[]}
-		
-		
+		self.trail_lines = []
+		self.trail_x = []
+		self.trail_y = []
+		self.goal_artists = []
+
 	def show_bots(self):
+
+		# bot.size is the real collision radius used by the simulation logic
+		# (often as small as 0.4) -- on a world sized in real ground units
+		# (e.g. a fence loaded from swarm_env can be thousands of units wide)
+		# a circle that small is sub-pixel and invisible. vis_r is a
+		# draw-only radius scaled to the current world so bots stay visible
+		# regardless of environment size; it never feeds back into sim state.
+		vis_r = max(self.size) * 0.008
+
+		if not self.trail_lines:
+			for i in range(len(self.sim.swarm)):
+				color = self.state_colors[i % len(self.state_colors)]
+				line, = self.ax.plot([], [], '-', color=color, linewidth=1, alpha=0.6)
+				self.trail_lines.append(line)
+				self.trail_x.append([])
+				self.trail_y.append([])
 
 		#show bots
 		for i,bot in enumerate(self.sim.swarm):
 			#self.show_neighbourhood(bot,3)
 
 			x,y,theta = bot.get_pose()
-			state_disp = (bot.get_state()<=len(self.state_colors))*(bot.get_state())
 			bot_color = self.state_colors[i % len(self.state_colors)]
-			circle = plt.Circle((x,y), bot.size, color=bot_color, fill=True)
-			plt.plot(marker='o', label='uav', color=self.state_colors)
-			#circle = plt.Circle((x,y), bot.size, color=self.state_colors[state_disp], fill=True)
+
+			self.trail_x[i].append(x)
+			self.trail_y[i].append(y)
+			self.trail_lines[i].set_data(self.trail_x[i], self.trail_y[i])
+
+			circle = plt.Circle((x,y), vis_r, color=bot_color, fill=True)
 			self.fig.gca().add_artist(circle)
 
-			l=0.15
+			l=vis_r*0.4
 			self.ax.arrow(x,y, \
-				(bot.size-l)*np.cos(theta), (bot.size-l)*np.sin(theta), \
+				(vis_r-l)*np.cos(theta), (vis_r-l)*np.sin(theta), \
 				head_width=l, head_length=l, \
-				fc='k', ec='k', zorder=100)
+				fc='k', ec='k', zorder=50)
+
+	def show_goals(self, goals):
+		"""goals: list of (x,y) target points, one per bot. Pass the same
+		list across frames (only overwriting entries as new goals are
+		computed) rather than rebuilding it each frame, so a bot with no
+		goal yet (None) simply has no marker instead of flickering."""
+		for artist in self.goal_artists:
+			artist.remove()
+		self.goal_artists = []
+		for i, goal in enumerate(goals):
+			if goal is None:
+				continue
+			gx, gy = goal
+			color = self.state_colors[i % len(self.state_colors)]
+			marker, = self.ax.plot(gx, gy, marker='x', markersize=5, markeredgewidth=2, color=color)
+			self.goal_artists.append(marker)
 
 	def show_env(self):
 	    for obs in self.sim.env.obstacles:

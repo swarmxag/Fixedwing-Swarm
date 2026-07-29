@@ -207,7 +207,7 @@ def get_wifi_ip(iface_map):
             for addr in ipv4_info:
                 ip = addr.get('addr')
                 if ip and (adapter == "Ethernet" or adapter=="Wi-Fi" or iface == "eth0" or iface == "ensp20" or iface == "wlan0") and ip.startswith("192.168."):
-                    return "192.168.2.103"
+                    return "192.168.2.135"
         except Exception as e:
             print(f"Error on interface {iface}: {e}")
     return None
@@ -220,7 +220,8 @@ def get_interface_mapping():
         # print(nic)
         if nic.GUID:
             mappings[nic.GUID.upper()] = nic.NetConnectionID or nic.Name
-    return get_wifi_ip(mappings)
+    #return get_wifi_ip(mappings)
+    return "192.168.2.135"
 
 
 def vehicle_collision_moniter_receive():	
@@ -367,7 +368,7 @@ def vehicle_connection():
 	num_bots=0
 	
 	try:
-		vehicle1= connect('udpin:{}:14551'.format(ip),baud=115200, heartbeat_timeout=heartbeat_ip_timeout[0])
+		vehicle1= connect('udpin:{}:14554'.format(ip),baud=115200, heartbeat_timeout=heartbeat_ip_timeout[0])
 		print('Drone1')
 		vehicles.append(vehicle1)
 		pos_array.append(vehicle1._master.target_system)
@@ -377,7 +378,7 @@ def vehicle_connection():
 		pass
 		print(	"Vehicle 1 is lost")
 	try:		
-		vehicle2= connect('udpin:{}:14552'.format(ip),baud=115200,heartbeat_timeout=heartbeat_ip_timeout[1])
+		vehicle2= connect('udpin:{}:14555'.format(ip),baud=115200,heartbeat_timeout=heartbeat_ip_timeout[1])
 		print('Drone2')
 		num_bots+=1	
 		vehicles.append(vehicle2)
@@ -388,7 +389,7 @@ def vehicle_connection():
 		print(	"Vehicle 2 is lost")
 	
 	try:
-		vehicle3= connect('udpin:{}:14553'.format(ip),baud=115200,heartbeat_timeout=heartbeat_ip_timeout[2])
+		vehicle3= connect('udpin:{}:14556'.format(ip),baud=115200,heartbeat_timeout=heartbeat_ip_timeout[2])
 		print('Drone3')
 		num_bots+=1 
 		vehicles.append(vehicle3)
@@ -1201,7 +1202,8 @@ while(1):
 					        #uav5.sendto(serialized_data.encode(), #uav5_server_address)
 					    '''
 					s = sim.Simulation(uav_home_pos,num_bots=len(pos_array), env_name=file_name )
-					# plotting removed
+					gui = viz.Gui(s)
+
 					my_seq = _last_seq
 
 					while 1:
@@ -1242,11 +1244,12 @@ while(1):
 								vehicles[i].simple_goto(point1)
 						
 						if 'gui' in locals() and gui is not None:
+							gui.show_goals([goal_position] * len(s.swarm))
 							gui.update()
-											       
+
 						if(index==b"stop"):
 							print("Data",data)
-							group_goal_flag=False						
+							group_goal_flag=False
 							if 'gui' in locals() and gui is not None:
 								gui.close()
 							break	
@@ -1587,8 +1590,8 @@ while(1):
 					#uav5.sendto(serialized_data.encode(), #uav5_server_address)
 				'''
 			s = sim.Simulation(uav_home_pos,num_bots=len(pos_array), env_name=file_name )
-			# plotting removed
-			
+			gui = viz.Gui(s)
+
 			index="data"
 						
 			for b in s.swarm:				
@@ -1666,9 +1669,10 @@ while(1):
 							vehicles[i].simple_goto(point1)
 					
 					if 'gui' in locals() and gui is not None:
+						gui.show_goals([multiple_goals[ind]] * len(s.swarm))
 						gui.update()
-					
-					if(index==b"stop"):	
+
+					if(index==b"stop"):
 						print("start_flag",start_flag,"circle_formation_flag",circle_formation_flag)
 						start_flag=False
 						circle_formation_flag=False		
@@ -1709,7 +1713,8 @@ while(1):
 					#uav5.sendto(serialized_data.encode(), #uav5_server_address)			
 				'''				
 				s = sim.Simulation(uav_home_pos,num_bots=num_bots, env_name=file_name)
-				# plotting removed
+				gui = viz.Gui(s)
+
 			print("Search Started")
 			search_flag_val=0
 			f=""
@@ -1726,6 +1731,7 @@ while(1):
 				print("csv_file_paths",csv_file_paths)
 			removed_grid_path_array_index=0
 			print('grid_path_array',grid_path_array)
+			current_goals=[None]*len(pos_array)
 			my_seq = _last_seq
 			while 1:
 				if(num_bots==10):
@@ -1843,6 +1849,7 @@ while(1):
 						goal_lat_lon = read_specific_line(all_uav_csv_grid_array[i], grid_path_array[i])
 					x,y = goal_lat_lon[0][0],goal_lat_lon[0][1]
 					goal=(x,y)
+					current_goals[i]=goal
 					#print(f"CSV goal for bot {i}: {goal}, bot pos: {b.x:.1f}, {b.y:.1f}, ratio: {goal[0]/b.x:.2f}")
 					cmd =cvg.goal_area_cvg(i,b,goal)
 					value=[b.x*2,b.y*2]
@@ -1869,10 +1876,11 @@ while(1):
 								point1 = LocationGlobalRelative(lat,lon,different_height[i])
 							vehicles[i].simple_goto(point1)							
 						
-				s.time_elapsed += 1   
+				s.time_elapsed += 1
 				if master_flag and 'gui' in locals() and gui is not None:
+					gui.show_goals(current_goals)
 					gui.update()
-					
+
 				if(index==b"stop"):
 					search_flag=False
 					if master_flag and 'gui' in locals() and gui is not None:
@@ -1991,7 +1999,8 @@ while(1):
 					#uav5.sendto(serialized_data.encode(), #uav5_server_address)			
 				'''
 				s = sim.Simulation(uav_home_pos,num_bots=num_bots, env_name=file_name)
-				# plotting removed
+				gui = viz.Gui(s)
+
 			print("Group Splitting Started")		
 			f=""
 			num_lines=[0]*len(pos_array)
@@ -2018,6 +2027,7 @@ while(1):
 			removed_grid_path_array_index=0
 			my_seq = _last_seq
 			print('grid_path_array',grid_path_array)
+			current_goals=[None]*len(pos_array)
 			while 1:
 				time.sleep(sleep_times.get(num_bots))
 				check_for_new_command(my_seq)
@@ -2115,6 +2125,7 @@ while(1):
 						goal_lat_lon = read_specific_line(all_uav_csv_grid_array[i], grid_path_array[i])
 					x,y = goal_lat_lon[0][0],goal_lat_lon[0][1]
 					goal=(x,y)
+					current_goals[i]=goal
 					cmd =cvg.goal_area_cvg(i,b,goal)
 					value=[b.x*2,b.y*2]
 					current_position=[b.x,b.y]
@@ -2139,10 +2150,11 @@ while(1):
 								point1 = LocationGlobalRelative(lat,lon,different_height[i])
 							vehicles[i].simple_goto(point1)
 						
-				s.time_elapsed += 1   
+				s.time_elapsed += 1
 				if master_flag and 'gui' in locals() and gui is not None:
+					gui.show_goals(current_goals)
 					gui.update()
-					
+
 				if(index==b"stop"):
 					split_flag=False
 					if master_flag and 'gui' in locals() and gui is not None:

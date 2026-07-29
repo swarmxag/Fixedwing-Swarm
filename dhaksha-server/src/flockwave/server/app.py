@@ -1284,16 +1284,26 @@ class SkybrushServer(DaemonApp):
         if msg == "disperse":
             result = disperse_socket()
 
+        if msg == "check_origin":
+            # Read-only status query the UI sends once on connect so it can
+            # warn the operator immediately after a server restart, instead
+            # of only finding out origin is unset when a command bounces.
+            result = "origin_not_set" if get_origin() is None else "origin_set"
+
         if msg == "search":
-            stop_socket()
-            await sleep(1)
-            points = parameters.get("coords")
-            gridSpacing = parameters.get("gridSpacing")
-            coverage = parameters.get("coverage")
-            ids = list(app.object_registry.ids_by_type(UAV))
-            path, time_min = search_socket(points, gridSpacing, coverage, ids)
-            result = path
-            response.body["time"] = time_min
+            if get_origin() is None:
+                print("[origin reminder] Set Origin/Geofence before sending search")
+                result = "origin_not_set"
+            else:
+                stop_socket()
+                await sleep(1)
+                points = parameters.get("coords")
+                gridSpacing = parameters.get("gridSpacing")
+                coverage = parameters.get("coverage")
+                ids = list(app.object_registry.ids_by_type(UAV))
+                path, time_min = search_socket(points, gridSpacing, coverage, ids)
+                result = path
+                response.body["time"] = time_min
 
         if msg == "aggregate":
             result = aggregate_socket()
@@ -1328,15 +1338,19 @@ class SkybrushServer(DaemonApp):
             result = specific_bot_goal_socket(parameters["uav"], parameters["goal"])
 
         if msg == "goal":
-            stop_socket()
-            await sleep(1)
-            dir = parameters.get("Direction", "")
-            direction = (
-                1 if parameters.get("Direction", "").lower().startswith("c") else -1
-            )
-            result = goal_socket(
-                parameters.get("coords"), direction, parameters.get("radius")
-            )
+            if get_origin() is None:
+                print("[origin reminder] Set Origin/Geofence before sending goal")
+                result = "origin_not_set"
+            else:
+                stop_socket()
+                await sleep(1)
+                dir = parameters.get("Direction", "")
+                direction = (
+                    1 if parameters.get("Direction", "").lower().startswith("c") else -1
+                )
+                result = goal_socket(
+                    parameters.get("coords"), direction, parameters.get("radius")
+                )
 
         if msg == "home_goto":
             result = home_goto_socket()
@@ -1373,16 +1387,20 @@ class SkybrushServer(DaemonApp):
             result = landing_mission_send(parameters.get("mission"))
 
         if msg == "navigate":
-            print("............................")
-            stop_socket()
-            await sleep(1)
-            center_latlon = parameters.get("coords")
-            gridSpacing = parameters.get("gridSpacing")
-            coverage = parameters.get("coverage")
-            ids = parameters.get("ids")
-            path, time = navigate(center_latlon, gridSpacing, coverage, ids)
-            result = path
-            response.body["time"] = time
+            if get_origin() is None:
+                print("[origin reminder] Set Origin/Geofence before sending navigate")
+                result = "origin_not_set"
+            else:
+                print("............................")
+                stop_socket()
+                await sleep(1)
+                center_latlon = parameters.get("coords")
+                gridSpacing = parameters.get("gridSpacing")
+                coverage = parameters.get("coverage")
+                ids = parameters.get("ids")
+                path, time = navigate(center_latlon, gridSpacing, coverage, ids)
+                result = path
+                response.body["time"] = time
 
         if msg == "loiter":
             stop_socket()

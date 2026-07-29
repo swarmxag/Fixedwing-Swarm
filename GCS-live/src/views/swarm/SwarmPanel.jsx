@@ -32,6 +32,7 @@ import {
   DownloadMissionTrue,
   setMissionFromServer,
 } from '~/features/uavs/details';
+import { ConnectionState } from '~/model/enums';
 
 // const SwarmPanel = ({
 //   selectedUAVIds,
@@ -85,6 +86,26 @@ const SwarmPanel = ({
   connection,
   onOpen,
 }) => {
+  useEffect(() => {
+    if (connection !== ConnectionState.CONNECTED) {
+      return;
+    }
+
+    (async () => {
+      try {
+        const res = await messageHub.sendMessage({
+          type: 'X-UAV-socket',
+          message: 'check_origin',
+        });
+        if (res?.body?.message === 'origin_not_set') {
+          dispatch(showError('Origin/Geofence not set on the server — draw a geofence before sending commands'));
+        }
+      } catch (e) {
+        // Best-effort startup check; a failure here shouldn't block the panel.
+      }
+    })();
+  }, [connection]);
+
   const handleFenceMission = async () => {
     const featuresInMap = selectedFeatureIds.map((i) => {
       return getFeatureBySelected(i);
@@ -252,6 +273,11 @@ const SwarmPanel = ({
         coords: data.points,
         ...socketData,
       });
+
+      if (res?.body?.message === 'origin_not_set') {
+        dispatch(showError('Draw a geofence (Set Origin) before sending this command'));
+        return;
+      }
 
       if (Boolean(res.body.message)) {
         dispatch(

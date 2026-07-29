@@ -2,7 +2,7 @@ import numpy as np
 from scipy.interpolate import CubicSpline
 DEFAULT_NEIGHBOURHOOD_VAL = 100 #neighbourhood radius
 DEFAULT_SIZE = 1.5 #Radius of chassis
-MAX_SPEED = 1.6  #2 for speed 20
+MAX_SPEED = 2  #2 for speed 20
 MAX_ANGULAR = 0.3
 DEFAULT_STATE=0
 SEARCH_STATE=2
@@ -85,7 +85,7 @@ class Bot:
 
         return neighbours
 
-    def step(self, step_size=0.070):  # 0.085 speed 20
+    def step(self, step_size=0.085):  # 0.085 speed 20
         x_ = self.x + step_size * np.cos(self.theta)
         y_ = self.y + step_size * np.sin(self.theta)
 

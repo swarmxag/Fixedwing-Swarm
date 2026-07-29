@@ -71,7 +71,7 @@ class TrioSocket:
     #                 print()
 
     async def udp_listener(self):
-        listen_addr = ("192.168.2.103", 6000)
+        listen_addr = ("192.168.2.135", 6000)
         # Create a UDP socket
         await self.sock.bind(listen_addr)
         print("UDP 6000")
