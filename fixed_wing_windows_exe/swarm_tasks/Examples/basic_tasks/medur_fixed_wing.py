@@ -2247,16 +2247,18 @@ while(1):
 			        coverage_area=msg_parts[4]
 			        coverage_area = json.loads(coverage_area)
 			        print('coverage_area',coverage_area)
-			        # Full-coverage gate: every currently-connected UAV (pos_array)
-			        # must be assigned to exactly one group and vice versa -- the
-			        # mission loop below reads uav_{pos_array[i]}_path.csv for every
-			        # i in pos_array, so a connected UAV left out of every group
-			        # would crash that lookup mid-mission.
+			        # Subset gate: assigned UAVs must be a non-empty subset of
+			        # the currently-connected pos_array -- they no longer have
+			        # to cover every connected UAV, so some can be left out
+			        # for a separate command. selected_uav_ids/selected_indexes
+			        # (set below) gate the shared csv_file_paths/movement-loop
+			        # code further down so only these indexes are touched.
 			        assigned_uav_ids = [int(u) for group in uav_array for u in group]
-			        if set(assigned_uav_ids) != set(pos_array):
-			            print('[specificsplit] rejected: group assignment', set(assigned_uav_ids), '!= connected pos_array', set(pos_array))
+			        if not assigned_uav_ids or not set(assigned_uav_ids).issubset(set(pos_array)):
+			            print('[specificsplit] rejected: group assignment', set(assigned_uav_ids), 'not a subset of connected pos_array', set(pos_array))
 			            continue
 			        else:
+			            selected_uav_ids = assigned_uav_ids
 			            split = SpecificSplitMission(origin=origin,center_lat_lons=center_lat_lon_array, drone_array = uav_array, grid_spacing=grid_space,
                                      coverage_area=coverage_area)
 			            isDone = split.GroupSplitting(
@@ -2275,8 +2277,8 @@ while(1):
 			        print('msg_parts',msg_parts,len(msg_parts))
 			        f = msg_parts[0]  # First coordinate pair
 			        # msg_parts[2] is the operator's actual UAV-id selection from the
-			        # GCS (not just a headcount) -- honored below, gated on it
-			        # matching the swarm computer's own live pos_array exactly.
+			        # GCS (not just a headcount) -- honored below, gated as a
+			        # subset of the swarm computer's own live pos_array.
 			        selected_uav_ids = [int(u) for u in json.loads(msg_parts[2])]
 			        grid_space=msg_parts[3]
 			        grid_space = json.loads(grid_space)
@@ -2284,8 +2286,8 @@ while(1):
 			        coverage_area = json.loads(coverage_area)
 			        center_lat_lon_array = msg_parts[1]  # All other coordinates
 			        center_lat_lon_array = json.loads(center_lat_lon_array)
-			        if set(selected_uav_ids) != set(pos_array):
-			            print('[split] rejected: GCS selection', set(selected_uav_ids), '!= connected pos_array', set(pos_array))
+			        if not selected_uav_ids or not set(selected_uav_ids).issubset(set(pos_array)):
+			            print('[split] rejected: GCS selection', set(selected_uav_ids), 'not a subset of connected pos_array', set(pos_array))
 			            continue
 			        else:
 			            split = AutoSplitMission(origin=origin,center_lat_lons=center_lat_lon_array, drone_list=selected_uav_ids, grid_spacing=int(grid_space),
@@ -2317,6 +2319,9 @@ while(1):
 			checkall_removed_grid_path_array_start_val=[0]*len(pos_array)
 			remove_bot_flag=False
 			remove_bot_array=[]
+			selected_indexes = selected_swarm_indexes(selected_uav_ids)
+			selected_index_set = set(selected_indexes)
+			print('[split] selected_uav_ids', selected_uav_ids, 'selected_indexes', selected_indexes)
 			if master_flag:
 				index="data"
 				uav_home_pos=[]
@@ -2354,16 +2359,18 @@ while(1):
 			if split_flag_val==0:
 				split_flag_val+=1
 				csv_file_paths=[]
-				# Both plain split (AutoSplitMission.drone_list=pos_array) and
-				# specific_split (uav_array) now write their per-drone files keyed
-				# by real UAV id, not a sequential slot -- so csv_file_paths[i]
-				# must be looked up by pos_array[i], the same id that indexes
-				# s.swarm[i]/vehicles[i] everywhere else in this loop.
-				for i in range(len(pos_array)):
-					uav_id = pos_array[i]
-					csv_file_paths.append( os.path.join(split.mission_dir, f'uav_{uav_id}_path.csv'))
-					reader = csv.reader(open(csv_file_paths[i]))
-					num_lines[i]= len(list(reader))
+				# Both plain split (AutoSplitMission.drone_list=selected_uav_ids) and
+				# specific_split (uav_array) only write per-drone files for the
+				# selected subset -- so only build/open a file for each selected
+				# bot_index (real UAV id via pos_array[bot_index]), never the
+				# full pos_array, or an unselected UAV's missing file would
+				# crash this open().
+				for path_slot, bot_index in enumerate(selected_indexes):
+					uav_id = pos_array[bot_index]
+					csv_path = os.path.join(split.mission_dir, f'uav_{uav_id}_path.csv')
+					csv_file_paths.append(csv_path)
+					reader = csv.reader(open(csv_path))
+					num_lines[bot_index] = len(list(reader))
 				print("csv_file_paths",csv_file_paths,num_lines)
 			removed_grid_path_array_index=0
 			my_seq = _last_seq
@@ -2379,19 +2386,27 @@ while(1):
 					print(x)
 				if(remove_bot_flag):
 					print("remove_bot_flag",remove_bot_flag)
-					for m in remove_bot_array:
-					    print("LLLLLL",remove_bot_array,m)
-					    removed_uav_grid.append(all_uav_csv_grid_array.pop(m))
-					    removed_grid_path_length.append(grid_path_array.pop(m))
+					removed_indexes = sorted(remove_bot_array, reverse=True)
+					for m in removed_indexes:
+						print("LLLLLL",remove_bot_array,m)
+						if 0 <= m < len(all_uav_csv_grid_array):
+							removed_uav_grid.append(all_uav_csv_grid_array.pop(m))
+						if 0 <= m < len(grid_path_array):
+							removed_grid_path_length.append(grid_path_array.pop(m))
+					for removed_index in removed_indexes:
+						selected_indexes = [idx - 1 if idx > removed_index else idx for idx in selected_indexes if idx != removed_index]
+					selected_index_set = set(selected_indexes)
 					remove_bot_array=[]
-					remove_bot_flag=False 
+					remove_bot_flag=False
 					
 				if(search_step==1):
-					for i,b in enumerate(s.swarm):
-						all_uav_csv_grid_array[i]=csv_file_paths[i]
+					for path_slot, bot_index in enumerate(selected_indexes):
+						all_uav_csv_grid_array[bot_index]=csv_file_paths[path_slot]
 					print("all_uav_csv_grid_array",all_uav_csv_grid_array)
 					search_step+=1
 				for i,b in enumerate(s.swarm):
+					if i not in selected_index_set:
+						continue
 					if i in active_goal_tasks:
 						diverted_indexes.add(i)
 					if i in diverted_indexes:
@@ -2402,9 +2417,9 @@ while(1):
 					else:
 					    #print("length oflen(checkall_removed_grid_path_array_start_val",len(checkall_removed_grid_path_array_start_val))
 					    pass
-					if all(x >= int(num_lines[i]) for x in grid_path_array) and removed_grid_path_length!=[] and not removed_grid_path_array_flag:
+					if all(grid_path_array[x] >= int(num_lines[i]) for x in selected_indexes) and removed_grid_path_length!=[] and not removed_grid_path_array_flag:
 						print("removed_grid_path_length",removed_grid_path_length)						
-						allocation,remaining_points_list  = allocate_drones(int(num_lines[i]), removed_grid_path_length, len(pos_array))
+						allocation,remaining_points_list  = allocate_drones(int(num_lines[i]), removed_grid_path_length, len(selected_indexes))
 						print("allocation,remaining_points_list",allocation,remaining_points_list)						
 						for x,v in enumerate(remaining_points_list):
 						    print("x",x)
@@ -2440,7 +2455,7 @@ while(1):
 						print("removed_grid_path_array!!!!!",removed_grid_path_array,removed_grid_path_array_start_val,removed_grid_filename)
 						removed_grid_path_array_flag=True
 						
-					if all(x >= int(num_lines[i]) for x in grid_path_array) and not removed_grid_path_length!=[]:
+					if all(grid_path_array[x] >= int(num_lines[i]) for x in selected_indexes) and not removed_grid_path_length!=[]:
 						landing_flag=True
 					if(removed_grid_path_array_flag):						
 						if(removed_grid_path_array_start_val[i]==0):

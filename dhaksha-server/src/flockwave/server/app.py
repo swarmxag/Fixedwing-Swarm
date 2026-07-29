@@ -1462,15 +1462,15 @@ class SkybrushServer(DaemonApp):
                     gridSpacing = parameters.get("gridSpacing")
                     coverage = parameters.get("coverage")
                     print(f"[groupsplit] coords={coords} ids={selectedIds} grid={gridSpacing} coverage={coverage}")
-                    # Full-coverage gate: the swarm computer splits the area across
-                    # exactly this id list, so it must match the currently-connected
-                    # UAVs one-to-one -- otherwise the mission it flies would silently
-                    # diverge from what the operator selected here.
+                    # Subset gate: the selection must be a non-empty subset of the
+                    # currently-connected UAVs -- it no longer has to be all of
+                    # them, so a 2-of-3 split leaves the 3rd UAV free for a
+                    # separate command (goal/search/another split) afterward.
                     connected_ids = {
                         int(uav_id) for uav_id in self.object_registry.ids_by_type(UAV)
                     }
-                    if set(selectedIds) != connected_ids:
-                        print(f"[groupsplit] rejected: selection {set(selectedIds)} != connected {connected_ids}")
+                    if not selectedIds or not set(selectedIds).issubset(connected_ids):
+                        print(f"[groupsplit] rejected: selection {set(selectedIds)} not a subset of connected {connected_ids}")
                         result = "uav_selection_mismatch"
                     else:
                         result = splitmission(
@@ -1508,15 +1508,16 @@ class SkybrushServer(DaemonApp):
                             value[i] = int(value[i])
                         uavs.append(value)
                     print(f"[spificsplit] latlon={latlon} uavs={uavs} grid={gridSpacing} coverage={coverage}")
-                    # Full-coverage gate: every currently-connected UAV must be
-                    # assigned to exactly one group, and vice versa -- same
-                    # reasoning as the groupsplit gate above.
-                    assigned_ids = {uav_id for grp in uavs for uav_id in grp}
+                    # Subset gate: assigned UAVs must be a non-empty subset of
+                    # the connected UAVs and each UAV assigned to at most one
+                    # group -- they no longer have to cover every connected
+                    # UAV, so some can be left out for a separate command.
+                    assigned_ids = [uav_id for grp in uavs for uav_id in grp]
                     connected_ids = {
                         int(uav_id) for uav_id in self.object_registry.ids_by_type(UAV)
                     }
-                    if assigned_ids != connected_ids:
-                        print(f"[spificsplit] rejected: assignment {assigned_ids} != connected {connected_ids}")
+                    if not assigned_ids or len(assigned_ids) != len(set(assigned_ids)) or not set(assigned_ids).issubset(connected_ids):
+                        print(f"[spificsplit] rejected: assignment {assigned_ids} not a valid subset of connected {connected_ids}")
                         result = "uav_coverage_mismatch"
                     else:
                         path, time = specificsplit(latlon, uavs, gridSpacing, coverage)
