@@ -30,7 +30,7 @@ class Simulation:
 			self.env = envs.world.World(filename=env_name+'.yaml')
 			self.env_name = env_name
 
-		print("self.env.size",self.env.size)
+		#print("self.env.size",self.env.size)
 		#Set simulation parameters based on world and robots
 		self.size = self.env.size
 		

@@ -1295,12 +1295,19 @@ class SkybrushServer(DaemonApp):
                 print("[origin reminder] Set Origin/Geofence before sending search")
                 result = "origin_not_set"
             else:
-                stop_socket()
-                await sleep(1)
+                # requested_ids non-empty means the operator targeted a specific
+                # UAV subset -- skip stop_socket() (broadcasts stop to everyone)
+                # so the rest of the swarm's current mission is left alone, and
+                # size the search grid for just that subset instead of every
+                # connected UAV.
+                requested_ids = [int(uav_id) for uav_id in parameters.get("ids", [])]
+                ids = requested_ids or [int(uav_id) for uav_id in app.object_registry.ids_by_type(UAV)]
+                if not requested_ids:
+                    stop_socket()
+                    await sleep(1)
                 points = parameters.get("coords")
                 gridSpacing = parameters.get("gridSpacing")
                 coverage = parameters.get("coverage")
-                ids = list(app.object_registry.ids_by_type(UAV))
                 path, time_min = search_socket(points, gridSpacing, coverage, ids)
                 result = path
                 response.body["time"] = time_min
@@ -1342,14 +1349,22 @@ class SkybrushServer(DaemonApp):
                 print("[origin reminder] Set Origin/Geofence before sending goal")
                 result = "origin_not_set"
             else:
-                stop_socket()
-                await sleep(1)
+                # requested_ids non-empty means the operator targeted a specific
+                # UAV subset (e.g. just UAV3) rather than the whole swarm -- in
+                # that case skip stop_socket(), which broadcasts a stop to every
+                # connected vehicle, so the rest of the swarm's current mission
+                # is left alone. The swarm computer's goal-task runner handles
+                # this subset concurrently instead of preempting anything.
+                requested_ids = [int(uav_id) for uav_id in parameters.get("ids", [])]
+                if not requested_ids:
+                    stop_socket()
+                    await sleep(1)
                 dir = parameters.get("Direction", "")
                 direction = (
                     1 if parameters.get("Direction", "").lower().startswith("c") else -1
                 )
                 result = goal_socket(
-                    parameters.get("coords"), direction, parameters.get("radius")
+                    parameters.get("coords"), direction, parameters.get("radius"), requested_ids
                 )
 
         if msg == "home_goto":

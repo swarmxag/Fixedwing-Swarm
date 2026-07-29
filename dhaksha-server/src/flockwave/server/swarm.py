@@ -648,6 +648,7 @@ def takeoff_socket(alt):
 def search_socket(points, gridspacing, coverage, ids):
     global master_udp, origin
     # global udp_socket,server_address1,server_address2,udp_socket2
+    ids = ids or []
     print("Searching........")
     # udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     for num in points:
@@ -664,8 +665,10 @@ def search_socket(points, gridspacing, coverage, ids):
         + str(gridspacing)
         + ","
         + json.dumps(coverage)
+        + ","
+        + json.dumps(ids)
     )
-    print(points, len(ids), gridspacing, coverage)
+    print(points, len(ids), gridspacing, coverage, ids)
     master_udp.sendto(data.encode(), adderss.get(2))
     curve = BezierCurve(
         origin=origin,
@@ -1054,11 +1057,22 @@ def specific_bot_goal_socket(drone_num, goal_num):
     return True
 
 
-def goal_socket(goal_num, direction, radius):
+def goal_socket(goal_num, direction, radius, ids=None):
     print("***Group goal*****!!!!!")
+    ids = ids or []
     for num in goal_num:
         num.reverse()
-    data = str("goal" + "_" + str(goal_num) + "_" + str(direction) + "_" + str(radius))
+    data = str(
+        "goal"
+        + "_"
+        + json.dumps(goal_num)
+        + "_"
+        + str(direction)
+        + "_"
+        + str(radius)
+        + "_"
+        + json.dumps(ids)
+    )
     print("d", data)
     master_udp.sendto(data.encode(), adderss.get(2))
     # udp_socket.sendto(str(d).encode(), server_address1)
