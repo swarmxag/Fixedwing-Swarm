@@ -44,3 +44,5 @@ export const valueExists = (state, listTocheck) =>
   listTocheck.some((value) =>
     Object.values(state.socket.group).some((arr) => arr.includes(value))
   );
+
+export const getMissionByUav = (state) => state.socket.missionByUav;

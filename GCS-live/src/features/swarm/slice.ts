@@ -4,6 +4,10 @@ import { noPayload } from '~/utils/redux';
 type Group = {
   [k: string]: string[];
 };
+type MissionByUav = {
+  [uavId: string]: Array<[number, number]>;
+};
+
 interface SwarmSlice {
   coverage: number;
   gridSpacing: number;
@@ -17,6 +21,7 @@ interface SwarmSlice {
   selectedTab: 'Create' | 'Delete' | 'View Groups';
   time: number;
   timerRunning: boolean;
+  missionByUav: MissionByUav;
 }
 
 const initialState: SwarmSlice = {
@@ -32,6 +37,7 @@ const initialState: SwarmSlice = {
   selectedTab: 'Create',
   time: 0,
   timerRunning: false,
+  missionByUav: {},
 };
 
 const { actions, reducer } = createSlice({
@@ -86,6 +92,17 @@ const { actions, reducer } = createSlice({
     setTimerRunning: (state, action: PayloadAction<boolean>) => {
       state.timerRunning = action.payload;
     },
+    // Merges (not replaces) so a search response for UAV2 and a split
+    // response for UAV1+UAV3 both stay on the map at once -- each only
+    // overwrites the specific UAV ids present in its own payload, so a
+    // UAV keeps showing its last route until it's actually given a new
+    // command of its own.
+    mergeMissionForUavs(state, action: PayloadAction<MissionByUav>) {
+      state.missionByUav = { ...state.missionByUav, ...action.payload };
+    },
+    clearMissionByUav: noPayload<SwarmSlice>((state) => {
+      state.missionByUav = {};
+    }),
   },
 });
 
@@ -103,6 +120,8 @@ export const {
   resetGroup,
   setTime,
   setTimerRunning,
+  mergeMissionForUavs,
+  clearMissionByUav,
 } = actions;
 
 export default reducer;

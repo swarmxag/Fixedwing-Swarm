@@ -62,6 +62,7 @@ import {
   getLoadMissionState,
   getMissionFromServer,
 } from '~/features/uavs/details';
+import { getMissionByUav } from '~/features/swarm/selectors';
 import store from '~/store';
 import { MessageSemantics } from '~/features/snackbar/types';
 import { showNotification } from '~/features/snackbar/slice';
@@ -345,6 +346,7 @@ const MissionInfoVectorSource = ({
   uavIdsForTrajectories,
   loadMission,
   missionArray,
+  missionByUav,
 }) => {
   const features = [];
 
@@ -518,6 +520,37 @@ const MissionInfoVectorSource = ({
     }
   }
 
+  // Per-UAV overlay for parallel swarm-panel commands (search/split running
+  // on different UAV subsets at once). Gated on the same loadMission toggle
+  // as the block above ("show Trajectory" button) so one button reliably
+  // shows/hides everything -- previously this rendered unconditionally,
+  // which meant clicking "show Trajectory" again to hide it left this
+  // overlay visible regardless.
+  if (loadMission && missionByUav && Object.keys(missionByUav).length > 0) {
+    const uavColors = [
+      '#cd5c5c',
+      '#ffa500',
+      '#40e0d0',
+      '#ff7f50',
+      '#87cefa',
+      '#da70d6',
+      '#32cd32',
+      '#6495ed',
+      '#ff69b4',
+      '#ba55d3',
+    ];
+    Object.entries(missionByUav).forEach(([uavId, coordinates], index) => {
+      features.push(
+        <MissionDownload
+          coords={uavId}
+          color={uavColors[index % uavColors.length]}
+          key={`missiondownload.uav.${uavId}`}
+          coordinates={coordinates}
+        />
+      );
+    });
+  }
+
   if (
     Array.isArray(missionSlotIdsForTrajectories) &&
     missionSlotIdsForTrajectories.length > 0
@@ -601,6 +634,7 @@ export const MissionInfoLayer = connect(
       : undefined,
     loadMission: getLoadMissionState(state),
     missionArray: getMissionFromServer(state),
+    missionByUav: getMissionByUav(state),
   }),
   // mapDispatchToProps
   {}

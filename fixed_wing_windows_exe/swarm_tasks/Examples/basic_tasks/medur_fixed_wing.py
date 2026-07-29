@@ -368,6 +368,90 @@ def handle_concurrent_goal_command(command_data):
 		return False
 
 
+def start_search_mission(decoded_index):
+	"""Parses a 'search,...' command and registers it as a background
+	mission task for whichever UAV subset it targets, without touching
+	the foreground dispatch loop. Only used for the concurrent-intercept
+	path (search arriving while something else is already running) --
+	a fresh top-level search dispatch still uses its own foreground loop,
+	unchanged."""
+	msg_parts = decoded_index.split(",", 6)
+	selected_uav_raw = msg_parts[6] if len(msg_parts) > 6 else None
+	f, center_lat, center_lon, num_uavs, grid_space, coverage_area = msg_parts[:6]
+	selected_uav_ids = parse_selected_uav_ids(selected_uav_raw)
+	if not selected_uav_ids:
+		return False
+	selected_indexes = selected_swarm_indexes(selected_uav_ids)
+	effective_num_uavs = max(1, len(selected_indexes))
+	curve = BezierCurveMultiple(origin, float(center_lat), float(center_lon), effective_num_uavs, int(grid_space), int(coverage_area))
+	curve.GridFormation()
+	curve.generate_bezier_curve()
+	csv_paths_by_index = {}
+	for path_slot, bot_index in enumerate(selected_indexes):
+		csv_paths_by_index[bot_index] = os.path.join(curve.mission_dir, f'drone_{path_slot + 1}_path.csv')
+	assign_mission_tasks(csv_paths_by_index, "search")
+	print('[concurrent search] accepted during running mission', selected_uav_ids, selected_indexes)
+	return True
+
+
+def start_split_mission(decoded_index):
+	"""Parses a 'split,...' or 'specificsplit,...' command and registers it
+	as a background mission task for whichever UAV subset it targets, same
+	concurrent-intercept-only role as start_search_mission above."""
+	if decoded_index.startswith("specificsplit"):
+		msg_parts = decoded_index.split('_')
+		center_lat_lon_array = json.loads(msg_parts[1])
+		uav_array = json.loads(msg_parts[2])
+		grid_space = json.loads(msg_parts[3])
+		coverage_area = json.loads(msg_parts[4])
+		assigned_uav_ids = [int(u) for group in uav_array for u in group]
+		if not assigned_uav_ids or not set(assigned_uav_ids).issubset(set(pos_array)):
+			print('[concurrent specificsplit] rejected: group assignment', set(assigned_uav_ids), 'not a subset of connected pos_array', set(pos_array))
+			return False
+		selected_uav_ids = assigned_uav_ids
+		split = SpecificSplitMission(origin=origin, center_lat_lons=center_lat_lon_array, drone_array=uav_array, grid_spacing=grid_space, coverage_area=coverage_area)
+		split.GroupSplitting(center_lat_lons=center_lat_lon_array, drone_array=uav_array, grid_spacing=grid_space, coverage_area=coverage_area)
+	else:
+		msg_parts = decoded_index.split('_')
+		selected_uav_ids = [int(u) for u in json.loads(msg_parts[2])]
+		grid_space = json.loads(msg_parts[3])
+		coverage_area = json.loads(msg_parts[4])
+		center_lat_lon_array = json.loads(msg_parts[1])
+		if not selected_uav_ids or not set(selected_uav_ids).issubset(set(pos_array)):
+			print('[concurrent split] rejected: GCS selection', set(selected_uav_ids), 'not a subset of connected pos_array', set(pos_array))
+			return False
+		split = AutoSplitMission(origin=origin, center_lat_lons=center_lat_lon_array, drone_list=selected_uav_ids, grid_spacing=int(grid_space), coverage_area=int(coverage_area))
+		split.GroupSplitting(center_lat_lons=center_lat_lon_array, num_of_drones=len(selected_uav_ids), grid_spacing=int(grid_space), coverage_area=int(coverage_area))
+	selected_indexes = selected_swarm_indexes(selected_uav_ids)
+	csv_paths_by_index = {}
+	for bot_index in selected_indexes:
+		uav_id = pos_array[bot_index]
+		csv_paths_by_index[bot_index] = os.path.join(split.mission_dir, f'uav_{uav_id}_path.csv')
+	assign_mission_tasks(csv_paths_by_index, "split")
+	print('[concurrent split] accepted during running mission', selected_uav_ids, selected_indexes)
+	return True
+
+
+def handle_concurrent_search_command(command_data):
+	if not command_data.startswith(b"search"):
+		return False
+	try:
+		return start_search_mission(command_data.decode('utf-8'))
+	except Exception as e:
+		print("[concurrent search] failed", e)
+		return False
+
+
+def handle_concurrent_split_command(command_data):
+	if not (command_data.startswith(b"split") or command_data.startswith(b"specificsplit")):
+		return False
+	try:
+		return start_split_mission(command_data.decode('utf-8'))
+	except Exception as e:
+		print("[concurrent split] failed", e)
+		return False
+
+
 def connection_string_for_sysid(sys_id):
 	if int(sys_id) not in port_dict:
 		raise KeyError(f"SYS_ID {sys_id} not found in port_dict")
@@ -580,12 +664,20 @@ def handle_concurrent_add_command(command_data):
 
 def check_for_new_command(started_seq):
     """Call once per iteration inside an interruptible mission loop.
-    Selected goal commands (and add/remove) are handled concurrently
-    without preempting the running mission; any other newer command
-    still preempts it via MissionPreempted."""
+    Selected goal/search/split commands (and add/remove) targeting a
+    specific UAV subset are handled concurrently without preempting the
+    running mission; any other newer command (or one with no subset,
+    i.e. targeting the whole swarm) still preempts it via
+    MissionPreempted."""
     global _handled_concurrent_command_seq, _last_seq
     if _pending_command.seq > started_seq:
-        if _pending_command.seq > _handled_concurrent_command_seq and (handle_concurrent_goal_command(_pending_command.data) or handle_concurrent_remove_command(_pending_command.data) or handle_concurrent_add_command(_pending_command.data)):
+        if _pending_command.seq > _handled_concurrent_command_seq and (
+            handle_concurrent_goal_command(_pending_command.data)
+            or handle_concurrent_search_command(_pending_command.data)
+            or handle_concurrent_split_command(_pending_command.data)
+            or handle_concurrent_remove_command(_pending_command.data)
+            or handle_concurrent_add_command(_pending_command.data)
+        ):
             _handled_concurrent_command_seq = _pending_command.seq
             _last_seq = _pending_command.seq
             return None
@@ -1029,10 +1121,38 @@ def assign_goal_tasks(selected_indexes, goal_xy):
 	with active_goal_tasks_lock:
 		for bot_index in selected_indexes:
 			active_goal_tasks[bot_index] = {
+				"type": "goal",
 				"goals": list(goal_xy),
 				"goal_index": 0,
 			}
 	print("[goal-task] assigned", selected_indexes, goal_xy)
+
+
+def assign_mission_tasks(csv_paths_by_index, label):
+	"""Registers a waypoint-follow task (used by search and split) for each
+	given bot index, keyed by its own per-drone CSV file. Runs in the same
+	background thread/dict as goal tasks, so a search or split assigned to
+	one UAV subset progresses independently of whatever goal/search/split
+	the rest of the swarm is doing -- assigning any task type to a bot
+	index simply overwrites whatever task (of any type) that index had
+	before, matching the "new command terminates the old one, never
+	resumes it" behavior goal already has."""
+	with active_goal_tasks_lock:
+		for bot_index, csv_path in csv_paths_by_index.items():
+			try:
+				with open(csv_path, 'rt') as f:
+					num_lines = sum(1 for _ in csv.reader(f))
+			except Exception as e:
+				print(f"[{label}-task] failed to read {csv_path}: {e}")
+				continue
+			active_goal_tasks[bot_index] = {
+				"type": "mission",
+				"label": label,
+				"csv_path": csv_path,
+				"line_index": 0,
+				"num_lines": num_lines,
+			}
+	print(f"[{label}-task] assigned", csv_paths_by_index)
 
 
 def remove_goal_task_index(removed_index):
@@ -1048,12 +1168,78 @@ def remove_goal_task_index(removed_index):
 	print("[goal-task] compacted after remove", removed_index, sorted(active_goal_tasks.keys()))
 
 
+def _drive_goal_task(i, b, task, completed):
+	goals = task.get("goals", [])
+	goal_index = task.get("goal_index", 0)
+	if goal_index >= len(goals):
+		completed.append(i)
+		return
+	goal_position = goals[goal_index]
+	dx = abs(goal_position[0] - b.x)
+	dy = abs(goal_position[1] - b.y)
+	if dx <= 5 and dy <= 5:
+		goal_index += 1
+		if goal_index >= len(goals):
+			completed.append(i)
+			print("[goal-task] completed UAV", pos_array[i])
+			return
+		with active_goal_tasks_lock:
+			if i in active_goal_tasks:
+				active_goal_tasks[i]["goal_index"] = goal_index
+		goal_position = goals[goal_index]
+	b.set_goal(goal_position[0], goal_position[1])
+	cmd = cvg.goal_area_cvg(i, b, goal_position)
+	cmd.exec(b)
+	_drive_vehicle_towards(i, b)
+
+
+def _drive_mission_task(i, b, task, completed):
+	line_index = task.get("line_index", 0)
+	num_lines = task.get("num_lines", 0)
+	label = task.get("label", "mission")
+	if line_index >= num_lines:
+		completed.append(i)
+		print(f"[{label}-task] completed UAV", pos_array[i])
+		return
+	try:
+		goal_lat_lon = read_specific_line(task["csv_path"], line_index)
+	except Exception as e:
+		print(f"[{label}-task] read failed", task.get("csv_path"), e)
+		completed.append(i)
+		return
+	goal_position = (goal_lat_lon[0][0], goal_lat_lon[0][1])
+	cmd = cvg.goal_area_cvg(i, b, goal_position)
+	dx = abs(goal_position[0] - b.x)
+	dy = abs(goal_position[1] - b.y)
+	if dx <= 2 and dy <= 2:
+		line_index += 1
+		with active_goal_tasks_lock:
+			if i in active_goal_tasks:
+				active_goal_tasks[i]["line_index"] = line_index
+	cmd.exec(b)
+	_drive_vehicle_towards(i, b)
+
+
+def _drive_vehicle_towards(i, b):
+	if master_flag and i < len(vehicles):
+		current_position = (b.x * 2, b.y * 2)
+		lat, lon = locatePosition.cartToGeo(origin, endDistance, current_position)
+		if same_alt_flag:
+			point1 = LocationGlobalRelative(lat, lon, same_height)
+		else:
+			point1 = LocationGlobalRelative(lat, lon, different_height[i])
+		vehicles[i].simple_goto(point1)
+
+
 def _goal_task_runner():
 	"""Background thread, independent of the main command-dispatch loop.
 	Continuously drives whichever bot indexes have an active_goal_tasks
-	entry, so a goal assigned to one UAV keeps progressing regardless of
-	whatever search/split/navigate mission the rest of the swarm is
-	running in the main loop."""
+	entry (goal, search, or split), so any command assigned to a UAV
+	subset keeps progressing regardless of what the rest of the swarm is
+	doing. There is no foreground "current mission" for these three
+	command types anymore -- check_for_new_command/MissionPreempted is
+	only reached by whatever hasn't been generalized this way yet
+	(navigate, home, etc.)."""
 	while True:
 		time.sleep(sleep_times.get(len(pos_array), 0.1))
 		try:
@@ -1066,40 +1252,26 @@ def _goal_task_runner():
 				if i >= len(s.swarm) or i >= len(pos_array):
 					completed.append(i)
 					continue
-				goals = task.get("goals", [])
-				goal_index = task.get("goal_index", 0)
-				if goal_index >= len(goals):
-					completed.append(i)
-					continue
 				b = s.swarm[i]
-				goal_position = goals[goal_index]
-				dx = abs(goal_position[0] - b.x)
-				dy = abs(goal_position[1] - b.y)
-				if dx <= 5 and dy <= 5:
-					goal_index += 1
-					if goal_index >= len(goals):
-						completed.append(i)
-						print("[goal-task] completed UAV", pos_array[i])
-						continue
-					with active_goal_tasks_lock:
-						if i in active_goal_tasks:
-							active_goal_tasks[i]["goal_index"] = goal_index
-					goal_position = goals[goal_index]
-				b.set_goal(goal_position[0], goal_position[1])
-				cmd = cvg.goal_area_cvg(i, b, goal_position)
-				cmd.exec(b)
-				if master_flag and i < len(vehicles):
-					current_position = (b.x * 2, b.y * 2)
-					lat, lon = locatePosition.cartToGeo(origin, endDistance, current_position)
-					if same_alt_flag:
-						point1 = LocationGlobalRelative(lat, lon, same_height)
-					else:
-						point1 = LocationGlobalRelative(lat, lon, different_height[i])
-					vehicles[i].simple_goto(point1)
+				if task.get("type") == "mission":
+					_drive_mission_task(i, b, task, completed)
+				else:
+					_drive_goal_task(i, b, task, completed)
 			if completed:
 				with active_goal_tasks_lock:
 					for i in completed:
 						active_goal_tasks.pop(i, None)
+			# NOTE: deliberately does not call gui.update() here.
+			# matplotlib's default Tk backend is not thread-safe -- all GUI
+			# calls must happen on the thread that created the figure
+			# (the main thread, via a foreground search/split/navigate
+			# loop's own gui.update() calls). Calling it from this
+			# background thread throws "Calling Tcl from different
+			# apartment"/"main thread is not in main loop" every cycle.
+			# Consequence: a UAV running purely as a background concurrent
+			# task, with nothing currently occupying a foreground loop,
+			# won't visibly move on the plot until some foreground loop's
+			# own gui.update() call happens to run again.
 		except Exception as e:
 			print("[goal-task] runner exception", e)
 

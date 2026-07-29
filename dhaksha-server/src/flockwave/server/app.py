@@ -1311,6 +1311,15 @@ class SkybrushServer(DaemonApp):
                 path, time_min = search_socket(points, gridSpacing, coverage, ids)
                 result = path
                 response.body["time"] = time_min
+                # Tags each drone's path with its actual UAV id (path[i] is
+                # assumed to correspond to ids[i], same order both were
+                # generated in) so the UI can merge this into a per-UAV
+                # overlay instead of replacing whatever other UAVs are
+                # currently showing -- separate from "message"/"result"
+                # above so nothing that already reads that field breaks.
+                response.body["missionByUav"] = {
+                    str(uav_id): path[i] for i, uav_id in enumerate(ids) if i < len(path)
+                }
 
         if msg == "aggregate":
             result = aggregate_socket()
@@ -1416,6 +1425,9 @@ class SkybrushServer(DaemonApp):
                 path, time = navigate(center_latlon, gridSpacing, coverage, ids)
                 result = path
                 response.body["time"] = time
+                response.body["missionByUav"] = {
+                    str(uav_id): path[i] for i, uav_id in enumerate(ids or []) if i < len(path)
+                }
 
         if msg == "loiter":
             stop_socket()
@@ -1454,8 +1466,6 @@ class SkybrushServer(DaemonApp):
                 import traceback
 
                 try:
-                    stop_socket()
-                    await sleep(1)
                     coords = parameters.get("coords")
                     selectedIds = [int(uav_id) for uav_id in parameters.get("ids")]
                     log.warning(coords)
@@ -1469,6 +1479,12 @@ class SkybrushServer(DaemonApp):
                     connected_ids = {
                         int(uav_id) for uav_id in self.object_registry.ids_by_type(UAV)
                     }
+                    # Only broadcast stop (affects every connected UAV) when this
+                    # split actually covers the whole swarm -- a partial subset
+                    # must leave everyone else's current mission alone.
+                    if set(selectedIds) == connected_ids:
+                        stop_socket()
+                        await sleep(1)
                     if not selectedIds or not set(selectedIds).issubset(connected_ids):
                         print(f"[groupsplit] rejected: selection {set(selectedIds)} not a subset of connected {connected_ids}")
                         result = "uav_selection_mismatch"
@@ -1479,6 +1495,9 @@ class SkybrushServer(DaemonApp):
                             coverage=coverage,
                             gridspace=gridSpacing,
                         )
+                        response.body["missionByUav"] = {
+                            str(uav_id): result[i] for i, uav_id in enumerate(selectedIds) if i < len(result)
+                        }
                         print("[groupsplit] splitmission() returned, UDP sent")
                 except Exception:
                     print("[groupsplit] EXCEPTION:")
@@ -1492,8 +1511,6 @@ class SkybrushServer(DaemonApp):
                 import traceback
 
                 try:
-                    stop_socket()
-                    await sleep(1)
                     group = parameters.get("groups")
                     coverage = parameters.get("coverage")
                     gridSpacing = parameters.get("gridSpacing")
@@ -1516,6 +1533,11 @@ class SkybrushServer(DaemonApp):
                     connected_ids = {
                         int(uav_id) for uav_id in self.object_registry.ids_by_type(UAV)
                     }
+                    # Only broadcast stop (affects every connected UAV) when this
+                    # assignment actually covers the whole swarm.
+                    if set(assigned_ids) == connected_ids:
+                        stop_socket()
+                        await sleep(1)
                     if not assigned_ids or len(assigned_ids) != len(set(assigned_ids)) or not set(assigned_ids).issubset(connected_ids):
                         print(f"[spificsplit] rejected: assignment {assigned_ids} not a valid subset of connected {connected_ids}")
                         result = "uav_coverage_mismatch"
@@ -1524,6 +1546,13 @@ class SkybrushServer(DaemonApp):
                         print("[spificsplit] specificsplit() returned, UDP sent")
                         result = path
                         response.body["time"] = time
+                        # Assumes path[i] corresponds to assigned_ids[i] (flattened
+                        # group order) -- same one-file-per-UAV convention the
+                        # swarm computer already uses (uav_{id}_path.csv). Please
+                        # verify this pairing on the bench.
+                        response.body["missionByUav"] = {
+                            str(uav_id): path[i] for i, uav_id in enumerate(assigned_ids) if i < len(path)
+                        }
                 except Exception:
                     print("[spificsplit] EXCEPTION:")
                     traceback.print_exc()

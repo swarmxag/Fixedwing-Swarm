@@ -25,6 +25,7 @@ import {
   changeGridSpacing,
   openGroupSplitDialog,
   setTime,
+  mergeMissionForUavs,
 } from '~/features/swarm/slice';
 import { showError } from '~/features/snackbar/actions';
 import { getLandingMissionId } from '~/features/mission/selectors';
@@ -227,6 +228,9 @@ const SwarmPanel = ({
         return;
       }
       dispatch(setMissionFromServer(res.body.message));
+      if (res?.body?.missionByUav) {
+        dispatch(mergeMissionForUavs(res.body.missionByUav));
+      }
       dispatch(
         showNotification({
           message: `${res.body.message[0].length}`,
@@ -302,6 +306,9 @@ const SwarmPanel = ({
         }
         dispatch(setMissionFromServer(res.body.message));
         dispatch(setTime(res.body.time?.toFixed(2)));
+        if (res?.body?.missionByUav) {
+          dispatch(mergeMissionForUavs(res.body.missionByUav));
+        }
       }
     } catch (e) {
       dispatch(

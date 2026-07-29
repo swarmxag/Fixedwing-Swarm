@@ -23,6 +23,7 @@ import {
   changeSelectedTab,
   resetGroup,
   setTime,
+  mergeMissionForUavs,
 } from '~/features/swarm/slice';
 // import DronePlaceholderList from '~/components/uavs/DronePlaceholderList';
 import { getUAVIdList } from '~/features/uavs/selectors';
@@ -149,7 +150,7 @@ const MultipleSelectChip = ({
       const splitErrorMessages = {
         no_fence_drawn: 'Draw a geofence (Set Origin) before splitting the group',
         uav_coverage_mismatch:
-          'Every connected UAV must be assigned to exactly one group',
+          "Group assignment isn't valid: a UAV must be connected, unassigned elsewhere, and assigned to at most one group",
         error: 'Split Mission failed on the server',
       };
       if (splitErrorMessages[res?.body?.message]) {
@@ -165,6 +166,9 @@ const MultipleSelectChip = ({
       }
       showMsg(typeof res.body.time?.toFixed(2));
       dispatch(setMissionFromServer(res.body.message));
+      if (res?.body?.missionByUav) {
+        dispatch(mergeMissionForUavs(res.body.missionByUav));
+      }
       dispatch(setTime(res.body.time?.toFixed(2)));
     } catch (err) {
       showErrorMsg(err?.message);
