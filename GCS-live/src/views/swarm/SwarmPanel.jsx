@@ -26,6 +26,8 @@ import {
   openGroupSplitDialog,
   setTime,
   mergeMissionForUavs,
+  changeBaseAltitude,
+  changeAltitudeStep,
 } from '~/features/swarm/slice';
 import { showError } from '~/features/snackbar/actions';
 import { getLandingMissionId } from '~/features/mission/selectors';
@@ -314,6 +316,41 @@ const SwarmPanel = ({
       dispatch(
         showNotification({
           message: `${message} ${e?.message} Command is Failed`,
+          semantics: MessageSemantics.ERROR,
+        })
+      );
+    }
+  };
+
+  // "different" is handled by the X-UAV-socket dispatch in app.py (which
+  // sends the swarm computer a real altitude-change UDP command and updates
+  // different_height for every subsequent mission), so this is shaped like
+  // that handler's expected params (alt/alt_diff/ids), not a generic
+  // socketData spread.
+  const onSubmitAltitude = async () => {
+    try {
+      const res = await messageHub.sendMessage({
+        type: 'X-UAV-socket',
+        message: 'different',
+        alt: socketData.baseAltitude,
+        alt_diff: socketData.altitudeStep,
+        ids: selectedUAVIds,
+      });
+
+      if (Boolean(res?.body?.message)) {
+        dispatch(
+          showNotification({
+            message: `Altitude is Successfully Changed`,
+            semantics: MessageSemantics.SUCCESS,
+          })
+        );
+      } else {
+        dispatch(showError(`Altitude change failed to send`));
+      }
+    } catch (e) {
+      dispatch(
+        showNotification({
+          message: `${e?.message} Command is Failed`,
           semantics: MessageSemantics.ERROR,
         })
       );
@@ -623,6 +660,35 @@ const SwarmPanel = ({
             onClick={() => dispatch(DownloadMissionTrue())}
           >
             show Trajectory
+          </Button>
+          <FormControl variant='standard'>
+            <InputLabel htmlFor='baseAltitude'>Base Altitude (m)</InputLabel>
+            <Input
+              name='baseAltitude'
+              type='number'
+              inputMode='numeric'
+              inputProps={{ id: 'baseAltitude' }}
+              value={socketData.baseAltitude}
+              onChange={({ target: { value } }) =>
+                dispatch(changeBaseAltitude({ baseAltitude: parseInt(value) }))
+              }
+            />
+          </FormControl>
+          <FormControl variant='standard'>
+            <InputLabel htmlFor='altitudeStep'>Altitude Step (m)</InputLabel>
+            <Input
+              name='altitudeStep'
+              type='number'
+              inputMode='numeric'
+              inputProps={{ id: 'altitudeStep' }}
+              value={socketData.altitudeStep}
+              onChange={({ target: { value } }) =>
+                dispatch(changeAltitudeStep({ altitudeStep: parseInt(value) }))
+              }
+            />
+          </FormControl>
+          <Button variant='contained' onClick={onSubmitAltitude}>
+            Change Altitude
           </Button>
         </FormControl>
       </FormGroup>

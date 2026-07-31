@@ -22,6 +22,8 @@ interface SwarmSlice {
   time: number;
   timerRunning: boolean;
   missionByUav: MissionByUav;
+  baseAltitude: number;
+  altitudeStep: number;
 }
 
 const initialState: SwarmSlice = {
@@ -38,6 +40,11 @@ const initialState: SwarmSlice = {
   time: 0,
   timerRunning: false,
   missionByUav: {},
+  // Matches medur_fixed_wing.py's hardcoded different_height default
+  // (base 300, spaced 10 apart) so the UI starts at the same values the
+  // swarm computer already assumes before any "different" command is sent.
+  baseAltitude: 300,
+  altitudeStep: 10,
 };
 
 const { actions, reducer } = createSlice({
@@ -61,6 +68,12 @@ const { actions, reducer } = createSlice({
     },
     changeSpeed(state, action: PayloadAction<{ speed: number }>) {
       state.speed = action.payload.speed;
+    },
+    changeBaseAltitude(state, action: PayloadAction<{ baseAltitude: number }>) {
+      state.baseAltitude = action.payload.baseAltitude;
+    },
+    changeAltitudeStep(state, action: PayloadAction<{ altitudeStep: number }>) {
+      state.altitudeStep = action.payload.altitudeStep;
     },
     openGroupSplitDialog: noPayload<SwarmSlice>((state) => {
       state.groupsplitDialog = true;
@@ -113,6 +126,8 @@ export const {
   changeGridSpacing,
   changeRadius,
   changeSpeed,
+  changeBaseAltitude,
+  changeAltitudeStep,
   openGroupSplitDialog,
   closeGroupSplitingDialog,
   addGroup,

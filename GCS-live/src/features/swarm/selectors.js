@@ -22,6 +22,10 @@ export const getRadius = (state) => state.socket.radius;
 
 export const getSpeed = (state) => state.socket.speed;
 
+export const getBaseAltitude = (state) => state.socket.baseAltitude;
+
+export const getAltitudeStep = (state) => state.socket.altitudeStep;
+
 export const getGrisSpacing = (state) => state.socket.gridSpacing;
 
 export const getCoverage = (state) => state.socket.coverage;

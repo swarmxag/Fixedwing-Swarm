@@ -54,7 +54,7 @@ master_flag=False
 cwd = os.getcwd()
 
 same_height=100
-different_height=[300,310,300,310,300,310,300,310,300,310]
+different_height=[200,210,220,230,240,310,300,310,300,310]
 home_height=[50,60,70,80,90,100,110,120,130,140]
 
 # try:
@@ -207,7 +207,7 @@ def get_wifi_ip(iface_map):
             for addr in ipv4_info:
                 ip = addr.get('addr')
                 if ip and (adapter == "Ethernet" or adapter=="Wi-Fi" or iface == "eth0" or iface == "ensp20" or iface == "wlan0") and ip.startswith("192.168."):
-                    return "192.168.2.135"
+                    return "192.168.2.140"
         except Exception as e:
             print(f"Error on interface {iface}: {e}")
     return None
@@ -221,7 +221,7 @@ def get_interface_mapping():
         if nic.GUID:
             mappings[nic.GUID.upper()] = nic.NetConnectionID or nic.Name
     #return get_wifi_ip(mappings)
-    return "192.168.2.135"
+    return "192.168.2.140"
 
 
 def vehicle_collision_moniter_receive():	
@@ -360,7 +360,9 @@ def handle_concurrent_goal_command(command_data):
 		for goal_point in goal_latlon:
 			x, y = locatePosition.geoToCart(origin, endDistance, [float(goal_point[0]), float(goal_point[1])])
 			goal_xy.append((x / 2, y / 2))
-		assign_goal_tasks(selected_indexes, goal_xy)
+		guided_circle_direction = msg_parts[2]
+		guided_circle_radius = msg_parts[3]
+		assign_goal_tasks(selected_indexes, goal_xy, guided_circle_radius, guided_circle_direction)
 		print("[concurrent goal] accepted during running mission", selected_uav_ids, selected_indexes)
 		return True
 	except Exception as e:
@@ -450,6 +452,130 @@ def handle_concurrent_split_command(command_data):
 	except Exception as e:
 		print("[concurrent split] failed", e)
 		return False
+
+
+def apply_different_heights(decoded_index):
+	"""Parses a 'different,{height},{step}[,{ids}]' command and updates the
+	shared different_height[] array for the targeted bot indexes (or every
+	connected UAV if no ids given). Height is computed from each bot's real
+	pos_array index (height + step*bot_index), not its position within the
+	selection, so a partial re-stagger stays consistent with the whole
+	fleet's existing layering instead of restarting from the base altitude.
+
+	Critically, this never touches (x,y)/task state for bots that already
+	have an active goal/mission/guided_circle task -- their own
+	_drive_vehicle_towards() call reads different_height[i] fresh every
+	tick, so updating it here alone re-targets their altitude on their very
+	next drive tick with zero interruption to whatever they were already
+	flying. Only bots with no active task get an explicit altitude task
+	assigned, since nothing would otherwise command them to actually climb
+	or descend."""
+	global same_alt_flag
+	parts = decoded_index.split(",", 3)
+	height = int(parts[1])
+	step = int(parts[2])
+	selected_uav_raw = parts[3] if len(parts) > 3 else None
+	selected_uav_ids = parse_selected_uav_ids(selected_uav_raw)
+	selected_indexes = selected_swarm_indexes(selected_uav_ids)
+	same_alt_flag = False
+	for bot_index in selected_indexes:
+		if bot_index < len(different_height):
+			different_height[bot_index] = height + step * bot_index
+	print("[different] updated different_height", different_height, "for indexes", selected_indexes)
+	with active_goal_tasks_lock:
+		busy_indexes = set(active_goal_tasks.keys())
+	idle_indexes = [i for i in selected_indexes if i not in busy_indexes]
+	if idle_indexes:
+		assign_altitude_tasks(idle_indexes)
+	return True
+
+
+def assign_altitude_tasks(selected_indexes):
+	with active_goal_tasks_lock:
+		for bot_index in selected_indexes:
+			active_goal_tasks[bot_index] = {
+				"type": "altitude",
+			}
+	print("[altitude-task] assigned (idle bots climbing/descending in place)", selected_indexes)
+
+
+def handle_concurrent_different_command(command_data):
+	if not command_data.startswith(b"different"):
+		return False
+	try:
+		return apply_different_heights(command_data.decode('utf-8'))
+	except Exception as e:
+		print("[concurrent different] failed", e)
+		return False
+
+
+GPS_RESYNC_INTERVAL = 2.0  # seconds between real-GPS corrections per bot
+_last_gps_resync = {}  # bot index -> monotonic time.time() of last correction
+
+
+def _resync_bot_position(i, force=False):
+	"""Nudge s.swarm[i].x/y (and robots[i]) toward vehicle i's live GPS.
+
+	Runs at most once every GPS_RESYNC_INTERVAL seconds per bot (unless
+	force=True) so real telemetry only ever *corrects* the swarm simulation
+	periodically -- the potential-field motion (Bot.step()/move(), driven
+	every fast tick by _goal_task_runner) is what actually moves the bots
+	according to swarm logic in between. Resyncing on every tick instead of
+	periodically would overwrite that motion before it ever accumulates,
+	which defeats the swarm logic entirely.
+
+	Only ever call this for an index from the thread that currently owns
+	that bot's position (either _goal_task_runner, for indices it is
+	actively driving via active_goal_tasks, or the main dispatch loop, for
+	everything else). Bot.step()/move() do an unsynchronized read-then-write
+	of self.x/self.y, so writing to the same index from two threads at once
+	races it -- whichever write lands last silently wins, which either
+	discards the GPS correction or discards an in-flight simulated step.
+	"""
+	global robots
+	if origin is None or i >= len(vehicles) or i >= len(s.swarm) or i >= len(robots):
+		return
+	now = time.time()
+	if not force and (now - _last_gps_resync.get(i, 0)) < GPS_RESYNC_INTERVAL:
+		return
+	try:
+		lat = vehicles[i].location.global_relative_frame.lat
+		lon = vehicles[i].location.global_relative_frame.lon
+		if lat is None or lon is None:
+			return
+		x, y = locatePosition.geoToCart(origin, endDistance, [lat, lon])
+		s.swarm[i].x = x / 2
+		s.swarm[i].y = y / 2
+		robots[i] = (x / 2, y / 2)
+		_last_gps_resync[i] = now
+	except Exception as e:
+		print("[position-sync] failed for vehicle", i, e)
+
+
+def sync_swarm_with_telemetry():
+	"""Refresh idle bots' simulated (x, y) from their vehicle's live GPS.
+
+	The potential-field collision avoidance in utils/robot.py only ever
+	moves s.swarm[i].x/y by dead-reckoned steps (Bot.step()); it never reads
+	real telemetry. Without this resync the simulated position drifts away
+	from where the aircraft actually is, so collision checks stop reflecting
+	reality. Called once per dispatched command (mirrors copter_swarm.py).
+
+	Bots with an active_goal_tasks entry are owned by _goal_task_runner for
+	the duration of that task and are resynced there every cycle instead --
+	see _resync_bot_position's docstring for why writing to them here too
+	would race it.
+	"""
+	if origin is None:
+		return
+	with active_goal_tasks_lock:
+		busy = set(active_goal_tasks.keys())
+	count = min(len(vehicles), len(s.swarm), len(robots))
+	for i in range(count):
+		if i not in busy:
+			# Idle bots have no swarm-logic motion in progress to protect,
+			# so always take the freshest GPS fix when a new command starts.
+			_resync_bot_position(i, force=True)
 
 
 def connection_string_for_sysid(sys_id):
@@ -675,6 +801,7 @@ def check_for_new_command(started_seq):
             handle_concurrent_goal_command(_pending_command.data)
             or handle_concurrent_search_command(_pending_command.data)
             or handle_concurrent_split_command(_pending_command.data)
+            or handle_concurrent_different_command(_pending_command.data)
             or handle_concurrent_remove_command(_pending_command.data)
             or handle_concurrent_add_command(_pending_command.data)
         ):
@@ -711,7 +838,7 @@ def vehicle_connection():
 	num_bots=0
 	
 	try:
-		vehicle1= connect('udpin:{}:14554'.format(ip),baud=115200, heartbeat_timeout=heartbeat_ip_timeout[0])
+		vehicle1= connect('udpin:{}:14551'.format(ip),baud=115200, heartbeat_timeout=heartbeat_ip_timeout[0])
 		print('Drone1')
 		vehicles.append(vehicle1)
 		pos_array.append(vehicle1._master.target_system)
@@ -721,7 +848,7 @@ def vehicle_connection():
 		pass
 		print(	"Vehicle 1 is lost")
 	try:		
-		vehicle2= connect('udpin:{}:14555'.format(ip),baud=115200,heartbeat_timeout=heartbeat_ip_timeout[1])
+		vehicle2= connect('udpin:{}:14552'.format(ip),baud=115200,heartbeat_timeout=heartbeat_ip_timeout[1])
 		print('Drone2')
 		num_bots+=1	
 		vehicles.append(vehicle2)
@@ -732,7 +859,7 @@ def vehicle_connection():
 		print(	"Vehicle 2 is lost")
 	
 	try:
-		vehicle3= connect('udpin:{}:14556'.format(ip),baud=115200,heartbeat_timeout=heartbeat_ip_timeout[2])
+		vehicle3= connect('udpin:{}:14553'.format(ip),baud=115200,heartbeat_timeout=heartbeat_ip_timeout[2])
 		print('Drone3')
 		num_bots+=1 
 		vehicles.append(vehicle3)
@@ -742,81 +869,81 @@ def vehicle_connection():
 		pass
 		print(	"Vehicle 3 is lost")
 	
-	# try:		
-	# 	vehicle4= connect('udpin:{}:14554'.format(ip),baud=115200,heartbeat_timeout=heartbeat_ip_timeout[3])
-	# 	print('Drone4')
-	# 	num_bots+=1
-	# 	vehicles.append(vehicle4)
-	# 	pos_array.append(vehicle4._master.target_system)
-	# 	msg="Drone4 Connected"
-	# except:		
-	# 	pass
-	# 	print(	"Vehicle 4 is lost")
-	# try:		
-	# 	vehicle5= connect('udpin:{}:14555'.format(ip),baud=115200,heartbeat_timeout=heartbeat_ip_timeout[4])
-	# 	print('Drone5')
-	# 	num_bots+=1
-	# 	vehicles.append(vehicle5)
-	# 	pos_array.append(vehicle5._master.target_system)
-	# 	msg="Drone5 Connected"
-	# except:	
-	# 	pass
-	# 	print(	"Vehicle 5 is lost")
+	try:		
+		vehicle4= connect('udpin:{}:14554'.format(ip),baud=115200,heartbeat_timeout=heartbeat_ip_timeout[3])
+		print('Drone4')
+		num_bots+=1
+		vehicles.append(vehicle4)
+		pos_array.append(vehicle4._master.target_system)
+		msg="Drone4 Connected"
+	except:		
+		pass
+		print(	"Vehicle 4 is lost")
+	try:		
+		vehicle5= connect('udpin:{}:14555'.format(ip),baud=115200,heartbeat_timeout=heartbeat_ip_timeout[4])
+		print('Drone5')
+		num_bots+=1
+		vehicles.append(vehicle5)
+		pos_array.append(vehicle5._master.target_system)
+		msg="Drone5 Connected"
+	except:	
+		pass
+		print(	"Vehicle 5 is lost")
 	
-	# try:
-	# 	vehicle6= connect('udpin:{}:14556'.format(ip),baud=115200,heartbeat_timeout=heartbeat_ip_timeout[5])
-	# 	print('Drone6')
-	# 	num_bots+=1
-	# 	vehicles.append(vehicle6)
-	# 	pos_array.append(vehicle6._master.target_system)
-	# 	msg="Drone6 Connected"
-	# except:		
-	# 	pass	
-	# 	print(	"Vehicle 6 is lost")
+	try:
+		vehicle6= connect('udpin:{}:14556'.format(ip),baud=115200,heartbeat_timeout=heartbeat_ip_timeout[5])
+		print('Drone6')
+		num_bots+=1
+		vehicles.append(vehicle6)
+		pos_array.append(vehicle6._master.target_system)
+		msg="Drone6 Connected"
+	except:		
+		pass	
+		print(	"Vehicle 6 is lost")
 		
-	# try:
-	# 	vehicle7= connect('udpin:{}:14557'.format(ip),baud=115200,heartbeat_timeout=heartbeat_ip_timeout[6])
-	# 	print('Drone7')
-	# 	num_bots+=1
-	# 	vehicles.append(vehicle7)
-	# 	pos_array.append(vehicle7._master.target_system)
-	# 	msg="Drone7 Connected"
-	# except:		
-	# 	pass
-	# 	print(	"Vehicle 7 is lost")	
+	try:
+		vehicle7= connect('udpin:{}:14557'.format(ip),baud=115200,heartbeat_timeout=heartbeat_ip_timeout[6])
+		print('Drone7')
+		num_bots+=1
+		vehicles.append(vehicle7)
+		pos_array.append(vehicle7._master.target_system)
+		msg="Drone7 Connected"
+	except:		
+		pass
+		print(	"Vehicle 7 is lost")	
 	
-	# try:
-	# 	vehicle8= connect('udpin:{}:14558'.format(ip),baud=115200,heartbeat_timeout=heartbeat_ip_timeout[7])
-	# 	print('Drone8')
-	# 	num_bots+=1
-	# 	vehicles.append(vehicle8)
-	# 	pos_array.append(vehicle8._master.target_system)
-	# 	msg="Drone8 Connected"
-	# except:	
-	# 	pass
-	# 	print(	"Vehicle 8 is lost")
+	try:
+		vehicle8= connect('udpin:{}:14558'.format(ip),baud=115200,heartbeat_timeout=heartbeat_ip_timeout[7])
+		print('Drone8')
+		num_bots+=1
+		vehicles.append(vehicle8)
+		pos_array.append(vehicle8._master.target_system)
+		msg="Drone8 Connected"
+	except:	
+		pass
+		print(	"Vehicle 8 is lost")
 	
-	# try:	
-	# 	vehicle9= connect('udpin:{}:14559'.format(ip),baud=115200,heartbeat_timeout=heartbeat_ip_timeout[8])
-	# 	print('Drone9')
-	# 	num_bots+=1
-	# 	vehicles.append(vehicle9)
-	# 	pos_array.append(vehicle9._master.target_system)
-	# 	msg="Drone9 Connected"
-	# except:
-	# 	pass
-	# 	print(	"Vehicle 9 is lost")
+	try:	
+		vehicle9= connect('udpin:{}:14559'.format(ip),baud=115200,heartbeat_timeout=heartbeat_ip_timeout[8])
+		print('Drone9')
+		num_bots+=1
+		vehicles.append(vehicle9)
+		pos_array.append(vehicle9._master.target_system)
+		msg="Drone9 Connected"
+	except:
+		pass
+		print(	"Vehicle 9 is lost")
 	
-	# try:	
-	# 	vehicle10= connect('udpin:{}:14560'.format(ip),baud=115200,heartbeat_timeout=heartbeat_ip_timeout[9])
-	# 	print('Drone10')
-	# 	vehicles.append(vehicle10)
-	# 	pos_array.append(vehicle10._master.target_system)
-	# 	num_bots+=1
-	# 	msg="Drone10 Connected"
-	# except:
-	# 	pass
-	# 	print(	"Vehicle 10 is lost")
+	try:	
+		vehicle10= connect('udpin:{}:14560'.format(ip),baud=115200,heartbeat_timeout=heartbeat_ip_timeout[9])
+		print('Drone10')
+		vehicles.append(vehicle10)
+		pos_array.append(vehicle10._master.target_system)
+		num_bots+=1
+		msg="Drone10 Connected"
+	except:
+		pass
+		print(	"Vehicle 10 is lost")
 	
 	print(len(vehicles))
 	'''
@@ -994,36 +1121,36 @@ def read_specific_line(csv_file_path, line_number):
         return goal
 
 
-def arm_and_takeoff(vehicle, aTargetAltitude):
-    """
-    Arms vehicle and fly to aTargetAltitude.
-    """
-    print("Basic pre-arm checcks")
-    # Don't try to arm until autopilot is ready
-    while not vehicle.is_armable:
-        print(" Waiting for vehicle to initialise...")
-        time.sleep(1)
+# def arm_and_takeoff(vehicle, aTargetAltitude):
+#     """
+#     Arms vehicle and fly to aTargetAltitude.
+#     """
+#     print("Basic pre-arm checcks")
+#     # Don't try to arm until autopilot is ready
+#     while not vehicle.is_armable:
+#         print(" Waiting for vehicle to initialise...")
+#         time.sleep(1)
 
-    print("Arming motors")
-    # Copter should arm in GUIDED mode
-    vehicle.mode = VehicleMode("GUIDED")
-    vehicle.armed = True
+#     print("Arming motors")
+#     # Copter should arm in GUIDED mode
+#     vehicle.mode = VehicleMode("GUIDED")
+#     vehicle.armed = True
 
-    while not vehicle.armed:
-        print(" Waiting for arming...")
-        time.sleep(1)
+#     while not vehicle.armed:
+#         print(" Waiting for arming...")
+#         time.sleep(1)
 
-    print("Taking off!")
-    time.sleep(3)
-    vehicle.simple_takeoff(aTargetAltitude)  # Take off to target altitude
+#     print("Taking off!")
+#     time.sleep(3)
+#     vehicle.simple_takeoff(aTargetAltitude)  # Take off to target altitude
 
-    while True:
-        print(" Altitude: ", vehicle.location.global_relative_frame.alt)
-        # Break and return from function just below target altitude.
-        if vehicle.location.global_relative_frame.alt >= aTargetAltitude * 0.90:
-            print("Reached target altitude")
-            break
-        time.sleep(1)
+#     while True:
+#         print(" Altitude: ", vehicle.location.global_relative_frame.alt)
+#         # Break and return from function just below target altitude.
+#         if vehicle.location.global_relative_frame.alt >= aTargetAltitude * 0.90:
+#             print("Reached target altitude")
+#             break
+#         time.sleep(1)
 
 data=""
 same_alt_flag=False
@@ -1117,15 +1244,17 @@ active_goal_tasks = {}
 active_goal_tasks_lock = threading.Lock()
 
 
-def assign_goal_tasks(selected_indexes, goal_xy):
+def assign_goal_tasks(selected_indexes, goal_xy, guided_circle_radius=None, guided_circle_direction=None):
 	with active_goal_tasks_lock:
 		for bot_index in selected_indexes:
 			active_goal_tasks[bot_index] = {
 				"type": "goal",
 				"goals": list(goal_xy),
 				"goal_index": 0,
+				"guided_circle_radius": guided_circle_radius,
+				"guided_circle_direction": guided_circle_direction,
 			}
-	print("[goal-task] assigned", selected_indexes, goal_xy)
+	print("[goal-task] assigned", selected_indexes, goal_xy, "circle_radius", guided_circle_radius, "circle_direction", guided_circle_direction)
 
 
 def assign_mission_tasks(csv_paths_by_index, label):
@@ -1168,6 +1297,45 @@ def remove_goal_task_index(removed_index):
 	print("[goal-task] compacted after remove", removed_index, sorted(active_goal_tasks.keys()))
 
 
+def _start_guided_circle_task(i, task):
+	"""Transitions a completed goal task into a loitering circle around its
+	final goal point, sized/oriented by whatever radius/direction the
+	operator configured (Swarm UAVs settings tab) when the goal command was
+	issued. Mirrors the original (dead) foreground guided_circle block: 8
+	points around goal_latlon[-1] via generate_points(), converted to the
+	local sim frame the same way. Only called when a radius was actually
+	given -- if not, the goal task just completes and the UAV holds
+	position, same as before this restoration."""
+	goals = task.get("goals", [])
+	radius_raw = task.get("guided_circle_radius")
+	direction_raw = task.get("guided_circle_direction")
+	try:
+		# radius/direction arrive as strings off the wire (e.g. "0") -- a
+		# non-empty string is truthy in Python even when it means "no
+		# loiter configured", so convert before checking rather than after.
+		radius = int(float(radius_raw)) if radius_raw is not None else 0
+	except (TypeError, ValueError):
+		radius = 0
+	try:
+		direction = int(float(direction_raw)) if direction_raw is not None else 1
+	except (TypeError, ValueError):
+		direction = 1
+	if not goals or radius <= 0:
+		return None
+	last_goal_lat, last_goal_lon = goals[-1][0], goals[-1][1]
+	circle_latlon = generate_points(last_goal_lat, last_goal_lon, 8, radius, direction)
+	circle_points = []
+	for m in circle_latlon:
+		x, y = locatePosition.geoToCart(origin, endDistance, m)
+		circle_points.append((x / 2, y / 2))
+	print("[guided-circle] starting for UAV", pos_array[i], "radius", radius, "direction", direction)
+	return {
+		"type": "guided_circle",
+		"circle_points": circle_points,
+		"circle_index": 0,
+	}
+
+
 def _drive_goal_task(i, b, task, completed):
 	goals = task.get("goals", [])
 	goal_index = task.get("goal_index", 0)
@@ -1180,8 +1348,17 @@ def _drive_goal_task(i, b, task, completed):
 	if dx <= 5 and dy <= 5:
 		goal_index += 1
 		if goal_index >= len(goals):
-			completed.append(i)
-			print("[goal-task] completed UAV", pos_array[i])
+			print("inddddd")
+			circle_task = _start_guided_circle_task(i, task)
+			with active_goal_tasks_lock:
+				if i in active_goal_tasks:
+					if circle_task is not None:
+						active_goal_tasks[i] = circle_task
+					else:
+						del active_goal_tasks[i]
+			if circle_task is None:
+				completed.append(i)
+				print("[goal-task] completed UAV", pos_array[i])
 			return
 		with active_goal_tasks_lock:
 			if i in active_goal_tasks:
@@ -1189,6 +1366,30 @@ def _drive_goal_task(i, b, task, completed):
 		goal_position = goals[goal_index]
 	b.set_goal(goal_position[0], goal_position[1])
 	cmd = cvg.goal_area_cvg(i, b, goal_position)
+	cmd.exec(b)
+	_drive_vehicle_towards(i, b)
+
+
+def _drive_guided_circle_task(i, b, task, completed):
+	"""Continuous loiter -- never adds to completed under normal operation;
+	only stops via active_goal_tasks being overwritten by a new command or
+	cleared by an explicit stop, matching the original design's intent
+	(circle until told otherwise)."""
+	circle_points = task.get("circle_points", [])
+	if not circle_points:
+		completed.append(i)
+		return
+	circle_index = task.get("circle_index", 0)
+	goal_position = circle_points[circle_index]
+	cmd = cvg.goal_area_cvg(i, b, goal_position)
+	cmd += disp_field(b, neighbourhood_radius=100)
+	dx = abs(goal_position[0] - b.x)
+	dy = abs(goal_position[1] - b.y)
+	if dx <= 5 and dy <= 5:
+		circle_index = (circle_index + 1) % len(circle_points)
+		with active_goal_tasks_lock:
+			if i in active_goal_tasks:
+				active_goal_tasks[i]["circle_index"] = circle_index
 	cmd.exec(b)
 	_drive_vehicle_towards(i, b)
 
@@ -1231,6 +1432,29 @@ def _drive_vehicle_towards(i, b):
 		vehicles[i].simple_goto(point1)
 
 
+def _drive_altitude_task(i, b, task, completed):
+	"""Holds the bot at its current (x,y) -- via a goal fixed at its own
+	position, plus real disp_field repulsion so several idle bots
+	re-staging altitude at once don't drift into each other -- while it
+	climbs/descends to its just-updated different_height[i]. Completes
+	(frees the bot back to fully idle) once the real vehicle reports being
+	within tolerance of the target altitude, mirroring the original
+	blocking loop's own completion check."""
+	goal_position = (b.x, b.y)
+	cmd = cvg.goal_area_cvg(i, b, goal_position)
+	cmd += disp_field(b, neighbourhood_radius=100)
+	cmd.exec(b)
+	_drive_vehicle_towards(i, b)
+	if master_flag and i < len(vehicles) and i < len(different_height):
+		try:
+			current_alt = vehicles[i].location.global_relative_frame.alt
+		except Exception:
+			current_alt = None
+		if current_alt is not None and abs(current_alt - different_height[i]) <= 1.5:
+			completed.append(i)
+			print("[altitude-task] reached target altitude for UAV", pos_array[i])
+
+
 def _goal_task_runner():
 	"""Background thread, independent of the main command-dispatch loop.
 	Continuously drives whichever bot indexes have an active_goal_tasks
@@ -1252,9 +1476,15 @@ def _goal_task_runner():
 				if i >= len(s.swarm) or i >= len(pos_array):
 					completed.append(i)
 					continue
+				_resync_bot_position(i)
 				b = s.swarm[i]
-				if task.get("type") == "mission":
+				task_type = task.get("type")
+				if task_type == "mission":
 					_drive_mission_task(i, b, task, completed)
+				elif task_type == "guided_circle":
+					_drive_guided_circle_task(i, b, task, completed)
+				elif task_type == "altitude":
+					_drive_altitude_task(i, b, task, completed)
 				else:
 					_drive_goal_task(i, b, task, completed)
 			if completed:
@@ -1378,6 +1608,7 @@ while(1):
 				active_goal_tasks.clear()
 			print("[goal-task] cleared by stop")
 			continue
+		sync_swarm_with_telemetry()
 		if(data.startswith(b"origin")):
 			decoded_index = data.decode('utf-8')
 			_, new_lat, new_lon = decoded_index.split(",")
@@ -1662,7 +1893,7 @@ while(1):
 					selected_indexes = selected_swarm_indexes(selected_uav_ids)
 					selected_index_set = set(selected_indexes)
 					print('[goal] selected_uav_ids', selected_uav_ids, 'selected_indexes', selected_indexes)
-					assign_goal_tasks(selected_indexes, goal_xy)
+					assign_goal_tasks(selected_indexes, goal_xy, guided_circle_radius, guided_circle_direction)
 					data=b"index"
 					continue
 					goal_xy_index=0
@@ -1835,8 +2066,11 @@ while(1):
 						data="index"
 						break
 												
-		if data.startswith(b'different'): 
+		if data.startswith(b'different'):
 				decoded_index = data.decode('utf-8')  # Assuming utf-8 encoding, adjust if needed
+				apply_different_heights(decoded_index)
+				data=b"index"
+				continue
 				data1, height,step = decoded_index.split(",")
 				same_alt_flag=False
 				for h in range(num_bots):

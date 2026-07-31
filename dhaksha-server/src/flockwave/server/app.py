@@ -1325,10 +1325,10 @@ class SkybrushServer(DaemonApp):
             result = aggregate_socket()
 
         if msg == "different":  # TODO
-            result = different_alt_socket(
-                parameters.get("alt"), parameters.get("alt_diff")
-            )
             ids = parameters.get("ids")
+            result = different_alt_socket(
+                parameters.get("alt"), parameters.get("alt_diff"), ids
+            )
             from .socket.globalVariable import changeAlts
 
             data = {}

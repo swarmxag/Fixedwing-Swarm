@@ -34,6 +34,7 @@ class Gui:
 		self.trail_x = []
 		self.trail_y = []
 		self.goal_artists = []
+		self.gps_artists = []
 
 	def show_bots(self):
 
@@ -43,7 +44,7 @@ class Gui:
 		# a circle that small is sub-pixel and invisible. vis_r is a
 		# draw-only radius scaled to the current world so bots stay visible
 		# regardless of environment size; it never feeds back into sim state.
-		vis_r = max(self.size) * 0.008
+		vis_r = max(self.size) * 0.0009
 
 		if not self.trail_lines:
 			for i in range(len(self.sim.swarm)):
@@ -88,6 +89,30 @@ class Gui:
 			color = self.state_colors[i % len(self.state_colors)]
 			marker, = self.ax.plot(gx, gy, marker='x', markersize=5, markeredgewidth=2, color=color)
 			self.goal_artists.append(marker)
+
+	def show_gps_positions(self, points):
+		"""Plot each bot's real (live GPS-derived) position, distinct from
+		the simulated bot circle drawn by show_bots(), so simulated vs real
+		position can be compared visually during a search operation.
+
+		points: list of (x, y) in the same local sim frame as s.swarm[i].x/y
+		(already converted from lat/lon by the caller), one entry per bot,
+		or None where no live GPS fix is available yet. Current position
+		only -- no trail, redrawn fresh every call.
+		"""
+		for artist in self.gps_artists:
+			artist.remove()
+		self.gps_artists = []
+		for i, point in enumerate(points):
+			if point is None:
+				continue
+			gx, gy = point
+			color = self.state_colors[i % len(self.state_colors)]
+			marker, = self.ax.plot(
+				gx, gy, marker='+', markersize=10, markeredgewidth=2,
+				color=color, zorder=60,
+			)
+			self.gps_artists.append(marker)
 
 	def show_env(self):
 	    for obs in self.sim.env.obstacles:

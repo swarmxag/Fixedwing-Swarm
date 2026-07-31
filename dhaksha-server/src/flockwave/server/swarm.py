@@ -30,7 +30,7 @@ def fetch_file_content(file_path):
 
 master_udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-adderss = {1: ("192.168.2.135", 12002), 2: ("192.168.2.135", 12008)}
+adderss = {1: ("192.168.2.140", 12002), 2: ("192.168.2.140", 12008)}
 
 master_num = 0
 origin = None  # set by process_fence() once a fence has been drawn; consumed
@@ -160,7 +160,7 @@ def _origin_file_path():
     return os.path.join(swarm_folder, "rectangles.yaml")
 
 
-server_address_220 = ("192.168.2.135", 12008)
+server_address_220 = ("192.168.2.140", 12008)
 
 def push_origin_and_geofence(origin1):
     """Broadcast a fresh origin + geofence-refresh signal to all swarm computers,
@@ -811,10 +811,11 @@ def airport_selection(filename):
     return True
 
 
-def different_alt_socket(initial_alt, alt_diff):
+def different_alt_socket(initial_alt, alt_diff, ids=None):
     global master_udp
+    ids = ids or []
     data = str(initial_alt) + str(",") + str(alt_diff)
-    g = str("different" + "," + str(data))
+    g = str("different" + "," + str(data) + "," + json.dumps(ids))
     print(g)
     master_udp.sendto(g.encode(), adderss.get(2))
     """
