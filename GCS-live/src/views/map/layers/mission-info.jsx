@@ -499,7 +499,15 @@ const MissionInfoVectorSource = ({
       '#ff69b4',
       '#ba55d3',
     ];
-    if (missionArray?.length == 0) {
+    // missionByUav carries the same downloaded paths whenever the last
+    // command targeted a UAV subset (search/split/specific-split) -- in
+    // that case missionArray is deliberately left untouched (see
+    // SwarmPanel.jsx's handlePoint/handleSplitMission) so the grid isn't
+    // drawn twice, so an empty missionArray here does NOT mean the download
+    // came back empty; only flag it when both are empty.
+    const hasMissionByUav =
+      missionByUav && Object.keys(missionByUav).length > 0;
+    if (missionArray?.length == 0 && !hasMissionByUav) {
       dispatch(
         showNotification({
           message: `Mission is Empty,After the Download`,

@@ -13,7 +13,7 @@ from bezier_curve import BezierCurve
 from groupsplitauto import AutoSplitMission
 from bezier_curve_multiple import BezierCurveMultiple
 from groupsplitspecific import SpecificSplitMission
-import socket,json,csv,threading,yaml,shutil
+import socket,json,csv,threading,yaml,shutil,traceback
 from shapely.geometry import Polygon
 import locatePosition
 from mission_paths import uav_path_csv, snapshot_uav_path_csv
@@ -629,11 +629,11 @@ def print_sim_vs_real_latlon(indexes, label=""):
 			distance = locatePosition.distance_bearing(real_lat, real_lon,sim_lat, sim_lon)
 			# diff_lat = sim_lat - real_lat
 			# diff_lon = sim_lon - real_lon
-			print(
-				f"[latlon-mismatch]{(' ' + label) if label else ''} UAV {pos_array[i]}: "
-				f"sim=({sim_lat:.7f},{sim_lon:.7f}) real=({real_lat:.7f},{real_lon:.7f}) "
-				f"diff=({distance:.2f} m)"
-			)
+			# print(
+			# 	f"[latlon-mismatch]{(' ' + label) if label else ''} UAV {pos_array[i]}: "
+			# 	f"sim=({sim_lat:.7f},{sim_lon:.7f}) real=({real_lat:.7f},{real_lon:.7f}) "
+			# 	f"diff=({distance:.2f} m)"
+			# )
 		except Exception as e:
 			print("[latlon-mismatch] failed for vehicle", i, e)
 
@@ -2753,8 +2753,8 @@ while(1):
 						step_size = 0.6
 						# b.step_size = 0.08
 					else:
-						b.max_speed = 2.5
-						step_size = 0.9
+						b.max_speed = 2.4
+						step_size = 0.8
 					if(dx<=5 and dy<=5):
 						if grid_path_array[i]>=int(num_lines) and not removed_grid_path_array_flag:
 							continue
@@ -3259,6 +3259,14 @@ while(1):
 		_next_data, _next_address = preempt.data, preempt.address
 		_last_seq = _pending_command.seq
 	except Exception as e:
+		# Previously a bare `pass` here -- any exception inside a mission
+		# loop (search/split/goal/home/...) silently killed the mission for
+		# every bot at once with zero trace, which is why a mid-mission
+		# failure (e.g. an index mismatch after a bot removal) looked like
+		# the swarm just stopped for no reason. Log it so the real cause is
+		# visible instead of only the flags being reset.
+		print("[mission] aborted by exception:", repr(e))
+		traceback.print_exc()
 		if(search_flag):
 			search_flag=False
 		if(split_flag):
@@ -3271,4 +3279,4 @@ while(1):
 			home_flag=False
 		if(home_goto_flag):
 			home_goto_flag=False
-		pass				
+		pass

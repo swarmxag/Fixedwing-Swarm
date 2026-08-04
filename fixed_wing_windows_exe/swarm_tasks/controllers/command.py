@@ -63,7 +63,7 @@ class Cmd:
         # step_size defaults to bot.move()'s own default (0.8) so every
         # existing caller is unaffected; pass an explicit value to slow
         # a specific task down without touching robot.MAX_SPEED globally.
-        print("step_size", step_size)
+        # print("step_size", step_size)
         bot.move(self.dir, self.speed, step_size=step_size)
 
     def __add__(self, cmd):

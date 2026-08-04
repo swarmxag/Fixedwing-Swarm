@@ -28,7 +28,6 @@ import {
   mergeMissionForUavs,
   changeBaseAltitude,
   changeAltitudeStep,
-  clearMissionByUav,
 } from '~/features/swarm/slice';
 import { showError } from '~/features/snackbar/actions';
 import { getLandingMissionId } from '~/features/mission/selectors';
@@ -338,8 +337,11 @@ const SwarmPanel = ({
   // "show Trajectory" toggles two independent things at once:
   //  1. Visibility of the last downloaded search/split/navigate mission grid
   //     (missionPoints / missionByUav). That data is never refetched here --
-  //     it's whatever a prior command left behind -- so on hide we clear it
-  //     to stop a stale grid from reappearing the next time this is pressed.
+  //     it's whatever a prior command left behind -- and hiding it must NOT
+  //     clear it: a UAV's mission stays valid and should reappear as-is the
+  //     next time this is pressed, until that UAV is actually given a new
+  //     command (mergeMissionForUavs/setMissionFromServer already replace
+  //     just that UAV's entry when that happens).
   //  2. Visibility of the "UAV trace" map layer, which is the actual live
   //     GPS trail (fed continuously from flock.uavsUpdated), creating it on
   //     first use if it doesn't exist yet.
@@ -347,11 +349,6 @@ const SwarmPanel = ({
     const willShow = !loadMission;
 
     dispatch(DownloadMissionTrue());
-
-    if (!willShow) {
-      dispatch(setMissionFromServer([]));
-      dispatch(clearMissionByUav());
-    }
 
     if (uavTraceLayer) {
       if (uavTraceLayer.visible !== willShow) {
