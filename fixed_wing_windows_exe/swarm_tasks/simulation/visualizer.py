@@ -35,6 +35,8 @@ class Gui:
 		self.trail_y = []
 		self.goal_artists = []
 		self.gps_artists = []
+		self.circle_artists = []
+		self.planned_path_artists = []
 
 	def show_bots(self):
 
@@ -113,6 +115,58 @@ class Gui:
 				color=color, zorder=60,
 			)
 			self.gps_artists.append(marker)
+
+	def show_circles(self, circles_by_bot):
+		"""Draw each bot's guided-circle loiter ring, so you can visually
+		confirm where _start_guided_circle_task actually centered it (one
+		ring per bot -- they will coincide if every bot's final goal was the
+		same point, and differ if bots had different final goals).
+
+		circles_by_bot: list aligned with s.swarm, each entry either None
+		(bot has no active circle) or that bot's list of circle_points
+		[(x, y), ...] in the same local sim frame as s.swarm[i].x/y.
+		"""
+		for artist in self.circle_artists:
+			artist.remove()
+		self.circle_artists = []
+		for i, points in enumerate(circles_by_bot):
+			if not points:
+				continue
+			color = self.state_colors[i % len(self.state_colors)]
+			ring = list(points) + [points[0]]  # close the loop
+			xs, ys = zip(*ring)
+			line, = self.ax.plot(xs, ys, linestyle=':', linewidth=1.5, color=color, alpha=0.8)
+			self.circle_artists.append(line)
+			dots, = self.ax.plot(
+				[p[0] for p in points], [p[1] for p in points],
+				linestyle='', marker='o', markersize=4, color=color, alpha=0.8,
+			)
+			self.circle_artists.append(dots)
+
+	def show_planned_path(self, paths_by_bot):
+		"""Draw each bot's full planned waypoint list (the whole search/
+		goal/split path, not just the single current target show_goals()
+		draws) as a static reference line, so you can see the entire
+		intended coverage area/route and judge where a bot is relative to
+		its whole plan -- not just its very next point. Useful for spotting
+		a bot stalled/circling partway through its route instead of
+		continuing along it.
+
+		paths_by_bot: list aligned with s.swarm, each entry either None (no
+		plan for this bot) or a list of (x, y) points in the same local sim
+		frame as s.swarm[i].x/y, in visit order.
+		"""
+		for artist in self.planned_path_artists:
+			artist.remove()
+		self.planned_path_artists = []
+		for i, points in enumerate(paths_by_bot):
+			if not points:
+				continue
+			color = self.state_colors[i % len(self.state_colors)]
+			xs = [p[0] for p in points]
+			ys = [p[1] for p in points]
+			line, = self.ax.plot(xs, ys, linestyle='--', linewidth=1, color=color, alpha=0.35, zorder=10)
+			self.planned_path_artists.append(line)
 
 	def show_env(self):
 	    for obs in self.sim.env.obstacles:

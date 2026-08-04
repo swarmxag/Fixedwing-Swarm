@@ -28,14 +28,19 @@ import {
   mergeMissionForUavs,
   changeBaseAltitude,
   changeAltitudeStep,
+  clearMissionByUav,
 } from '~/features/swarm/slice';
 import { showError } from '~/features/snackbar/actions';
 import { getLandingMissionId } from '~/features/mission/selectors';
 import {
   DownloadMissionTrue,
   setMissionFromServer,
+  getLoadMissionState,
 } from '~/features/uavs/details';
+import { addLayer, toggleLayerVisibility } from '~/features/map/layers';
+import { getLayersInBottomFirstOrder } from '~/selectors/ordered';
 import { ConnectionState } from '~/model/enums';
+import { LayerType } from '~/model/layers';
 
 // const SwarmPanel = ({
 //   selectedUAVIds,
@@ -88,6 +93,8 @@ const SwarmPanel = ({
   features,
   connection,
   onOpen,
+  loadMission,
+  uavTraceLayer,
 }) => {
   useEffect(() => {
     if (connection !== ConnectionState.CONNECTED) {
@@ -229,9 +236,12 @@ const SwarmPanel = ({
         );
         return;
       }
-      dispatch(setMissionFromServer(res.body.message));
-      if (res?.body?.missionByUav) {
+      // missionByUav (when present) is the same paths as message, just keyed
+      // by UAV id -- dispatch only one or the map draws the same grid twice.
+      if (res?.body?.missionByUav && Object.keys(res.body.missionByUav).length > 0) {
         dispatch(mergeMissionForUavs(res.body.missionByUav));
+      } else {
+        dispatch(setMissionFromServer(res.body.message));
       }
       dispatch(
         showNotification({
@@ -306,10 +316,13 @@ const SwarmPanel = ({
           );
           return;
         }
-        dispatch(setMissionFromServer(res.body.message));
         dispatch(setTime(res.body.time?.toFixed(2)));
-        if (res?.body?.missionByUav) {
+        // missionByUav (when present) is the same paths as message, just keyed
+        // by UAV id -- dispatch only one or the map draws the same grid twice.
+        if (res?.body?.missionByUav && Object.keys(res.body.missionByUav).length > 0) {
           dispatch(mergeMissionForUavs(res.body.missionByUav));
+        } else {
+          dispatch(setMissionFromServer(res.body.message));
         }
       }
     } catch (e) {
@@ -319,6 +332,33 @@ const SwarmPanel = ({
           semantics: MessageSemantics.ERROR,
         })
       );
+    }
+  };
+
+  // "show Trajectory" toggles two independent things at once:
+  //  1. Visibility of the last downloaded search/split/navigate mission grid
+  //     (missionPoints / missionByUav). That data is never refetched here --
+  //     it's whatever a prior command left behind -- so on hide we clear it
+  //     to stop a stale grid from reappearing the next time this is pressed.
+  //  2. Visibility of the "UAV trace" map layer, which is the actual live
+  //     GPS trail (fed continuously from flock.uavsUpdated), creating it on
+  //     first use if it doesn't exist yet.
+  const handleToggleTrajectory = () => {
+    const willShow = !loadMission;
+
+    dispatch(DownloadMissionTrue());
+
+    if (!willShow) {
+      dispatch(setMissionFromServer([]));
+      dispatch(clearMissionByUav());
+    }
+
+    if (uavTraceLayer) {
+      if (uavTraceLayer.visible !== willShow) {
+        dispatch(toggleLayerVisibility(uavTraceLayer.id));
+      }
+    } else if (willShow) {
+      dispatch(addLayer('Live trajectory', LayerType.UAV_TRACE));
     }
   };
 
@@ -657,7 +697,7 @@ const SwarmPanel = ({
           {/*</Button>*/}
           <Button
             variant='contained'
-            onClick={() => dispatch(DownloadMissionTrue())}
+            onClick={handleToggleTrajectory}
           >
             show Trajectory
           </Button>
@@ -721,6 +761,10 @@ export default connect(
       ...state.socket,
     },
     connection: getCurrentServerState(state).state,
+    loadMission: getLoadMissionState(state),
+    uavTraceLayer: getLayersInBottomFirstOrder(state).find(
+      (layer) => layer.type === LayerType.UAV_TRACE
+    ),
   }),
   // mapDispatchToProps
   (dispatch) => ({

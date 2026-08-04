@@ -1,4 +1,3 @@
-
 """Application object for the Skybrush server."""
 
 from appdirs import AppDirs
@@ -61,7 +60,6 @@ from .swarm import *
 from flockwave.server.ext.mavlink.automission import AutoMissionManager
 from flockwave.server.ext.mavlink.enums import MAVCommand
 from typing import List
-
 
 __all__ = ("app",)
 
@@ -1100,7 +1098,7 @@ class SkybrushServer(DaemonApp):
                     landingMission,
                     uavs,
                 )
-                
+
         if msg == "skipwaypoint":
             skip = int(parameters.pop("skip"))
             for id in selectedIds:
@@ -1151,7 +1149,7 @@ class SkybrushServer(DaemonApp):
                 coverage_area=int(parameters.pop("coverage")),
                 uavs=uavs,
             )
-            
+
         if msg == "grid":
             from .VTOL import GridFormation
 
@@ -1236,7 +1234,9 @@ class SkybrushServer(DaemonApp):
                 ]
                 outer_fence = Fence(coords[label.index("outer")], label="outer")
                 validator = GoalFenceValidator(outer_fence)
-                print(f"[fence] outer fence + {len(obstacle_polygons)} obstacle(s) built")
+                print(
+                    f"[fence] outer fence + {len(obstacle_polygons)} obstacle(s) built"
+                )
 
                 selected_ids = parameters.get("ids", [])
                 all_uav_ids = (
@@ -1301,7 +1301,9 @@ class SkybrushServer(DaemonApp):
                 # size the search grid for just that subset instead of every
                 # connected UAV.
                 requested_ids = [int(uav_id) for uav_id in parameters.get("ids", [])]
-                ids = requested_ids or [int(uav_id) for uav_id in app.object_registry.ids_by_type(UAV)]
+                ids = requested_ids or [
+                    int(uav_id) for uav_id in app.object_registry.ids_by_type(UAV)
+                ]
                 if not requested_ids:
                     stop_socket()
                     await sleep(1)
@@ -1318,7 +1320,9 @@ class SkybrushServer(DaemonApp):
                 # currently showing -- separate from "message"/"result"
                 # above so nothing that already reads that field breaks.
                 response.body["missionByUav"] = {
-                    str(uav_id): path[i] for i, uav_id in enumerate(ids) if i < len(path)
+                    str(uav_id): path[i]
+                    for i, uav_id in enumerate(ids)
+                    if i < len(path)
                 }
 
         if msg == "aggregate":
@@ -1373,7 +1377,10 @@ class SkybrushServer(DaemonApp):
                     1 if parameters.get("Direction", "").lower().startswith("c") else -1
                 )
                 result = goal_socket(
-                    parameters.get("coords"), direction, parameters.get("radius"), requested_ids
+                    parameters.get("coords"),
+                    direction,
+                    parameters.get("radius"),
+                    requested_ids,
                 )
 
         if msg == "home_goto":
@@ -1426,7 +1433,9 @@ class SkybrushServer(DaemonApp):
                 result = path
                 response.body["time"] = time
                 response.body["missionByUav"] = {
-                    str(uav_id): path[i] for i, uav_id in enumerate(ids or []) if i < len(path)
+                    str(uav_id): path[i]
+                    for i, uav_id in enumerate(ids or [])
+                    if i < len(path)
                 }
 
         if msg == "loiter":
@@ -1471,7 +1480,9 @@ class SkybrushServer(DaemonApp):
                     log.warning(coords)
                     gridSpacing = parameters.get("gridSpacing")
                     coverage = parameters.get("coverage")
-                    print(f"[groupsplit] coords={coords} ids={selectedIds} grid={gridSpacing} coverage={coverage}")
+                    print(
+                        f"[groupsplit] coords={coords} ids={selectedIds} grid={gridSpacing} coverage={coverage}"
+                    )
                     # Subset gate: the selection must be a non-empty subset of the
                     # currently-connected UAVs -- it no longer has to be all of
                     # them, so a 2-of-3 split leaves the 3rd UAV free for a
@@ -1486,7 +1497,9 @@ class SkybrushServer(DaemonApp):
                         stop_socket()
                         await sleep(1)
                     if not selectedIds or not set(selectedIds).issubset(connected_ids):
-                        print(f"[groupsplit] rejected: selection {set(selectedIds)} not a subset of connected {connected_ids}")
+                        print(
+                            f"[groupsplit] rejected: selection {set(selectedIds)} not a subset of connected {connected_ids}"
+                        )
                         result = "uav_selection_mismatch"
                     else:
                         result = splitmission(
@@ -1496,7 +1509,9 @@ class SkybrushServer(DaemonApp):
                             gridspace=gridSpacing,
                         )
                         response.body["missionByUav"] = {
-                            str(uav_id): result[i] for i, uav_id in enumerate(selectedIds) if i < len(result)
+                            str(uav_id): result[i]
+                            for i, uav_id in enumerate(selectedIds)
+                            if i < len(result)
                         }
                         print("[groupsplit] splitmission() returned, UDP sent")
                 except Exception:
@@ -1524,7 +1539,9 @@ class SkybrushServer(DaemonApp):
                         for i in range(len(value)):
                             value[i] = int(value[i])
                         uavs.append(value)
-                    print(f"[spificsplit] latlon={latlon} uavs={uavs} grid={gridSpacing} coverage={coverage}")
+                    print(
+                        f"[spificsplit] latlon={latlon} uavs={uavs} grid={gridSpacing} coverage={coverage}"
+                    )
                     # Subset gate: assigned UAVs must be a non-empty subset of
                     # the connected UAVs and each UAV assigned to at most one
                     # group -- they no longer have to cover every connected
@@ -1538,8 +1555,14 @@ class SkybrushServer(DaemonApp):
                     if set(assigned_ids) == connected_ids:
                         stop_socket()
                         await sleep(1)
-                    if not assigned_ids or len(assigned_ids) != len(set(assigned_ids)) or not set(assigned_ids).issubset(connected_ids):
-                        print(f"[spificsplit] rejected: assignment {assigned_ids} not a valid subset of connected {connected_ids}")
+                    if (
+                        not assigned_ids
+                        or len(assigned_ids) != len(set(assigned_ids))
+                        or not set(assigned_ids).issubset(connected_ids)
+                    ):
+                        print(
+                            f"[spificsplit] rejected: assignment {assigned_ids} not a valid subset of connected {connected_ids}"
+                        )
                         result = "uav_coverage_mismatch"
                     else:
                         path, time = specificsplit(latlon, uavs, gridSpacing, coverage)
@@ -1551,7 +1574,9 @@ class SkybrushServer(DaemonApp):
                         # swarm computer already uses (uav_{id}_path.csv). Please
                         # verify this pairing on the bench.
                         response.body["missionByUav"] = {
-                            str(uav_id): path[i] for i, uav_id in enumerate(assigned_ids) if i < len(path)
+                            str(uav_id): path[i]
+                            for i, uav_id in enumerate(assigned_ids)
+                            if i < len(path)
                         }
                 except Exception:
                     print("[spificsplit] EXCEPTION:")
@@ -1565,16 +1590,13 @@ class SkybrushServer(DaemonApp):
 
     outer_boundary = []
 
-
     def set_outer_boundary(boundary):
         global outer_boundary
         outer_boundary = boundary
 
-
     def get_outer_boundary():
         global outer_boundary
         return outer_boundary
-    
 
     async def check_height(self, ids, alt, speed, res):
         from .socket.globalVariable import changeReachHeight
@@ -2378,6 +2400,7 @@ def handle_SYS_VER(message: FlockwaveMessage, sender: Client, hub: MessageHub):
 def handle_UAV_INF(message: FlockwaveMessage, sender: Client, hub: MessageHub):
     return app.create_UAV_INF_message_for(message.get_ids(), in_response_to=message)
 
+
 @app.message_hub.on("UAV-LIST")
 def handle_UAV_LIST(message: FlockwaveMessage, sender: Client, hub: MessageHub):
     return {"ids": list(app.object_registry.ids_by_type(UAV))}
@@ -2451,5 +2474,6 @@ async def handleCameraMission(
 @app.message_hub.on("X-AUTO-MISSION")
 async def handleHomeLock(message: FlockwaveMessage, sender: Client, hub: MessageHub):
     return await app.upload_mission(message, sender)
+
 
 # ######################################################################## #

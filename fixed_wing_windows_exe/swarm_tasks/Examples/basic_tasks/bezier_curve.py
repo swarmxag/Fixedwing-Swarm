@@ -263,7 +263,7 @@ class BezierCurve():
         for i in range(1, len(self.waypoints) - 1, 3):
             if i + 2 < len(self.waypoints) - 1:  # Ensure we don't include the last line
                 if alternative:
-                    heading = 180
+                    heading = np.radians(180)
                     alternative = False
                 else:
                     heading = self.initial_heading

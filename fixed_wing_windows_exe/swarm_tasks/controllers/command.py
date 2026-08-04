@@ -17,52 +17,57 @@ Control functions for tasks, PID, etc. will add to low-range potential field
 
 """
 
-VEC_MAX = robot.MAX_SPEED*3.5	#For truncation
+VEC_MAX = robot.MAX_SPEED * 3.5  # For truncation
+
 
 class Cmd:
-	"""
-	Output of the controller
-	"""
-	def __init__(self, vec=[], speed=1, dir_=None):
-		if len(vec)==2:
-			#Initialize using vector
-			if dir_!=None:
-				print("Vector suplied explicitly; Ignoring dir_...\n")
-			self.vec = np.array([vec[0], vec[1]])*speed
-			self.dir = np.arctan(float(vec[1])/(float(vec[0])+0.00001))
-			
-			if vec[0] < 0:
-				self.dir += np.pi
-				#Needed because arctan codomain is [-pi/2,pi/2]
-				
-			self.speed = np.linalg.norm(self.vec)
-		else:
-			#Initialize using direction and speed
-			self.speed = speed
-			if dir_==None:
-				dir_=0
-			self.dir = dir_
+    """
+    Output of the controller
+    """
 
-			while self.dir<=-np.pi:
-				self.dir+=2*np.pi
-			while self.dir>=np.pi:
-				self.dir-=2*np.pi
+    def __init__(self, vec=[], speed=1, dir_=None):
+        if len(vec) == 2:
+            # Initialize using vector
+            if dir_ != None:
+                print("Vector suplied explicitly; Ignoring dir_...\n")
+            self.vec = np.array([vec[0], vec[1]]) * speed
+            self.dir = np.arctan(float(vec[1]) / (float(vec[0]) + 0.00001))
 
-			self.vec = np.array([np.cos(self.dir), np.sin(self.dir)])*self.speed
-			#self.trunc(VEC_MAX)
-	
-	def trunc(self, max_val):
-		#Trucate output (Not in use)
-		self.vec*=min(max_val/(self.speed+0.00001), 1)
-		self.speed = min(self.speed, max_val)
-		
+            if vec[0] < 0:
+                self.dir += np.pi
+                # Needed because arctan codomain is [-pi/2,pi/2]
 
-	def exec(self, bot):
-		#Execute the command on a robot
-		bot.move(self.dir, self.speed)
+            self.speed = np.linalg.norm(self.vec)
+        else:
+            # Initialize using direction and speed
+            self.speed = speed
+            if dir_ == None:
+                dir_ = 0
+            self.dir = dir_
 
-	def __add__(self, cmd):
-		return Cmd((self.vec + cmd.vec).tolist())
+            while self.dir <= -np.pi:
+                self.dir += 2 * np.pi
+            while self.dir >= np.pi:
+                self.dir -= 2 * np.pi
 
-	def __mul__(self, k):
-		return Cmd((k*self.vec).tolist())
+            self.vec = np.array([np.cos(self.dir), np.sin(self.dir)]) * self.speed
+            # self.trunc(VEC_MAX)
+
+    def trunc(self, max_val):
+        # Trucate output (Not in use)
+        self.vec *= min(max_val / (self.speed + 0.00001), 1)
+        self.speed = min(self.speed, max_val)
+
+    def exec(self, bot, step_size=0.8):
+        # Execute the command on a robot
+        # step_size defaults to bot.move()'s own default (0.8) so every
+        # existing caller is unaffected; pass an explicit value to slow
+        # a specific task down without touching robot.MAX_SPEED globally.
+        print("step_size", step_size)
+        bot.move(self.dir, self.speed, step_size=step_size)
+
+    def __add__(self, cmd):
+        return Cmd((self.vec + cmd.vec).tolist())
+
+    def __mul__(self, k):
+        return Cmd((k * self.vec).tolist())

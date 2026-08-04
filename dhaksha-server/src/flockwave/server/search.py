@@ -385,7 +385,7 @@ import simplekml
 from geopy.distance import distance
 from geopy.point import Point
 from .latlon2xy import geoToCart, cartToGeo
-from .mission_paths import mission_dir
+from .mission_paths import uav_path_csv, uav_path_kml
 import matplotlib.pyplot as plt
 
 
@@ -398,35 +398,42 @@ class BezierCurve:
         num_of_drones,
         grid_space,
         coverage_area,
+        uav_ids=None,
     ):
         self.initial_heading = np.radians(0)  # Initial heading angle in radians
         self.G = 9.81  # Gravity (m/s²)
         self.MAX_BANK_ANGLE = np.radians(20)  # 20 degrees in radians
         self.SPEED = 18  # Aircraft speed in m/s
         self.TURN_RATE = (self.G * np.tan(self.MAX_BANK_ANGLE)) / self.SPEED  # rad/s
-        self.mission_dir = mission_dir("search")
         self.origin = origin
         self.center_latitude = center_latitude
         self.center_longitude = center_longitude
         self.num_of_drones = num_of_drones
         self.grid_space = grid_space
         self.coverage_area = coverage_area
+        # Real UAV ids, same order as the drone slots -- this is what the
+        # single persistent output file per UAV gets named after (see
+        # mission_paths.py). Falls back to the slot number itself if the
+        # caller doesn't have real ids handy, same as the old behaviour.
+        self.uav_ids = list(uav_ids) if uav_ids else list(range(1, num_of_drones + 1))
         self.path = []
         self.waypoints = []
         self.sample_points = []
         self.search_grid = []
+        # Grid points, keyed by drone slot (1-based) -- kept in memory only.
+        # Never persisted: nothing outside generate_bezier_curve() (which
+        # runs immediately after GridFormation() in the same call) ever
+        # needs the raw grid, only the bezier-smoothed path that follows.
+        self._grid_by_slot = {}
 
-    def _grid_csv(self, drone_num):
-        return os.path.join(self.mission_dir, f"drone_{drone_num}_grid.csv")
+    def _uav_id(self, drone_num):
+        return self.uav_ids[drone_num - 1]
 
     def _path_csv(self, drone_num):
-        return os.path.join(self.mission_dir, f"drone_{drone_num}_path.csv")
-
-    def _grid_kml(self, drone_num):
-        return os.path.join(self.mission_dir, f"drone_{drone_num}_grid.kml")
+        return uav_path_csv(self._uav_id(drone_num))
 
     def _path_kml(self, drone_num):
-        return os.path.join(self.mission_dir, f"drone_{drone_num}.kml")
+        return uav_path_kml(self._uav_id(drone_num))
 
     def write_to_csv(self, data, num):
         with open(self._path_csv(num), "w", newline="") as csvfile:
@@ -473,17 +480,10 @@ class BezierCurve:
             top = distance(meters=rectangle_height / 2).destination(top_center, 0)
             bottom = distance(meters=rectangle_height / 2).destination(top_center, 180)
 
-            kml = simplekml.Kml()
-
             csv_data = []
 
             current_lat = bottom.latitude
             line_number = 0
-            line = kml.newlinestring()
-            line.altitudemode = simplekml.AltitudeMode.clamptoground
-            line.style.linestyle.color = simplekml.Color.black
-            line.style.linestyle.width = 2
-            waypoint_number = 1
 
             while current_lat <= top.latitude:
                 line_number += 1
@@ -492,92 +492,41 @@ class BezierCurve:
                 if line_number % 2 == 1:
                     csv_data.append((current_point.latitude, current_point.longitude))
                     csv_data.append((east_point.latitude, east_point.longitude))
-
-                    line.coords.addcoordinates(
-                        [
-                            (current_point.longitude, current_point.latitude),
-                            (east_point.longitude, east_point.latitude),
-                        ]
-                    )
-                    kml.newpoint(
-                        name=f"{waypoint_number}",
-                        coords=[(current_point.longitude, current_point.latitude)],
-                    )
-                    waypoint_number += 1
-                    kml.newpoint(
-                        name=f"{waypoint_number}",
-                        coords=[(east_point.longitude, east_point.latitude)],
-                    )
-                    waypoint_number += 1
                 else:
                     csv_data.append((east_point.latitude, east_point.longitude))
                     csv_data.append((current_point.latitude, current_point.longitude))
-
-                    line.coords.addcoordinates(
-                        [
-                            (east_point.longitude, east_point.latitude),
-                            (current_point.longitude, current_point.latitude),
-                        ]
-                    )
-                    kml.newpoint(
-                        name=f"{waypoint_number}",
-                        coords=[(east_point.longitude, east_point.latitude)],
-                    )
-                    waypoint_number += 1
-                    kml.newpoint(
-                        name=f"{waypoint_number}",
-                        coords=[(current_point.longitude, current_point.latitude)],
-                    )
-                    waypoint_number += 1
 
                 if line_number % 2 == 1:
                     point_135 = distance(meters=meters_for_extended_lines).destination(
                         east_point, 110
                     )
                     csv_data.append((point_135.latitude, point_135.longitude))
-                    line.coords.addcoordinates(
-                        [(point_135.longitude, point_135.latitude)]
-                    )
-                    kml.newpoint(
-                        name=f"{waypoint_number}",
-                        coords=[(point_135.longitude, point_135.latitude)],
-                    )
-                    waypoint_number += 1
                 else:
                     point_225 = distance(meters=meters_for_extended_lines).destination(
                         current_point, 240
                     )
                     csv_data.append((point_225.latitude, point_225.longitude))
-                    line.coords.addcoordinates(
-                        [(point_225.longitude, point_225.latitude)]
-                    )
-                    kml.newpoint(
-                        name=f"{waypoint_number}",
-                        coords=[(point_225.longitude, point_225.latitude)],
-                    )
-                    waypoint_number += 1
 
                 current_lat = (
                     distance(meters=grid_spacing).destination(current_point, 0).latitude
                 )
-            kml.save(self._grid_kml(i + 1))
             csv_datas.append(csv_data)
             self.search_grid = csv_datas
+
+        # Grid points kept in memory only (self._grid_by_slot), keyed by
+        # 1-based drone slot -- generate_bezier_curve() reads them straight
+        # back out below; nothing else ever needs the raw grid once the
+        # bezier-smoothed path has been produced, so it's never written to
+        # disk (see mission_paths.py module docstring).
         minimum_waypoints = len(min(csv_datas, key=len))
         for i in range(len(csv_datas)):
-            number_of_waypoints = 0
-            with open(
-                self._grid_csv(i + 1),
-                mode="w",
-                newline="",
-            ) as file:
-                for j in range(len(csv_datas[i])):
-                    if number_of_waypoints < minimum_waypoints:
-                        writer = csv.writer(file)
-                        y, x = geoToCart(self.origin, 500000, csv_datas[i][j])
-                        writer.writerow((x / 2, y / 2))
-                    number_of_waypoints += 1
-        # return 1
+            points = []
+            for j in range(len(csv_datas[i])):
+                if j >= minimum_waypoints:
+                    break
+                y, x = geoToCart(self.origin, 500000, csv_datas[i][j])
+                points.append((x / 2, y / 2))
+            self._grid_by_slot[i + 1] = points
 
     def predict_path_with_waypoints(
         self,
@@ -636,12 +585,8 @@ class BezierCurve:
 
     def generate_bezier_curve(self):
         for num in range(self.num_of_drones):
-            waypoints = []
-            with open(self._grid_csv(num + 1), "r") as file:
-                csv_reader = csv.reader(file)
-                for row in csv_reader:
-                    self.waypoints.append([float(row[0]), float(row[1])])
-                    waypoints.append([float(row[0]), float(row[1])])
+            waypoints = [list(point) for point in self._grid_by_slot.get(num + 1, [])]
+            self.waypoints.extend(waypoints)
 
             result = [waypoints[0]]
             alternative = False
@@ -649,7 +594,7 @@ class BezierCurve:
             for i in range(1, len(waypoints) - 1, 3):
                 if i + 2 < len(waypoints) - 1:  # Ensure we don't include the last line
                     if alternative:
-                        heading = 180
+                        heading = np.radians(180)
                         alternative = False
                     else:
                         heading = self.initial_heading

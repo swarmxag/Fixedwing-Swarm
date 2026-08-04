@@ -3,7 +3,7 @@ import simplekml
 from geopy.distance import distance
 from geopy.point import Point
 from locatePosition import geoToCart,cartToGeo
-from mission_paths import mission_dir
+from mission_paths import uav_path_csv, uav_path_kml
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -14,27 +14,20 @@ class SpecificSplitMission():
         self.drone_array = drone_array
         self.grid_spacing = grid_spacing
         self.coverage_area = coverage_area
-        self.mission_dir = mission_dir("specific_split")
         self.initial_heading = np.radians(0)  # Initial heading angle in radians
         self.G = 9.81  # Gravity (m/s²)
-        self.MAX_BANK_ANGLE = np.radians(40)  # 40 degrees in radians
+        self.MAX_BANK_ANGLE = np.radians(20)  # 20 degrees in radians -- matches search's BezierCurveMultiple
         self.SPEED = 18  # Aircraft speed in m/s
         self.TURN_RATE = (self.G * np.tan(self.MAX_BANK_ANGLE)) / self.SPEED  # rad/s
         self.sample_points = []
         self.path = []
         self.waypoints = []
 
-    def _grid_csv(self, uav_id):
-        return os.path.join(self.mission_dir, f"uav_{uav_id}_grid.csv")
-
     def _path_csv(self, uav_id):
-        return os.path.join(self.mission_dir, f"uav_{uav_id}_path.csv")
-
-    def _grid_kml(self, uav_id):
-        return os.path.join(self.mission_dir, f"uav_{uav_id}_grid.kml")
+        return uav_path_csv(uav_id)
 
     def _path_kml(self, uav_id):
-        return os.path.join(self.mission_dir, f"uav_{uav_id}.kml")
+        return uav_path_kml(uav_id)
 
     def CreateGridsForSpecifiedAreaAndSpecifiedDrones(
             self,
@@ -65,17 +58,10 @@ class SpecificSplitMission():
             top = distance(meters=rectangle_height / 2).destination(top_center, 0)
             bottom = distance(meters=rectangle_height / 2).destination(top_center, 180)
 
-            kml = simplekml.Kml()
-
             csv_data = []
 
             current_lat = bottom.latitude
             line_number = 0
-            line = kml.newlinestring()
-            line.altitudemode = simplekml.AltitudeMode.clamptoground
-            line.style.linestyle.color = simplekml.Color.black
-            line.style.linestyle.width = 2
-            waypoint_number = 1
 
             while current_lat <= top.latitude:
                 line_number += 1
@@ -84,85 +70,34 @@ class SpecificSplitMission():
                 if line_number % 2 == 1:
                     csv_data.append((current_point.latitude, current_point.longitude))
                     csv_data.append((east_point.latitude, east_point.longitude))
-
-                    line.coords.addcoordinates(
-                        [
-                            (current_point.longitude, current_point.latitude),
-                            (east_point.longitude, east_point.latitude),
-                        ]
-                    )
-                    kml.newpoint(
-                        name=f"{waypoint_number}",
-                        coords=[(current_point.longitude, current_point.latitude)],
-                    )
-                    waypoint_number += 1
-                    kml.newpoint(
-                        name=f"{waypoint_number}",
-                        coords=[(east_point.longitude, east_point.latitude)],
-                    )
-                    waypoint_number += 1
                 else:
                     csv_data.append((east_point.latitude, east_point.longitude))
                     csv_data.append((current_point.latitude, current_point.longitude))
 
-                    line.coords.addcoordinates(
-                        [
-                            (east_point.longitude, east_point.latitude),
-                            (current_point.longitude, current_point.latitude),
-                        ]
-                    )
-                    kml.newpoint(
-                        name=f"{waypoint_number}",
-                        coords=[(east_point.longitude, east_point.latitude)],
-                    )
-                    waypoint_number += 1
-                    kml.newpoint(
-                        name=f"{waypoint_number}",
-                        coords=[(current_point.longitude, current_point.latitude)],
-                    )
-                    waypoint_number += 1
-
                 if line_number % 2 == 1:
                     point_135 = distance(meters=meters_for_extended_lines).destination(
-                        east_point, 135
+                        east_point, 110
                     )
                     csv_data.append((point_135.latitude, point_135.longitude))
-                    line.coords.addcoordinates([(point_135.longitude, point_135.latitude)])
-                    kml.newpoint(
-                        name=f"{waypoint_number}",
-                        coords=[(point_135.longitude, point_135.latitude)],
-                    )
-                    waypoint_number += 1
                 else:
                     point_225 = distance(meters=meters_for_extended_lines).destination(
-                        current_point, 225
+                        current_point, 240
                     )
                     csv_data.append((point_225.latitude, point_225.longitude))
-                    line.coords.addcoordinates([(point_225.longitude, point_225.latitude)])
-                    kml.newpoint(
-                        name=f"{waypoint_number}",
-                        coords=[(point_225.longitude, point_225.latitude)],
-                    )
-                    waypoint_number += 1
 
                 current_lat = (
                     distance(meters=grid_spacing).destination(current_point, 0).latitude
                 )
 
             uav_id = uav_ids[i]
-            kml.save(self._grid_kml(uav_id))
+            # Grid points never persisted -- fed straight into
+            # generate_bezier_curve() below, same as the rest of this run;
+            # see mission_paths.py module docstring.
             xy = []
             for data in csv_data:
                 x,y = geoToCart(self.origin,500000,data)
                 xy.append((x/2.0,y/2.0))
-            with open(
-                    self._grid_csv(uav_id),
-                    mode="w",
-                    newline="",
-            ) as file:
-                writer = csv.writer(file)
-                writer.writerows(xy)
-                self.generate_bezier_curve(xy,uav_id)
+            self.generate_bezier_curve(xy,uav_id)
             
     def write_kml(self,data,num):
         kml = simplekml.Kml()
@@ -175,7 +110,7 @@ class SpecificSplitMission():
             print("No Mission Data")
             return
         for i,cmd in enumerate(data):
-            lat,lon = cartToGeo(self.origin,5000000,[cmd[0]*2,cmd[1]*2])
+            lat,lon = cartToGeo(self.origin,500000,[cmd[0]*2,cmd[1]*2])
             kml_data.append([lat,lon])
         for i in range(len(kml_data)-1):
             line.coords.addcoordinates(
@@ -247,7 +182,7 @@ class SpecificSplitMission():
         for i in range(1, len(waypoints) - 1, 3):
             if i + 2 < len(waypoints) - 1:  # Ensure we don't include the last line
                 if alternative:
-                    heading = 180
+                    heading = np.radians(180)
                     alternative = False
                 else:
                     heading = self.initial_heading

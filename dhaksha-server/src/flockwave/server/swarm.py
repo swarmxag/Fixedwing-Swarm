@@ -30,12 +30,12 @@ def fetch_file_content(file_path):
 
 master_udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-adderss = {1: ("192.168.2.140", 12002), 2: ("192.168.2.140", 12008)}
+adderss = {1: ("172.26.96.1", 12002), 2: ("172.26.96.1", 12008)}
 
 master_num = 0
 origin = None  # set by process_fence() once a fence has been drawn; consumed
-               # directly by splitmission()/specificsplit() below, same
-               # pattern as the copter server's swarm.py
+# directly by splitmission()/specificsplit() below, same
+# pattern as the copter server's swarm.py
 # udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 # server_address1 = ('192.168.6.151', 12008)
 # udp_socket2 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -160,7 +160,8 @@ def _origin_file_path():
     return os.path.join(swarm_folder, "rectangles.yaml")
 
 
-server_address_220 = ("192.168.2.140", 12008)
+server_address_220 = ("172.26.96.1", 12008)
+
 
 def push_origin_and_geofence(origin1):
     """Broadcast a fresh origin + geofence-refresh signal to all swarm computers,
@@ -677,6 +678,7 @@ def search_socket(points, gridspacing, coverage, ids):
         coverage_area=coverage,
         grid_space=gridspacing,
         num_of_drones=len(ids),
+        uav_ids=ids,
     )
     curve.GridFormation()
     curve.generate_bezier_curve()
@@ -1249,6 +1251,7 @@ def navigate(center_latlon, gridspacing, coverage, ids):
         coverage_area=coverage,
         grid_space=gridspacing,
         num_of_drones=1,
+        uav_ids=ids,
     )
     curve.GridFormation()
     curve.generate_bezier_curve()

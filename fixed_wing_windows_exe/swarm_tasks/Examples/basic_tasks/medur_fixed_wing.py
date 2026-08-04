@@ -16,6 +16,7 @@ from groupsplitspecific import SpecificSplitMission
 import socket,json,csv,threading,yaml,shutil
 from shapely.geometry import Polygon
 import locatePosition
+from mission_paths import uav_path_csv, snapshot_uav_path_csv
 import netifaces,wmi
 '''
 file_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -207,7 +208,7 @@ def get_wifi_ip(iface_map):
             for addr in ipv4_info:
                 ip = addr.get('addr')
                 if ip and (adapter == "Ethernet" or adapter=="Wi-Fi" or iface == "eth0" or iface == "ensp20" or iface == "wlan0") and ip.startswith("192.168."):
-                    return "192.168.2.140"
+                    return "192.168.2.117"
         except Exception as e:
             print(f"Error on interface {iface}: {e}")
     return None
@@ -221,7 +222,7 @@ def get_interface_mapping():
         if nic.GUID:
             mappings[nic.GUID.upper()] = nic.NetConnectionID or nic.Name
     #return get_wifi_ip(mappings)
-    return "192.168.2.140"
+    return "172.26.96.1"
 
 
 def vehicle_collision_moniter_receive():	
@@ -385,12 +386,12 @@ def start_search_mission(decoded_index):
 		return False
 	selected_indexes = selected_swarm_indexes(selected_uav_ids)
 	effective_num_uavs = max(1, len(selected_indexes))
-	curve = BezierCurveMultiple(origin, float(center_lat), float(center_lon), effective_num_uavs, int(grid_space), int(coverage_area))
+	curve = BezierCurveMultiple(origin, float(center_lat), float(center_lon), effective_num_uavs, int(grid_space), int(coverage_area), uav_ids=selected_uav_ids)
 	curve.GridFormation()
 	curve.generate_bezier_curve()
 	csv_paths_by_index = {}
 	for path_slot, bot_index in enumerate(selected_indexes):
-		csv_paths_by_index[bot_index] = os.path.join(curve.mission_dir, f'drone_{path_slot + 1}_path.csv')
+		csv_paths_by_index[bot_index] = uav_path_csv(selected_uav_ids[path_slot])
 	assign_mission_tasks(csv_paths_by_index, "search")
 	print('[concurrent search] accepted during running mission', selected_uav_ids, selected_indexes)
 	return True
@@ -428,7 +429,7 @@ def start_split_mission(decoded_index):
 	csv_paths_by_index = {}
 	for bot_index in selected_indexes:
 		uav_id = pos_array[bot_index]
-		csv_paths_by_index[bot_index] = os.path.join(split.mission_dir, f'uav_{uav_id}_path.csv')
+		csv_paths_by_index[bot_index] = uav_path_csv(uav_id)
 	assign_mission_tasks(csv_paths_by_index, "split")
 	print('[concurrent split] accepted during running mission', selected_uav_ids, selected_indexes)
 	return True
@@ -576,6 +577,65 @@ def sync_swarm_with_telemetry():
 			# Idle bots have no swarm-logic motion in progress to protect,
 			# so always take the freshest GPS fix when a new command starts.
 			_resync_bot_position(i, force=True)
+
+
+def live_gps_plot_points():
+	"""Read every vehicle's current GPS fix, fresh, purely for plotting.
+
+	Unlike _resync_bot_position this is read-only (never touches
+	s.swarm[i].x/y) and is not throttled by GPS_RESYNC_INTERVAL, so the GPS
+	overlay on the sim plot moves in real time even between the periodic
+	simulation-state corrections. Returns a list aligned with s.swarm, with
+	None for any bot whose fix isn't available yet.
+	"""
+	points = [None] * len(vehicles)
+	if origin is None:
+		return points
+	for i in range(len(vehicles)):
+		try:
+			lat = vehicles[i].location.global_relative_frame.lat
+			lon = vehicles[i].location.global_relative_frame.lon
+			if lat is None or lon is None:
+				continue
+			x, y = locatePosition.geoToCart(origin, endDistance, [lat, lon])
+			points[i] = (x / 2, y / 2)
+		except Exception:
+			pass
+	return points
+
+
+def print_sim_vs_real_latlon(indexes, label=""):
+	"""For each bot index, print the simulated position converted to
+	lat/lon, the vehicle's real dronekit lat/lon, and the difference
+	between them -- so a mismatch between where the sim thinks a bot is and
+	where the real aircraft actually is (the thing that can cause a real
+	UAV to circle/orbit near a goal that the sim has already smoothly
+	reached) is directly visible and quantified, not just visually implied
+	by the plot overlay.
+	"""
+	if origin is None:
+		return
+	for i in indexes:
+		if i >= len(vehicles) or i >= len(s.swarm):
+			continue
+		try:
+			sim_lat, sim_lon = locatePosition.cartToGeo(
+				origin, endDistance, [s.swarm[i].x * 2, s.swarm[i].y * 2]
+			)
+			real_lat = vehicles[i].location.global_relative_frame.lat
+			real_lon = vehicles[i].location.global_relative_frame.lon
+			if real_lat is None or real_lon is None:
+				continue
+			distance = locatePosition.distance_bearing(real_lat, real_lon,sim_lat, sim_lon)
+			# diff_lat = sim_lat - real_lat
+			# diff_lon = sim_lon - real_lon
+			print(
+				f"[latlon-mismatch]{(' ' + label) if label else ''} UAV {pos_array[i]}: "
+				f"sim=({sim_lat:.7f},{sim_lon:.7f}) real=({real_lat:.7f},{real_lon:.7f}) "
+				f"diff=({distance:.2f} m)"
+			)
+		except Exception as e:
+			print("[latlon-mismatch] failed for vehicle", i, e)
 
 
 def connection_string_for_sysid(sys_id):
@@ -890,62 +950,62 @@ def vehicle_connection():
 		pass
 		print(	"Vehicle 5 is lost")
 	
-	try:
-		vehicle6= connect('udpin:{}:14556'.format(ip),baud=115200,heartbeat_timeout=heartbeat_ip_timeout[5])
-		print('Drone6')
-		num_bots+=1
-		vehicles.append(vehicle6)
-		pos_array.append(vehicle6._master.target_system)
-		msg="Drone6 Connected"
-	except:		
-		pass	
-		print(	"Vehicle 6 is lost")
+	# try:
+	# 	vehicle6= connect('udpin:{}:14556'.format(ip),baud=115200,heartbeat_timeout=heartbeat_ip_timeout[5])
+	# 	print('Drone6')
+	# 	num_bots+=1
+	# 	vehicles.append(vehicle6)
+	# 	pos_array.append(vehicle6._master.target_system)
+	# 	msg="Drone6 Connected"
+	# except:		
+	# 	pass	
+	# 	print(	"Vehicle 6 is lost")
 		
-	try:
-		vehicle7= connect('udpin:{}:14557'.format(ip),baud=115200,heartbeat_timeout=heartbeat_ip_timeout[6])
-		print('Drone7')
-		num_bots+=1
-		vehicles.append(vehicle7)
-		pos_array.append(vehicle7._master.target_system)
-		msg="Drone7 Connected"
-	except:		
-		pass
-		print(	"Vehicle 7 is lost")	
+	# try:
+	# 	vehicle7= connect('udpin:{}:14557'.format(ip),baud=115200,heartbeat_timeout=heartbeat_ip_timeout[6])
+	# 	print('Drone7')
+	# 	num_bots+=1
+	# 	vehicles.append(vehicle7)
+	# 	pos_array.append(vehicle7._master.target_system)
+	# 	msg="Drone7 Connected"
+	# except:		
+	# 	pass
+	# 	print(	"Vehicle 7 is lost")	
 	
-	try:
-		vehicle8= connect('udpin:{}:14558'.format(ip),baud=115200,heartbeat_timeout=heartbeat_ip_timeout[7])
-		print('Drone8')
-		num_bots+=1
-		vehicles.append(vehicle8)
-		pos_array.append(vehicle8._master.target_system)
-		msg="Drone8 Connected"
-	except:	
-		pass
-		print(	"Vehicle 8 is lost")
+	# try:
+	# 	vehicle8= connect('udpin:{}:14558'.format(ip),baud=115200,heartbeat_timeout=heartbeat_ip_timeout[7])
+	# 	print('Drone8')
+	# 	num_bots+=1
+	# 	vehicles.append(vehicle8)
+	# 	pos_array.append(vehicle8._master.target_system)
+	# 	msg="Drone8 Connected"
+	# except:	
+	# 	pass
+	# 	print(	"Vehicle 8 is lost")
 	
-	try:	
-		vehicle9= connect('udpin:{}:14559'.format(ip),baud=115200,heartbeat_timeout=heartbeat_ip_timeout[8])
-		print('Drone9')
-		num_bots+=1
-		vehicles.append(vehicle9)
-		pos_array.append(vehicle9._master.target_system)
-		msg="Drone9 Connected"
-	except:
-		pass
-		print(	"Vehicle 9 is lost")
+	# try:	
+	# 	vehicle9= connect('udpin:{}:14559'.format(ip),baud=115200,heartbeat_timeout=heartbeat_ip_timeout[8])
+	# 	print('Drone9')
+	# 	num_bots+=1
+	# 	vehicles.append(vehicle9)
+	# 	pos_array.append(vehicle9._master.target_system)
+	# 	msg="Drone9 Connected"
+	# except:
+	# 	pass
+	# 	print(	"Vehicle 9 is lost")
 	
-	try:	
-		vehicle10= connect('udpin:{}:14560'.format(ip),baud=115200,heartbeat_timeout=heartbeat_ip_timeout[9])
-		print('Drone10')
-		vehicles.append(vehicle10)
-		pos_array.append(vehicle10._master.target_system)
-		num_bots+=1
-		msg="Drone10 Connected"
-	except:
-		pass
-		print(	"Vehicle 10 is lost")
+	# try:	
+	# 	vehicle10= connect('udpin:{}:14560'.format(ip),baud=115200,heartbeat_timeout=heartbeat_ip_timeout[9])
+	# 	print('Drone10')
+	# 	vehicles.append(vehicle10)
+	# 	pos_array.append(vehicle10._master.target_system)
+	# 	num_bots+=1
+	# 	msg="Drone10 Connected"
+	# except:
+	# 	pass
+	# 	print(	"Vehicle 10 is lost")
 	
-	print(len(vehicles))
+	# print(len(vehicles))
 	'''
 	serialized_data = json.dumps(pos_array)
 	serialized_data="pos_array" + serialized_data
@@ -1117,7 +1177,7 @@ def read_specific_line(csv_file_path, line_number):
             next(reader)
         # Read the desired line
         line = next(reader)
-        goal.append((float(line[0]),float(line[1])))
+        goal.append((float(line[0]),float(line[1]),str(line[2])))
         return goal
 
 
@@ -1322,12 +1382,22 @@ def _start_guided_circle_task(i, task):
 		direction = 1
 	if not goals or radius <= 0:
 		return None
-	last_goal_lat, last_goal_lon = goals[-1][0], goals[-1][1]
-	circle_latlon = generate_points(last_goal_lat, last_goal_lon, 8, radius, direction)
-	circle_points = []
-	for m in circle_latlon:
-		x, y = locatePosition.geoToCart(origin, endDistance, m)
-		circle_points.append((x / 2, y / 2))
+	try:
+		# goals[-1] is a local sim-frame (x, y) point (the /2-scaled output
+		# of geoToCart in handle_concurrent_goal_command), not lat/lon --
+		# convert back to real coordinates before doing geo math on it.
+		last_goal_x, last_goal_y = goals[-1][0], goals[-1][1]
+		last_goal_lat, last_goal_lon = locatePosition.cartToGeo(
+			origin, endDistance, [last_goal_x * 2, last_goal_y * 2]
+		)
+		circle_latlon = generate_points(last_goal_lat, last_goal_lon, 8, radius, direction)
+		circle_points = []
+		for m in circle_latlon:
+			x, y = locatePosition.geoToCart(origin, endDistance, m)
+			circle_points.append((x / 2, y / 2))
+	except Exception as e:
+		print("[guided-circle] failed to start for UAV", pos_array[i], e)
+		return None
 	print("[guided-circle] starting for UAV", pos_array[i], "radius", radius, "direction", direction)
 	return {
 		"type": "guided_circle",
@@ -1476,7 +1546,7 @@ def _goal_task_runner():
 				if i >= len(s.swarm) or i >= len(pos_array):
 					completed.append(i)
 					continue
-				_resync_bot_position(i)
+			#	_resync_bot_position(i)
 				b = s.swarm[i]
 				task_type = task.get("type")
 				if task_type == "mission":
@@ -1894,6 +1964,49 @@ while(1):
 					selected_index_set = set(selected_indexes)
 					print('[goal] selected_uav_ids', selected_uav_ids, 'selected_indexes', selected_indexes)
 					assign_goal_tasks(selected_indexes, goal_xy, guided_circle_radius, guided_circle_direction)
+
+					# Movement is owned by _goal_task_runner (background thread)
+					# from here on -- this loop is read-only and exists purely to
+					# plot what that thread is doing (matplotlib calls must happen
+					# on the main thread, so the background thread can't plot
+					# itself). check_for_new_command() keeps it preemptable/
+					# concurrent-safe exactly like the search/split loops.
+					if master_flag:
+						gui = viz.Gui(s)
+						my_seq = _last_seq
+						while True:
+							time.sleep(sleep_times.get(num_bots, 0.1))
+							check_for_new_command(my_seq)
+							goals_by_bot = [None] * len(s.swarm)
+							circles_by_bot = [None] * len(s.swarm)
+							planned_paths_by_bot = [None] * len(s.swarm)
+							with active_goal_tasks_lock:
+								still_active = False
+								for i in selected_indexes:
+									task = active_goal_tasks.get(i)
+									if task is None:
+										continue
+									still_active = True
+									if task.get("type") == "guided_circle":
+										circles_by_bot[i] = task.get("circle_points")
+									else:
+										goals = task.get("goals", [])
+										goal_index = task.get("goal_index", 0)
+										planned_paths_by_bot[i] = goals
+										if goal_index < len(goals):
+											goals_by_bot[i] = goals[goal_index]
+							gui.show_goals(goals_by_bot)
+							gui.show_circles(circles_by_bot)
+							gui.show_planned_path(planned_paths_by_bot)
+							gui.show_gps_positions(live_gps_plot_points())
+							gui.update()
+							print_sim_vs_real_latlon(selected_indexes, label="goal")
+							if not still_active:
+								gui.close()
+								break
+							if index == b"stop":
+								gui.close()
+								break
 					data=b"index"
 					continue
 					goal_xy_index=0
@@ -2397,7 +2510,13 @@ while(1):
 					
 					if 'gui' in locals() and gui is not None:
 						gui.show_goals([multiple_goals[ind]] * len(s.swarm))
+						gui.show_planned_path([multiple_goals] * len(s.swarm))
+						gui.show_gps_positions(live_gps_plot_points())
 						gui.update()
+						print_sim_vs_real_latlon(
+							[i for i in range(len(s.swarm)) if i not in diverted_indexes],
+							label="navigate",
+						)
 
 					if(index==b"stop"):
 						print("start_flag",start_flag,"circle_formation_flag",circle_formation_flag)
@@ -2417,9 +2536,22 @@ while(1):
 			selected_uav_ids = parse_selected_uav_ids(selected_uav_raw)
 			selected_indexes = selected_swarm_indexes(selected_uav_ids)
 			selected_index_set = set(selected_indexes)
+			# A bot can still have an active_goal_tasks entry from an earlier
+			# goal command (still en route, or already looping forever as a
+			# guided_circle) -- without clearing it here, this fresh search
+			# would see it below and mark the bot "diverted" before it's
+			# ever given a single search waypoint, silently ceding control
+			# to the stale task instead of actually starting the search.
+			with active_goal_tasks_lock:
+				for i in selected_indexes:
+					active_goal_tasks.pop(i, None)
 			effective_num_uavs = max(1, len(selected_indexes) if selected_uav_ids else int(num_uavs))
 			print('[search] selected_uav_ids', selected_uav_ids, 'selected_indexes', selected_indexes)
-			curve= BezierCurveMultiple(origin, float(center_lat), float(center_lon),effective_num_uavs,int(grid_space), int(coverage_area))
+			# Whole-swarm search (no explicit subset) targets every connected
+			# UAV in pos_array order -- same order effective_num_uavs falls
+			# back to num_uavs (== len(pos_array)) for, so the two line up.
+			ids_for_curve = selected_uav_ids if selected_uav_ids else pos_array[:effective_num_uavs]
+			curve= BezierCurveMultiple(origin, float(center_lat), float(center_lon),effective_num_uavs,int(grid_space), int(coverage_area), uav_ids=ids_for_curve)
 			val = curve.GridFormation()
 			path = curve.generate_bezier_curve()
 			search_step=1
@@ -2461,13 +2593,15 @@ while(1):
 				search_flag_val+=1
 				csv_file_paths=[]
 				for i in range(1,effective_num_uavs+1):
-					csv_file_paths.append( os.path.join(curve.mission_dir,f'drone_{i}_path.csv'))
+					csv_file_paths.append(uav_path_csv(ids_for_curve[i - 1]))
 				print("csv_file_paths",csv_file_paths)
 			removed_grid_path_array_index=0
 			print('grid_path_array',grid_path_array)
 			current_goals=[None]*len(pos_array)
+			planned_paths_by_bot=[None]*len(pos_array)
 			my_seq = _last_seq
 			diverted_indexes=set()
+			origin = read_origin(rectangles_path)
 			while 1:
 				if(num_bots==10):
 					time.sleep(0.1)
@@ -2513,6 +2647,17 @@ while(1):
 				if(search_step==1):
 					for path_slot, bot_index in enumerate(selected_indexes):
 						all_uav_csv_grid_array[bot_index]=csv_file_paths[path_slot]
+						# Whole planned route read once here (not every tick)
+						# purely for the show_planned_path() overlay below --
+						# lets you see the full search area/path a bot is
+						# meant to cover, not just its current single target.
+						try:
+							with open(all_uav_csv_grid_array[bot_index], 'rt') as f:
+								planned_paths_by_bot[bot_index] = [
+									(float(row[0]), float(row[1])) for row in csv.reader(f)
+								]
+						except Exception as e:
+							print("[planned-path] failed to read for bot", bot_index, e)
 					print("all_uav_csv_grid_array",all_uav_csv_grid_array)
 					search_step+=1
 				for i,b in enumerate(s.swarm):
@@ -2594,7 +2739,7 @@ while(1):
 						goal_lat_lon = read_specific_line(removed_grid_filename[i], removed_grid_path_array_start_val[i])						
 					else:					
 						goal_lat_lon = read_specific_line(all_uav_csv_grid_array[i], grid_path_array[i])
-					x,y = goal_lat_lon[0][0],goal_lat_lon[0][1]
+					x,y,isCurve = goal_lat_lon[0][0],goal_lat_lon[0][1],goal_lat_lon[0][2]
 					goal=(x,y)
 					current_goals[i]=goal
 					#print(f"CSV goal for bot {i}: {goal}, bot pos: {b.x:.1f}, {b.y:.1f}, ratio: {goal[0]/b.x:.2f}")
@@ -2603,7 +2748,14 @@ while(1):
 					current_position=[b.x,b.y]
 					dx=abs(goal[0]-current_position[0])
 					dy=abs(goal[1]-current_position[1])
-					if(dx<=2 and dy<=2):						
+					if isCurve == "True":
+						b.max_speed = 2.2
+						step_size = 0.6
+						# b.step_size = 0.08
+					else:
+						b.max_speed = 2.5
+						step_size = 0.9
+					if(dx<=5 and dy<=5):
 						if grid_path_array[i]>=int(num_lines) and not removed_grid_path_array_flag:
 							continue
 						if grid_path_array[i]>=int(num_lines) and removed_grid_path_array_flag:
@@ -2613,7 +2765,7 @@ while(1):
 						else:
 							grid_path_array[i]+=1
 							print("grid_path_array",grid_path_array)				
-					cmd.exec(b)											
+					cmd.exec(b,step_size)											
 					if master_flag:
 						if pop_flag_arr[i]==1:							
 							lat,lon = locatePosition.cartToGeo (origin, endDistance, value)
@@ -2626,7 +2778,10 @@ while(1):
 				s.time_elapsed += 1
 				if master_flag and 'gui' in locals() and gui is not None:
 					gui.show_goals(current_goals)
+					gui.show_planned_path(planned_paths_by_bot)
+					gui.show_gps_positions(live_gps_plot_points())
 					gui.update()
+					print_sim_vs_real_latlon(selected_indexes, label="search")
 
 				if(index==b"stop"):
 					search_flag=False
@@ -2762,6 +2917,7 @@ while(1):
 			cwd = os.getcwd()
 			grid_path_array=[0]*len(pos_array)
 			print("split_flag_val",split_flag_val)
+			planned_paths_by_bot=[None]*len(pos_array)
 			if split_flag_val==0:
 				split_flag_val+=1
 				csv_file_paths=[]
@@ -2773,10 +2929,19 @@ while(1):
 				# crash this open().
 				for path_slot, bot_index in enumerate(selected_indexes):
 					uav_id = pos_array[bot_index]
-					csv_path = os.path.join(split.mission_dir, f'uav_{uav_id}_path.csv')
+					csv_path = uav_path_csv(uav_id)
 					csv_file_paths.append(csv_path)
 					reader = csv.reader(open(csv_path))
-					num_lines[bot_index] = len(list(reader))
+					rows = list(reader)
+					num_lines[bot_index] = len(rows)
+					# Whole planned route cached once here (not every tick)
+					# purely for the show_planned_path() overlay below.
+					try:
+						planned_paths_by_bot[bot_index] = [
+							(float(row[0]), float(row[1])) for row in rows
+						]
+					except Exception as e:
+						print("[planned-path] failed to parse for bot", bot_index, e)
 				print("csv_file_paths",csv_file_paths,num_lines)
 			removed_grid_path_array_index=0
 			my_seq = _last_seq
@@ -2920,7 +3085,10 @@ while(1):
 				s.time_elapsed += 1
 				if master_flag and 'gui' in locals() and gui is not None:
 					gui.show_goals(current_goals)
+					gui.show_planned_path(planned_paths_by_bot)
+					gui.show_gps_positions(live_gps_plot_points())
 					gui.update()
+					print_sim_vs_real_latlon(selected_indexes, label="split")
 
 				if(index==b"stop"):
 					split_flag=False
