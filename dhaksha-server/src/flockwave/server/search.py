@@ -436,11 +436,15 @@ class BezierCurve:
     def _path_kml(self, drone_num):
         return uav_path_kml(self._uav_id(drone_num))
 
-    def write_to_csv(self, data, num):
+    def write_to_csv(self, data, is_bezier, num):
+        # 3rd column is the turn-around flag medur_fixed_wing.py's
+        # read_specific_line() expects at line[2] ("True"/"False") to slow
+        # the bot through curves -- dropping it makes every row 2 columns
+        # and crashes the reader with an IndexError on line[2].
         with open(self._path_csv(num), "w", newline="") as csvfile:
             csv_writer = csv.writer(csvfile)
-            for row in data:
-                csv_writer.writerow(row)
+            for row, flag in zip(data, is_bezier):
+                csv_writer.writerow((row[0], row[1], flag))
 
     def GridFormation(self):
         center_lat = self.center_latitude
@@ -525,12 +529,12 @@ class BezierCurve:
             waypoints = [list(point) for point in self._grid_by_slot.get(num + 1, [])]
             self.waypoints.extend(waypoints)
 
-            result, _is_bezier = generate_bezier_path(
+            result, is_bezier = generate_bezier_path(
                 waypoints, self.SPEED, self.TURN_RATE, self.initial_heading
             )
             self.sample_points.extend(result)
             self.path.append(result)
-            self.write_to_csv(result, num + 1)
+            self.write_to_csv(result, is_bezier, num + 1)
             self.write_kml(result, num + 1)
         return self.path
 

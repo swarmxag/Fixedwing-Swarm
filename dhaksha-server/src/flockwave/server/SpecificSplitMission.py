@@ -133,21 +133,25 @@ class SpecificSplitMission:
         # max_iter=500000 (vs. search's default 5000) is kept here
         # deliberately -- unchanged from this class's prior standalone
         # implementation.
-        result, _is_bezier = generate_bezier_path(
+        result, is_bezier = generate_bezier_path(
             waypoints, self.SPEED, self.TURN_RATE, self.initial_heading,
             max_iter=500000,
         )
         self.sample_points.extend(result)
         self.path.append(result)
         self.write_kml(result, index)
-        self.write_to_csv(result, index)
+        self.write_to_csv(result, is_bezier, index)
         return result
 
-    def write_to_csv(self, data, num):
+    def write_to_csv(self, data, is_bezier, num):
+        # 3rd column is the turn-around flag the swarm-side
+        # read_specific_line() expects at line[2] ("True"/"False") to slow
+        # the bot through curves -- dropping it makes every row 2 columns
+        # and crashes the reader with an IndexError on line[2].
         with open(self._path_csv(num), "w", newline="") as csvfile:
             csv_writer = csv.writer(csvfile)
-            for row in data:
-                csv_writer.writerow(row)
+            for row, flag in zip(data, is_bezier):
+                csv_writer.writerow((row[0], row[1], flag))
 
     def GroupSplitting(
         self, center_lat_lons, drone_array, grid_spacing, coverage_area

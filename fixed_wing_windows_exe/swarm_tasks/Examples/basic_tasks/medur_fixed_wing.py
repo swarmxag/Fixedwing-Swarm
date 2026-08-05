@@ -627,13 +627,13 @@ def print_sim_vs_real_latlon(indexes, label=""):
 			if real_lat is None or real_lon is None:
 				continue
 			distance = locatePosition.distance_bearing(real_lat, real_lon,sim_lat, sim_lon)
-			# diff_lat = sim_lat - real_lat
-			# diff_lon = sim_lon - real_lon
-			# print(
-			# 	f"[latlon-mismatch]{(' ' + label) if label else ''} UAV {pos_array[i]}: "
-			# 	f"sim=({sim_lat:.7f},{sim_lon:.7f}) real=({real_lat:.7f},{real_lon:.7f}) "
-			# 	f"diff=({distance:.2f} m)"
-			# )
+			diff_lat = sim_lat - real_lat
+			diff_lon = sim_lon - real_lon
+			print(
+				f"[latlon-mismatch]{(' ' + label) if label else ''} UAV {pos_array[i]}: "
+				f"sim=({sim_lat:.7f},{sim_lon:.7f}) real=({real_lat:.7f},{real_lon:.7f}) "
+				f"diff=({distance:.2f} m)"
+			)
 		except Exception as e:
 			print("[latlon-mismatch] failed for vehicle", i, e)
 
@@ -1464,6 +1464,24 @@ def _drive_guided_circle_task(i, b, task, completed):
 	_drive_vehicle_towards(i, b)
 
 
+# A fixed-wing can't turn on a dime, so waiting for a tight arrival
+# tolerance before switching to the next CSV point means the switch happens
+# too late relative to the airframe's real turn radius. Several of the
+# closely-spaced bezier turn-around samples then satisfy that same tight
+# check within one or two ticks once the bot is finally close, which reads
+# as line_index jumping several points at once -- the vehicle (driven off
+# b.x/b.y via _drive_vehicle_towards) is only ever commanded toward
+# whichever point line_index lands on, so it cuts a straight line to it
+# instead of having been guided through the ones in between. Switching on a
+# wider radius issues the next point's command while still approaching the
+# current one -- turn anticipation, the way a real AUTO mission's WP_RADIUS
+# acceptance works -- so line_index advances one point at a time. The last
+# point of a run keeps the old tight tolerance since that is where mission
+# completion is actually judged.
+MISSION_POINT_SWITCH_RADIUS = 15  # sim units; tune to airframe turn radius
+MISSION_FINAL_POINT_RADIUS = 2
+
+
 def _drive_mission_task(i, b, task, completed):
 	line_index = task.get("line_index", 0)
 	num_lines = task.get("num_lines", 0)
@@ -1482,7 +1500,9 @@ def _drive_mission_task(i, b, task, completed):
 	cmd = cvg.goal_area_cvg(i, b, goal_position)
 	dx = abs(goal_position[0] - b.x)
 	dy = abs(goal_position[1] - b.y)
-	if dx <= 2 and dy <= 2:
+	is_last_point = line_index >= num_lines - 1
+	radius = MISSION_FINAL_POINT_RADIUS if is_last_point else MISSION_POINT_SWITCH_RADIUS
+	if dx <= radius and dy <= radius:
 		line_index += 1
 		with active_goal_tasks_lock:
 			if i in active_goal_tasks:
@@ -1546,7 +1566,6 @@ def _goal_task_runner():
 				if i >= len(s.swarm) or i >= len(pos_array):
 					completed.append(i)
 					continue
-			#	_resync_bot_position(i)
 				b = s.swarm[i]
 				task_type = task.get("type")
 				if task_type == "mission":
@@ -1829,7 +1848,7 @@ while(1):
 							if(specific_bot_goal_flag_array[i]):
 								dx=abs(goal_pos[i][0]-current_position[0])
 								dy=abs(goal_pos[i][1]-current_position[1])
-								if(dx<=5 and dy<=5):
+								if(dx<=10 and dy<=10):
 									specific_bot_goal_flag_array[i]=False
 									print("specific_bot_goal_flag_array",specific_bot_goal_flag_array)
 								if all(flag==False for flag in specific_bot_goal_flag_array):
@@ -1912,7 +1931,7 @@ while(1):
 							if(group_split_flag_array[i]):
 								dx=abs(group_split_goal_pos[i][0]-current_position[0])
 								dy=abs(group_split_goal_pos[i][1]-current_position[1])
-								if(dx<=5 and dy<=5):
+								if(dx<=10 and dy<=10):
 									group_split_flag_array[i]=False
 									print("group_split_flag_array",group_split_flag_array)
 								if all(flag==False for flag in group_split_flag_array):
@@ -2755,7 +2774,7 @@ while(1):
 					else:
 						b.max_speed = 2.4
 						step_size = 0.8
-					if(dx<=5 and dy<=5):
+					if(dx<=10 and dy<=10):
 						if grid_path_array[i]>=int(num_lines) and not removed_grid_path_array_flag:
 							continue
 						if grid_path_array[i]>=int(num_lines) and removed_grid_path_array_flag:
@@ -3063,7 +3082,7 @@ while(1):
 					current_position=[b.x,b.y]
 					dx=abs(goal[0]-current_position[0])
 					dy=abs(goal[1]-current_position[1])
-					if(dx<=2 and dy<=2):						
+					if(dx<=5 and dy<=5):						
 						if grid_path_array[i]>=int(num_lines[i]) and not removed_grid_path_array_flag:
 							continue
 						if grid_path_array[i]>=int(num_lines[i]) and removed_grid_path_array_flag:
