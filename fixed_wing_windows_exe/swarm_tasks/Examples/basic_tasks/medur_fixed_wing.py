@@ -2685,7 +2685,7 @@ while(1):
 			print("Search Started")
 			search_flag_val=0
 			f=""
-			num_lines=0
+			num_lines=[0]*len(pos_array)
 			goal_position=[]
 			cwd = os.getcwd()
 			print("search_flag_val",search_flag_val)
@@ -2729,8 +2729,6 @@ while(1):
 					vehicle_lost_flag=True
 					x=remove_vehicle()
 					print(x)
-				reader = csv.reader(open(csv_file_paths[0]))
-				num_lines= len(list(reader))
 				if(remove_bot_flag):
 					print("remove_bot_flag,remove_bot_array",remove_bot_flag,remove_bot_array)
 					removed_indexes = sorted(remove_bot_array, reverse=True)
@@ -2748,18 +2746,30 @@ while(1):
 				if(search_step==1):
 					for path_slot, bot_index in enumerate(selected_indexes):
 						all_uav_csv_grid_array[bot_index]=csv_file_paths[path_slot]
-						# Whole planned route read once here (not every tick)
-						# purely for the show_planned_path() overlay below --
-						# lets you see the full search area/path a bot is
-						# meant to cover, not just its current single target.
+						# Read once here (not every tick), per bot -- both the
+						# line count used for THIS bot's own grid_path_array
+						# bounds check below, and the whole planned route for
+						# the show_planned_path() overlay. Per-bot matters: a
+						# concurrent redirect (search re-targeting a UAV
+						# subset while this mission is still running, see
+						# start_search_mission()) overwrites just that
+						# subset's csv files with a differently-sized grid --
+						# a single num_lines shared across every bot (read
+						# from whichever one file) would silently go wrong
+						# for every OTHER, unrelated bot still reading its
+						# own file, causing an out-of-range
+						# read_specific_line() the moment that bot's
+						# grid_path_array outpaces the now-wrong shared bound.
 						try:
 							with open(all_uav_csv_grid_array[bot_index], 'rt') as f:
-								planned_paths_by_bot[bot_index] = [
-									(float(row[0]), float(row[1])) for row in csv.reader(f)
-								]
+								rows = list(csv.reader(f))
+							num_lines[bot_index] = len(rows)
+							planned_paths_by_bot[bot_index] = [
+								(float(row[0]), float(row[1])) for row in rows
+							]
 						except Exception as e:
 							print("[planned-path] failed to read for bot", bot_index, e)
-					print("all_uav_csv_grid_array",all_uav_csv_grid_array)
+					print("all_uav_csv_grid_array",all_uav_csv_grid_array,"num_lines",num_lines)
 					search_step+=1
 				for i,b in enumerate(s.swarm):
 					if i not in selected_index_set:
@@ -2773,9 +2783,9 @@ while(1):
 						    landing_flag=True
 					else:
 					    pass
-					if all(grid_path_array[x] >= int(num_lines) for x in selected_indexes) and removed_grid_path_length!=[] and not removed_grid_path_array_flag:
+					if all(grid_path_array[x] >= int(num_lines[i]) for x in selected_indexes) and removed_grid_path_length!=[] and not removed_grid_path_array_flag:
 						print("removed_grid_path_length",removed_grid_path_length)
-						allocation,remaining_points_list  = allocate_drones(int(num_lines), removed_grid_path_length, len(selected_indexes))
+						allocation,remaining_points_list  = allocate_drones(int(num_lines[i]), removed_grid_path_length, len(selected_indexes))
 						print("allocation,remaining_points_list",allocation,remaining_points_list)						
 						for x,v in enumerate(remaining_points_list):
 						    print("x",x)
@@ -2785,7 +2795,7 @@ while(1):
 						        start_index=removed_grid_path_length[x]-1
 						    print("start_index",start_index)
 						    print("JJJ",allocation[x])
-						    if(allocation[x]==0) and removed_grid_path_length[x]!=int(num_lines):
+						    if(allocation[x]==0) and removed_grid_path_length[x]!=int(num_lines[i]):
 						        uncovered_area_points.append(removed_grid_path_length[x])
 						        uncovered_area_filename.append(removed_uav_grid[x])
 						        print("uncovered_area_points",x,v,uncovered_area_points,uncovered_area_filename)
@@ -2800,8 +2810,8 @@ while(1):
 						        print('removed_grid_path_array_index',removed_grid_path_array_index)
 						        if(m!=0):
 						            end_index+=add_points
-						        if(end_index>int(num_lines)):
-						            end_index=int(num_lines)
+						        if(end_index>int(num_lines[i])):
+						            end_index=int(num_lines[i])
 						        removed_grid_path_array[removed_grid_path_array_index] = (start_index, end_index)
 						        removed_grid_path_array_start_val[removed_grid_path_array_index] = start_index
 						        removed_grid_filename[removed_grid_path_array_index]=removed_uav_grid[x]
@@ -2811,7 +2821,7 @@ while(1):
 						print("removed_grid_path_array!!!!!",removed_grid_path_array,removed_grid_path_array_start_val,removed_grid_filename)
 						removed_grid_path_array_flag=True
 						
-					if all(grid_path_array[x] >= int(num_lines) for x in selected_indexes) and not removed_grid_path_length!=[]:
+					if all(grid_path_array[x] >= int(num_lines[i]) for x in selected_indexes) and not removed_grid_path_length!=[]:
 						landing_flag=True
 					if(removed_grid_path_array_flag):						
 						if(removed_grid_path_array_start_val[i]==0):
@@ -2823,18 +2833,18 @@ while(1):
 							if(uncovered_area_points!=[]):  
 							    print("uncovered_area_points",uncovered_area_points)
 							    for u,uncovered_area_point in enumerate(uncovered_area_points):
-							        removed_grid_path_array[i]=(uncovered_area_point,int(num_lines)+1)
+							        removed_grid_path_array[i]=(uncovered_area_point,int(num_lines[i])+1)
 							        print('removed_grid_path_array',removed_grid_path_array)
 							        removed_grid_path_array_start_val[i]=uncovered_area_points[u]
 							        removed_grid_filename[i]=uncovered_area_filename[u]
-							        removed_grid_path_array[i]=(uncovered_area_points[u],int(num_lines))
+							        removed_grid_path_array[i]=(uncovered_area_points[u],int(num_lines[i]))
 							        print('removed_grid_path_array_start_val',removed_grid_path_array_start_val,removed_grid_filename)
 							        checkall_removed_grid_path_array_start_val[i]=0
 							        uncovered_area_points.pop(u)
 							        uncovered_area_filename.pop(u)							
 							else:							    
 							    continue						
-					if grid_path_array[i]>=int(num_lines) and not removed_grid_path_array_flag:
+					if grid_path_array[i]>=int(num_lines[i]) and not removed_grid_path_array_flag:
 						continue						
 					if(removed_grid_path_array_flag):						
 						goal_lat_lon = read_specific_line(removed_grid_filename[i], removed_grid_path_array_start_val[i])						
@@ -2861,9 +2871,9 @@ while(1):
 					# 	b.max_speed = 3
 					# 	step_size = 0.8
 					if(dx<=10 and dy<=10):
-						if grid_path_array[i]>=int(num_lines) and not removed_grid_path_array_flag:
+						if grid_path_array[i]>=int(num_lines[i]) and not removed_grid_path_array_flag:
 							continue
-						if grid_path_array[i]>=int(num_lines) and removed_grid_path_array_flag:
+						if grid_path_array[i]>=int(num_lines[i]) and removed_grid_path_array_flag:
 							removed_grid_path_array_start_val[i]+=1
 							print("removed_grid_path_array_start_val",removed_grid_path_array_start_val)
 							
@@ -3180,7 +3190,7 @@ while(1):
 					dis = print_sim_vs_real_latlon_with_bot(b,i, label="split")
 					if dis <= 300:
 							print(f"Bot {i} dis:{dis}.")
-							cmd =cvg.goal_area_cvg(i,b,goal_position)
+							cmd =cvg.goal_area_cvg(i,b,goal)
 							cmd += disp_field(b, neighbourhood_radius=100)
 							cmd.exec(b,step_size=1)
 					# cmd.exec(b)											
