@@ -26,7 +26,10 @@ import {
   getOutdoorShowOrientation,
   getOutdoorShowOrigin,
 } from '~/features/show/selectors';
-import { getSelectedUAVIdsForTrajectoryDisplay } from '~/features/uavs/selectors';
+import {
+  getSelectedUAVIdsForTrajectoryDisplay,
+  getUAVIdList,
+} from '~/features/uavs/selectors';
 import {
   globalIdToHomePositionId,
   globalIdToLandingPositionId,
@@ -642,7 +645,30 @@ export const MissionInfoLayer = connect(
       : undefined,
     loadMission: getLoadMissionState(state),
     missionArray: getMissionFromServer(state),
-    missionByUav: getMissionByUav(state),
+    // mergeMissionForUavs only ever adds/overwrites entries, it never
+    // removes them -- so a UAV dropped from the swarm (e.g. going from a
+    // 10-bot run to a 5-bot run) leaves its old grid sitting in
+    // missionByUav forever with nothing to clear it. Filtering against the
+    // live connected-UAV list here (rather than pruning the store) means
+    // a UAV's grid still reappears correctly if it reconnects, but never
+    // draws while it isn't part of the swarm.
+    //
+    // IDs can't be compared as raw strings: the mavlink extension's
+    // id_format ("{0:02}", see etc/conf/skybrush-outdoor.jsonc) zero-pads
+    // connected UAV ids to "01", "02", ... while missionByUav's keys come
+    // straight from the swarm server's str(sysid) -- "1", "2", ... --
+    // normalize both to their numeric sysid before comparing.
+    missionByUav: (() => {
+      const connectedIds = new Set(
+        getUAVIdList(state).map((id) => String(Number.parseInt(id, 10)))
+      );
+      const all = getMissionByUav(state);
+      return Object.fromEntries(
+        Object.entries(all).filter(([uavId]) =>
+          connectedIds.has(String(Number.parseInt(uavId, 10)))
+        )
+      );
+    })(),
   }),
   // mapDispatchToProps
   {}

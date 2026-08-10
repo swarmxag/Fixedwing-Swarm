@@ -323,6 +323,17 @@ const SwarmPanel = ({
         } else {
           dispatch(setMissionFromServer(res.body.message));
         }
+      } else if (message == 'goal') {
+        // A goal command targets a single point, not a coverage grid --
+        // without this, a UAV that previously ran a search/navigate/split
+        // keeps showing that old grid on the map forever, since nothing
+        // else ever clears missionByUav for it once it's no longer running
+        // that mission.
+        dispatch(
+          mergeMissionForUavs(
+            Object.fromEntries(selectedUAVIds.map((uavId) => [uavId, []]))
+          )
+        );
       }
     } catch (e) {
       dispatch(

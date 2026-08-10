@@ -18,6 +18,11 @@ from shapely.geometry import Polygon
 import locatePosition
 from mission_paths import uav_path_csv, snapshot_uav_path_csv
 import netifaces,wmi
+
+swarm_tasks.utils.robot.DEFAULT_NEIGHBOURHOOD_VAL = 7
+swarm_tasks.utils.robot.DEFAULT_SIZE= 0.4
+swarm_tasks.utils.robot.MAX_SPEED = 1.5
+swarm_tasks.utils.robot.MAX_ANGULAR: 0.3
 '''
 file_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 # Bind the socket to the port
@@ -627,15 +632,38 @@ def print_sim_vs_real_latlon(indexes, label=""):
 			if real_lat is None or real_lon is None:
 				continue
 			distance = locatePosition.distance_bearing(real_lat, real_lon,sim_lat, sim_lon)
-			diff_lat = sim_lat - real_lat
-			diff_lon = sim_lon - real_lon
-			print(
-				f"[latlon-mismatch]{(' ' + label) if label else ''} UAV {pos_array[i]}: "
-				f"sim=({sim_lat:.7f},{sim_lon:.7f}) real=({real_lat:.7f},{real_lon:.7f}) "
-				f"diff=({distance:.2f} m)"
-			)
+			# print(
+			# 	f"[latlon-mismatch]{(' ' + label) if label else ''} UAV {pos_array[i]}: "
+			# 	f"sim=({sim_lat:.7f},{sim_lon:.7f}) real=({real_lat:.7f},{real_lon:.7f}) "
+			# 	f"diff=({distance:.2f} m)"
+			# )
 		except Exception as e:
 			print("[latlon-mismatch] failed for vehicle", i, e)
+	return distance
+
+def print_sim_vs_real_latlon_with_bot(b,i, label=""):
+    """For each bot index, print the simulated position converted to
+    lat/lon, the vehicle's real dronekit lat/lon, and the difference
+    between them -- so a mismatch between where the sim thinks a bot is and
+    where the real aircraft actually is (the thing that can cause a real
+    UAV to circle/orbit near a goal that the sim has already smoothly
+    reached) is directly visible and quantified, not just visually implied
+    by the plot overlay.
+    """
+    if origin is None:
+        return 0
+    try:
+        sim_lat, sim_lon = locatePosition.cartToGeo(
+            origin, endDistance, [b.x * 2, b.y * 2]
+        )
+        real_lat = vehicles[i].location.global_relative_frame.lat
+        real_lon = vehicles[i].location.global_relative_frame.lon
+
+        distance = locatePosition.distance_bearing(real_lat, real_lon,sim_lat, sim_lon)
+
+    except Exception as e:
+        print("[latlon-mismatch] failed for vehicle", i, e)
+    return distance
 
 
 def connection_string_for_sysid(sys_id):
@@ -1311,7 +1339,7 @@ def assign_goal_tasks(selected_indexes, goal_xy, guided_circle_radius=None, guid
 				"type": "goal",
 				"goals": list(goal_xy),
 				"goal_index": 0,
-				"guided_circle_radius": guided_circle_radius,
+				"guided_circle_radius": 350,
 				"guided_circle_direction": guided_circle_direction,
 			}
 	print("[goal-task] assigned", selected_indexes, goal_xy, "circle_radius", guided_circle_radius, "circle_direction", guided_circle_direction)
@@ -1368,6 +1396,7 @@ def _start_guided_circle_task(i, task):
 	position, same as before this restoration."""
 	goals = task.get("goals", [])
 	radius_raw = task.get("guided_circle_radius")
+	print("guided_circle_radius", radius_raw)
 	direction_raw = task.get("guided_circle_direction")
 	try:
 		# radius/direction arrive as strings off the wire (e.g. "0") -- a
@@ -1434,9 +1463,15 @@ def _drive_goal_task(i, b, task, completed):
 			if i in active_goal_tasks:
 				active_goal_tasks[i]["goal_index"] = goal_index
 		goal_position = goals[goal_index]
-	b.set_goal(goal_position[0], goal_position[1])
-	cmd = cvg.goal_area_cvg(i, b, goal_position)
-	cmd.exec(b)
+	# b.set_goal(goal_position[0], goal_position[1])
+	# cmd = cvg.goal_area_cvg(i, b, goal_position)
+	# cmd.exec(b)
+	dis = print_sim_vs_real_latlon_with_bot(b,i, label="goal")
+	if dis <= 300:
+		print(f"Bot {i} dis:{dis}.")
+		cmd =cvg.goal_area_cvg(i,b,goal_position)
+		cmd += disp_field(b, neighbourhood_radius=100)
+		cmd.exec(b,step_size=1)
 	_drive_vehicle_towards(i, b)
 
 
@@ -1451,8 +1486,15 @@ def _drive_guided_circle_task(i, b, task, completed):
 		return
 	circle_index = task.get("circle_index", 0)
 	goal_position = circle_points[circle_index]
-	cmd = cvg.goal_area_cvg(i, b, goal_position)
-	cmd += disp_field(b, neighbourhood_radius=100)
+	# cmd = cvg.goal_area_cvg(i, b, goal_position)
+	# cmd += disp_field(b, neighbourhood_radius=100)
+	# cmd.exec(b)
+	dis = print_sim_vs_real_latlon_with_bot(b,i, label="search")
+	if dis <= 300:
+		print(f"Bot {i} dis:{dis}.")
+		cmd =cvg.goal_area_cvg(i,b,goal_position)
+		cmd += disp_field(b, neighbourhood_radius=100)
+		cmd.exec(b,step_size=1)
 	dx = abs(goal_position[0] - b.x)
 	dy = abs(goal_position[1] - b.y)
 	if dx <= 5 and dy <= 5:
@@ -1460,7 +1502,6 @@ def _drive_guided_circle_task(i, b, task, completed):
 		with active_goal_tasks_lock:
 			if i in active_goal_tasks:
 				active_goal_tasks[i]["circle_index"] = circle_index
-	cmd.exec(b)
 	_drive_vehicle_towards(i, b)
 
 
@@ -1479,7 +1520,7 @@ def _drive_guided_circle_task(i, b, task, completed):
 # point of a run keeps the old tight tolerance since that is where mission
 # completion is actually judged.
 MISSION_POINT_SWITCH_RADIUS = 15  # sim units; tune to airframe turn radius
-MISSION_FINAL_POINT_RADIUS = 2
+MISSION_FINAL_POINT_RADIUS = 10
 
 
 def _drive_mission_task(i, b, task, completed):
@@ -1507,7 +1548,12 @@ def _drive_mission_task(i, b, task, completed):
 		with active_goal_tasks_lock:
 			if i in active_goal_tasks:
 				active_goal_tasks[i]["line_index"] = line_index
-	cmd.exec(b)
+	dis = print_sim_vs_real_latlon_with_bot(b,i, label="mission")
+	if dis <= 300:
+		print(f"Bot {i} dis:{dis}.")
+		cmd = cvg.goal_area_cvg(i,b,goal_position)
+		cmd+= disp_field(b,neighbourhood_radius=100)
+		cmd.exec(b,step_size=1)
 	_drive_vehicle_towards(i, b)
 
 
@@ -1534,6 +1580,12 @@ def _drive_altitude_task(i, b, task, completed):
 	cmd = cvg.goal_area_cvg(i, b, goal_position)
 	cmd += disp_field(b, neighbourhood_radius=100)
 	cmd.exec(b)
+	# dis = print_sim_vs_real_latlon_with_bot(b,i, label="search")
+	# if dis <= 300:
+	# 	print(f"Bot {i} dis:{dis}.")
+	# 	cmd =cvg.goal_area_cvg(i,b,goal_position)
+	# 	cmd += disp_field(b, neighbourhood_radius=100)
+	# 	cmd.exec(b,step_size=1)
 	_drive_vehicle_towards(i, b)
 	if master_flag and i < len(vehicles) and i < len(different_height):
 		try:
@@ -1766,7 +1818,20 @@ while(1):
 			decoded_index = data.decode('utf-8')
 			_, lat, lon = decoded_index.split(",")
 			origin = (float(lat), float(lon))
-			file_name = "rectangles"          # switches env to the dynamically-written world file
+			file_name = "rectangles"        
+			# uav_home_pos must be recomputed under the *new* origin here --
+			# reusing whatever was left over from before this origin change
+			# spawns bots at cartesian coordinates from the old frame, which
+			# no longer lines up with the real UAVs converted through the
+			# new origin, and stays wrong until the real aircraft happens to
+			# fly within the dis<=300 resync radius of the stale bot.
+			uav_home_pos = []
+			for vehicle in vehicles:
+				lat_i = vehicle.location.global_relative_frame.lat
+				lon_i = vehicle.location.global_relative_frame.lon
+				x, y = locatePosition.geoToCart(origin, endDistance, [lat_i, lon_i])
+				uav_home_pos.append((x / 2, y / 2))
+  			# switches env to the dynamically-written world file
 			s = sim.Simulation(uav_home_pos, num_bots=len(pos_array), env_name=file_name)
 			print("Origin + obstacles refreshed:", origin, file_name)      
 			     				
@@ -2019,7 +2084,7 @@ while(1):
 							gui.show_planned_path(planned_paths_by_bot)
 							gui.show_gps_positions(live_gps_plot_points())
 							gui.update()
-							print_sim_vs_real_latlon(selected_indexes, label="goal")
+							#print_sim_vs_real_latlon(selected_indexes, label="goal")
 							if not still_active:
 								gui.close()
 								break
@@ -2141,9 +2206,15 @@ while(1):
 					for i,b in enumerate(s.swarm):
 						current_position = [b.x,b.y]							
 						goal=multiple_goals[ind[i]]	
-						cmd =cvg.goal_area_cvg(i,b,goal)
-						cmd+= disp_field(b,neighbourhood_radius=100)
-						cmd.exec(b)
+						# cmd =cvg.goal_area_cvg(i,b,goal)
+						# cmd+= disp_field(b,neighbourhood_radius=100)
+						# cmd.exec(b)
+						dis = print_sim_vs_real_latlon_with_bot(b,i, label="Guided Circle")
+						if dis <= 300:
+							print(f"Bot {i} dis:{dis}.")
+							cmd =cvg.goal_area_cvg(i,b,goal)
+							cmd+= disp_field(b,neighbourhood_radius=100)
+							cmd.exec(b,step_size=1)
 						dx=abs(goal[0]-current_position[0])
 						dy=abs(goal[1]-current_position[1])	
 						circle_formation_table[i]=1					
@@ -2312,9 +2383,14 @@ while(1):
 							lon = vehicles[i].location.global_relative_frame.lon
 							x,y = locatePosition.geoToCart (origin, endDistance, [lat,lon])
 							plane_points=[x/2,y/2]
-							cmd =cvg.goal_area_cvg(i,b,goal)
-							cmd+= disp_field(b,neighbourhood_radius=100)
-							cmd.exec(b)
+							dis = print_sim_vs_real_latlon_with_bot(b,i, label="loiter_point")
+							if dis <= 300:
+								print(f"Bot {i} dis:{dis}.")
+								cmd =cvg.goal_area_cvg(i,b,goal)
+								cmd.exec(b,step_size=1)
+							# cmd =cvg.goal_area_cvg(i,b,goal)
+							# cmd+= disp_field(b,neighbourhood_radius=100)
+							# cmd.exec(b)
 							dx=abs(goal[0]-current_position[0])
 							dy=abs(goal[1]-current_position[1])
 							if master_flag:
@@ -2486,9 +2562,14 @@ while(1):
 							ind=goal_table[i]							
 						
 						goal=multiple_goals[ind]
-						cmd =cvg.goal_area_cvg(i,b,goal)
-						cmd+= disp_field(b,neighbourhood_radius=100)
-						cmd.exec(b)							
+						# cmd =cvg.goal_area_cvg(i,b,goal)
+						# cmd+= disp_field(b,neighbourhood_radius=100)
+						# cmd.exec(b)	
+						dis = print_sim_vs_real_latlon_with_bot(b,i, label="navigate")
+						if dis <= 300:
+							print(f"Bot {i} dis:{dis}.")
+							cmd =cvg.goal_area_cvg(i,b,goal)
+							cmd.exec(b,step_size=1)
 						dx=abs(goal[0]-current_position[0])
 						dy=abs(goal[1]-current_position[1])						
 						if(dx<=1 and dy<=1):							
@@ -2596,7 +2677,8 @@ while(1):
 					#uav4.sendto(serialized_data.encode(), uav4_server_address)
 					#time.sleep(0.2)
 					#uav5.sendto(serialized_data.encode(), #uav5_server_address)			
-				'''				
+				'''		
+				swarm_tasks.utils.robot.DEFAULT_SIZE= 0.4
 				s = sim.Simulation(uav_home_pos,num_bots=num_bots, env_name=file_name)
 				gui = viz.Gui(s)
 
@@ -2762,18 +2844,22 @@ while(1):
 					goal=(x,y)
 					current_goals[i]=goal
 					#print(f"CSV goal for bot {i}: {goal}, bot pos: {b.x:.1f}, {b.y:.1f}, ratio: {goal[0]/b.x:.2f}")
-					cmd =cvg.goal_area_cvg(i,b,goal)
+					dis = print_sim_vs_real_latlon_with_bot(b,i, label="search")
+					if dis <= 300:
+						print(f"Bot {i} dis:{dis}.")
+						cmd =cvg.goal_area_cvg(i,b,goal)
+						cmd.exec(b,step_size=1)
 					value=[b.x*2,b.y*2]
 					current_position=[b.x,b.y]
 					dx=abs(goal[0]-current_position[0])
 					dy=abs(goal[1]-current_position[1])
-					if isCurve == "True":
-						b.max_speed = 2.2
-						step_size = 0.6
-						# b.step_size = 0.08
-					else:
-						b.max_speed = 2.4
-						step_size = 0.8
+					# if isCurve == "True":
+					# 	b.max_speed = 1.5
+					# 	step_size = 0.4
+					# 	# b.step_size = 0.08
+					# else:
+					# 	b.max_speed = 3
+					# 	step_size = 0.8
 					if(dx<=10 and dy<=10):
 						if grid_path_array[i]>=int(num_lines) and not removed_grid_path_array_flag:
 							continue
@@ -2784,23 +2870,22 @@ while(1):
 						else:
 							grid_path_array[i]+=1
 							print("grid_path_array",grid_path_array)				
-					cmd.exec(b,step_size)											
+					# cmd.exec(b,step_size)
 					if master_flag:
-						if pop_flag_arr[i]==1:							
+						if pop_flag_arr[i]==1:
 							lat,lon = locatePosition.cartToGeo (origin, endDistance, value)
-							if same_alt_flag:
-								point1 = LocationGlobalRelative(lat,lon,same_height)
-							else:
-								point1 = LocationGlobalRelative(lat,lon,different_height[i])
-							vehicles[i].simple_goto(point1)							
-						
+						if same_alt_flag:
+							point1 = LocationGlobalRelative(lat,lon,same_height)
+						else:
+							point1 = LocationGlobalRelative(lat,lon,different_height[i])
+						vehicles[i].simple_goto(point1)
+
 				s.time_elapsed += 1
 				if master_flag and 'gui' in locals() and gui is not None:
 					gui.show_goals(current_goals)
 					gui.show_planned_path(planned_paths_by_bot)
 					gui.show_gps_positions(live_gps_plot_points())
 					gui.update()
-					print_sim_vs_real_latlon(selected_indexes, label="search")
 
 				if(index==b"stop"):
 					search_flag=False
@@ -2924,6 +3009,7 @@ while(1):
 					#time.sleep(0.2)
 					#uav5.sendto(serialized_data.encode(), #uav5_server_address)			
 				'''
+				swarm_tasks.utils.robot.DEFAULT_SIZE= 0.4
 				s = sim.Simulation(uav_home_pos,num_bots=num_bots, env_name=file_name)
 				gui = viz.Gui(s)
 
@@ -3090,8 +3176,14 @@ while(1):
 							print("removed_grid_path_array_start_val",removed_grid_path_array_start_val)						
 						else:
 							grid_path_array[i]+=1
-							print("grid_path_array",grid_path_array)				
-					cmd.exec(b)											
+							print("grid_path_array",grid_path_array)	
+					dis = print_sim_vs_real_latlon_with_bot(b,i, label="split")
+					if dis <= 300:
+							print(f"Bot {i} dis:{dis}.")
+							cmd =cvg.goal_area_cvg(i,b,goal_position)
+							cmd += disp_field(b, neighbourhood_radius=100)
+							cmd.exec(b,step_size=1)
+					# cmd.exec(b)											
 					if master_flag:
 						if pop_flag_arr[i]==1:							
 							lat,lon = locatePosition.cartToGeo (origin, endDistance, value)
