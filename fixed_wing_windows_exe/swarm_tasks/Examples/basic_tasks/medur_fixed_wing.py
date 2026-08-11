@@ -735,6 +735,12 @@ def add_uav_to_swarm(sys_id):
 			uav_registry[sys_id]["active"] = True
 			uav_registry[sys_id]["index"] = idx
 			uav_task_state[sys_id] = "IDLE"
+			# The UAV may have been physically flown (GUIDED fly-to or manual
+			# RC) while disconnected -- without this, s.swarm[idx].x/y is
+			# left exactly wherever it was before removal, so the sim bot
+			# reappears stuck at the old position instead of where the
+			# aircraft actually is now.
+			_resync_bot_position(idx, force=True)
 			print("[add-link] reconnected active UAV", sys_id, "index", idx)
 			return True
 		vehicle = connect(connection_str, baud=115200, heartbeat_timeout=30)
