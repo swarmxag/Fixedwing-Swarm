@@ -1874,13 +1874,13 @@ while(1):
 			f, remove_bot_num = decoded_index.split(",", 1)
 			print("remove_bot_num", remove_bot_num, pos_array)
 			remove_uav_from_swarm(remove_bot_num)
-			data="index"
+			data=b"index"
 
 		if(data.startswith(b"add")):
 			decoded_index = data.decode("utf-8")
 			f, sys_id = decoded_index.split(",", 1)
 			add_uav_to_swarm(sys_id)
-			data="index"
+			data=b"index"
 		
 		if data.startswith(b'specific_bot_goal'): 
 				index="data"
@@ -2258,15 +2258,15 @@ while(1):
 					
 							if same_height - 1.5 <= alt[i] <= same_height+1.5:
 									alt_count[i]=1
-									if all(count==1 for count in alt_count):		
+									if all(count==1 for count in alt_count):
 										index="data"
-										data="data"
+										data=b"data"
 										same_alt_flag=True
 										break
-					
+
 					if(index==b"stop"):
 						index="data"
-						data="index"
+						data=b"index"
 						break
 												
 		if data.startswith(b'different'):
@@ -2305,17 +2305,17 @@ while(1):
 								if all(count==1 for count in alt_count):		
 									print("Reached target altitude")
 									index="data"
-									data="data"
+									data=b"data"
 									diff_height_flag=True
 									break
 						else:
-							data="data"
+							data=b"data"
 							diff_height_flag=True
 							break
 													
 					if(index==b"stop"):
 						index="data"
-						data="index"
+						data=b"index"
 						break
 						
 		if(data.startswith(b"loiter_point")) or (circle_formation_flag) :

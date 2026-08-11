@@ -1,13 +1,22 @@
 import numpy as np
-import csv,os,sys
+import csv, os, sys
 import simplekml
 from geopy.distance import distance
 from geopy.point import Point
-from locatePosition import geoToCart,cartToGeo
+from locatePosition import geoToCart, cartToGeo
 import matplotlib.pyplot as plt
 
-class BezierCurve():
-    def __init__(self,origin,center_latitude,center_longitude,num_of_drones,grid_space,coverage_area):
+
+class BezierCurve:
+    def __init__(
+        self,
+        origin,
+        center_latitude,
+        center_longitude,
+        num_of_drones,
+        grid_space,
+        coverage_area,
+    ):
         self.initial_heading = np.radians(0)  # Initial heading angle in radians
         self.G = 9.81  # Gravity (m/s²)
         self.MAX_BANK_ANGLE = np.radians(20)  # 40 degrees in radians
@@ -27,37 +36,37 @@ class BezierCurve():
         self.coverage_area = coverage_area
         self.path = []
         self.waypoints = []
-    
+
     def write_to_csv(self, data):
         with open(self.curve_csv_file, "w", newline="") as csvfile:
             csv_writer = csv.writer(csvfile)
             for row in data:
-                csv_writer.writerow(row)    
+                csv_writer.writerow(row)
 
-    def get_heading_to_target(self,current_pos, target_pos):
+    def get_heading_to_target(self, current_pos, target_pos):
         """Compute the heading angle required to face the target waypoint."""
         dx, dy = target_pos[0] - current_pos[0], target_pos[1] - current_pos[1]
         return np.arctan2(dy, dx)  # Compute desired heading
 
-    def normalize_angle(self,angle):
+    def normalize_angle(self, angle):
         """Ensure angles stay within -π to π range."""
         return (angle + np.pi) % (2 * np.pi) - np.pi
 
-    def optimal_bezier_control_point(self,P0, P1, height_factor=0.3):
+    def optimal_bezier_control_point(self, P0, P1, height_factor=0.3):
         """
         Computes an optimal control point to generate a smooth Bézier curve between two points.
-        
+
         Parameters:
         - P0: Start point (x, y)
         - P1: End point (x, y)
-        - height_factor: Determines how far the control point is from the midpoint. 
+        - height_factor: Determines how far the control point is from the midpoint.
                         A larger value increases curvature.
-        
+
         Returns:
         - P_control: Optimal control point (x, y)
         """
         P0, P1 = np.array(P0), np.array(P1)
-        
+
         # Compute the midpoint
         midpoint = (P0 + P1) / 2
 
@@ -66,13 +75,18 @@ class BezierCurve():
         perp_vector = np.array([-direction[1], direction[0]])  # Rotate by 90 degrees
 
         # Normalize perpendicular vector and scale it
-        perp_vector = perp_vector / np.linalg.norm(perp_vector) * height_factor * np.linalg.norm(direction)
+        perp_vector = (
+            perp_vector
+            / np.linalg.norm(perp_vector)
+            * height_factor
+            * np.linalg.norm(direction)
+        )
 
         # Select upper or lower triangle direction
         P_control = midpoint + perp_vector  # Change sign for opposite curve
 
         return P_control
-    
+
     def GridFormation(self):
         center_lat = self.center_latitude
         center_lon = self.center_longitude
@@ -95,7 +109,9 @@ class BezierCurve():
         west_edge = distance(meters=full_width / 2).destination(center_point, 270)
 
         for i in range(num_rectangles):
-            top_offset = (i * rectangle_height) - (full_height / 2) + (rectangle_height / 2)
+            top_offset = (
+                (i * rectangle_height) - (full_height / 2) + (rectangle_height / 2)
+            )
 
             top_center = distance(meters=top_offset).destination(center_point, 0)
             top = distance(meters=rectangle_height / 2).destination(top_center, 0)
@@ -163,7 +179,9 @@ class BezierCurve():
                         east_point, 110
                     )
                     csv_data.append((point_135.latitude, point_135.longitude))
-                    line.coords.addcoordinates([(point_135.longitude, point_135.latitude)])
+                    line.coords.addcoordinates(
+                        [(point_135.longitude, point_135.latitude)]
+                    )
                     kml.newpoint(
                         name=f"{waypoint_number}",
                         coords=[(point_135.longitude, point_135.latitude)],
@@ -174,7 +192,9 @@ class BezierCurve():
                         current_point, 240
                     )
                     csv_data.append((point_225.latitude, point_225.longitude))
-                    line.coords.addcoordinates([(point_225.longitude, point_225.latitude)])
+                    line.coords.addcoordinates(
+                        [(point_225.longitude, point_225.latitude)]
+                    )
                     kml.newpoint(
                         name=f"{waypoint_number}",
                         coords=[(point_225.longitude, point_225.latitude)],
@@ -204,12 +224,21 @@ class BezierCurve():
                 for j in range(len(csv_datas[i])):
                     if number_of_waypoints < minimum_waypoints:
                         writer = csv.writer(file)
-                        x,y = geoToCart(self.origin,500000,csv_datas[i][j])
-                        writer.writerow((x/2,y/2))
+                        x, y = geoToCart(self.origin, 500000, csv_datas[i][j])
+                        writer.writerow((x / 2, y / 2))
                     number_of_waypoints += 1
-        #return 1
-    
-    def predict_path_with_waypoints(self,initial_pos, initial_heading, speed, turn_rate, waypoints, dt=0.1, max_iter=5000):
+        # return 1
+
+    def predict_path_with_waypoints(
+        self,
+        initial_pos,
+        initial_heading,
+        speed,
+        turn_rate,
+        waypoints,
+        dt=0.1,
+        max_iter=5000,
+    ):
         """
         Predicts the aircraft's movement through multiple waypoints.
 
@@ -233,16 +262,19 @@ class BezierCurve():
             iteration = 0
             while np.hypot(target[0] - x, target[1] - y) > speed * dt:
                 if iteration > max_iter:
-                    print(f"Warning: Exceeded max iterations while moving to waypoint {target}, skipping!")
+                    print(
+                        f"Warning: Exceeded max iterations while moving to waypoint {target}, skipping!"
+                    )
                     break  # Prevent infinite loop
-                
+
                 desired_theta = self.get_heading_to_target((x, y), target)
-                
-                heading_diff = self.normalize_angle(desired_theta - theta)  # Normalize angle difference
+
+                heading_diff = self.normalize_angle(
+                    desired_theta - theta
+                )  # Normalize angle difference
 
                 # Adjust heading smoothly within the turn rate limit
                 theta += np.clip(heading_diff, -turn_rate * dt, turn_rate * dt)
-
 
                 # Move the aircraft forward
                 x += speed * np.cos(theta) * dt
@@ -251,13 +283,12 @@ class BezierCurve():
                 path.append((x, y))
                 iteration += 2
         return np.array(path)
-    
 
     def generate_bezier_curve(self):
         with open(self.grid_csv_path, "r") as file:
             csv_reader = csv.reader(file)
             for row in csv_reader:
-                self.waypoints.append([float(row[0]),float(row[1])])
+                self.waypoints.append([float(row[0]), float(row[1])])
         result = [self.waypoints[0]]
         alternative = False
         for i in range(1, len(self.waypoints) - 1, 3):
@@ -269,25 +300,33 @@ class BezierCurve():
                     heading = self.initial_heading
                     alternative = True
                 data = []
-                path1 = self.predict_path_with_waypoints(self.waypoints[i],heading,self.SPEED, self.TURN_RATE,[self.waypoints[i],self.waypoints[i+1],self.waypoints[i+2]])
-                sampled_indices = np.linspace(0, len(path1) - 1, 10, dtype=int)  # Select 30 key points
+                path1 = self.predict_path_with_waypoints(
+                    self.waypoints[i],
+                    heading,
+                    self.SPEED,
+                    self.TURN_RATE,
+                    [self.waypoints[i], self.waypoints[i + 1], self.waypoints[i + 2]],
+                )
+                sampled_indices = np.linspace(
+                    0, len(path1) - 1, 10, dtype=int
+                )  # Select 30 key points
                 sampled_points = path1[sampled_indices]
                 for sample_point in sampled_points:
                     data.append(sample_point.tolist())
-                data.append(self.waypoints[i+2])
+                data.append(self.waypoints[i + 2])
                 result.extend(data)
             else:
                 j = i
-                while j <= len(self.waypoints)-1:
+                while j <= len(self.waypoints) - 1:
                     result.append(self.waypoints[j])
-                    j+=1
-        print("result",result)
+                    j += 1
+        print("result", result)
         self.path = result
         self.write_to_csv(result)
         self.write_kml(result)
         return result
-        
-    def write_kml(self,data):
+
+    def write_kml(self, data):
         kml = simplekml.Kml()
         line = kml.newlinestring()
         line.altitudemode = simplekml.AltitudeMode.clamptoground
@@ -297,25 +336,36 @@ class BezierCurve():
         if len(data) == 0:
             print("No Mission Data")
             return
-        for i,cmd in enumerate(data):
-            lat,lon = cartToGeo(self.origin,500000,[cmd[0]*2,cmd[1]*2])
-            kml_data.append([lat,lon])
-        for i in range(len(kml_data)-1):
-            print(kml_data[i],kml_data[i+1])
+        for i, cmd in enumerate(data):
+            lat, lon = cartToGeo(self.origin, 500000, [cmd[0] * 2, cmd[1] * 2])
+            kml_data.append([lat, lon])
+        for i in range(len(kml_data) - 1):
+            print(kml_data[i], kml_data[i + 1])
             line.coords.addcoordinates(
-                    [
-                        (kml_data[i][1], kml_data[i][0]),
-                        (kml_data[i+1][1],kml_data[i+1][0]),
-                    ]
-                )
-            kml.newpoint(name="{}__coordinates".format(i),coords=[(kml_data[i][1], kml_data[i][0])])
+                [
+                    (kml_data[i][1], kml_data[i][0]),
+                    (kml_data[i + 1][1], kml_data[i + 1][0]),
+                ]
+            )
+            kml.newpoint(
+                name="{}__coordinates".format(i),
+                coords=[(kml_data[i][1], kml_data[i][0])],
+            )
         kml.save(self.search_csv_name)
-        
+
     def plot_curve(self):
         predict_path = np.array(self.path)
         plt.figure(figsize=(8, 6))
-        plt.plot(predict_path[:, 0], predict_path[:, 1], 'r-', label="Predicted Path", linewidth=2)
-        plt.scatter(*zip(*self.waypoints), color='blue', s=100, label="Waypoints", marker='X')
+        plt.plot(
+            predict_path[:, 0],
+            predict_path[:, 1],
+            "r-",
+            label="Predicted Path",
+            linewidth=2,
+        )
+        plt.scatter(
+            *zip(*self.waypoints), color="blue", s=100, label="Waypoints", marker="X"
+        )
 
         plt.xlabel("X Position (m)")
         plt.ylabel("Y Position (m)")
@@ -334,4 +384,3 @@ class BezierCurve():
 # path = curve.generate_bezier_curve()
 # print(len(path))
 # curve.plot_curve()
-
