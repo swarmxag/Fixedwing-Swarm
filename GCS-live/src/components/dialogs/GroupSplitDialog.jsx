@@ -187,69 +187,83 @@ const MultipleSelectChip = ({
         content = (
           <DialogContent>
             <Button onClick={addInput}>Add Group</Button>
-            {inputs.map((input, i) => (
-              <Box
-                style={{
-                  marginTop: 5,
-                  marginBottom: 5,
-                  display: 'flex',
-                  flexDirection: 'row',
-                  gap: 20,
-                  justifyContent: 'center',
-                  alignItems: 'center',
-                }}
-              >
-                <FormControl fullWidth>
-                  <InputLabel id='demo-multiple-chip-label'>
-                    Group {i + 1}
-                  </InputLabel>
-                  <Select
-                    labelId='demo-multiple-chip-label'
-                    style={{ flex: 1 }}
-                    type='text'
-                    value={input.value}
-                    onChange={(e) => updateInput(input.id, e.target.value)}
-                    className='w-full p-2 border rounded-lg'
-                    placeholder={`Input ${input.id}`}
-                  >
-                    {features.map((val) => (
-                      <MenuItem value={val.id}>{val.label}</MenuItem>
-                    ))}
-                  </Select>
-                </FormControl>
-                <FormControl fullWidth>
-                  <Select
-                    id='demo-multiple-chip'
-                    multiple
-                    style={{ flex: 1 }}
-                    value={input.uavs}
-                    onChange={(e) => updateUav(input.id, e.target.value)}
-                    // input={
-                    //   <OutlinedInput id='select-multiple-chip' label='Chip' />
-                    // }
-                    renderValue={(selected) => (
-                      <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
-                        {selected.map((value) => (
-                          <Chip key={value} label={value} />
-                        ))}
-                      </Box>
-                    )}
-                  >
-                    {uavIds.map((name) => (
-                      <MenuItem key={name} value={name}>
-                        {name}
-                      </MenuItem>
-                    ))}
-                  </Select>
-                </FormControl>
-                <IconButton
-                  aria-label='delete'
-                  onClick={() => deleteInput(input.id)}
+            {inputs.map((input, i) => {
+              const uavsUsedInOtherGroups = new Set(
+                inputs.flatMap((other) =>
+                  other.id === input.id ? [] : other.uavs
+                )
+              );
+              const availableUavIds = uavIds.filter(
+                (name) => !uavsUsedInOtherGroups.has(name)
+              );
+
+              return (
+                <Box
+                  key={input.id}
+                  style={{
+                    marginTop: 5,
+                    marginBottom: 5,
+                    display: 'flex',
+                    flexDirection: 'row',
+                    gap: 20,
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                  }}
                 >
-                  <DeleteIcon />
-                </IconButton>
-              </Box>
-            ))}
+                  <FormControl fullWidth>
+                    <InputLabel id='demo-multiple-chip-label'>
+                      Group {i + 1}
+                    </InputLabel>
+                    <Select
+                      labelId='demo-multiple-chip-label'
+                      style={{ flex: 1 }}
+                      type='text'
+                      value={input.value}
+                      onChange={(e) => updateInput(input.id, e.target.value)}
+                      className='w-full p-2 border rounded-lg'
+                      placeholder={`Input ${input.id}`}
+                    >
+                      {features.map((val) => (
+                        <MenuItem key={val.id} value={val.id}>
+                          {val.label}
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                  <FormControl fullWidth>
+                    <Select
+                      id='demo-multiple-chip'
+                      multiple
+                      style={{ flex: 1 }}
+                      value={input.uavs}
+                      onChange={(e) => updateUav(input.id, e.target.value)}
+                      // input={
+                      //   <OutlinedInput id='select-multiple-chip' label='Chip' />
+                      // }
+                      renderValue={(selected) => (
+                        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                          {selected.map((value) => (
+                            <Chip key={value} label={value} />
+                          ))}
+                        </Box>
+                      )}
+                    >
+                      {availableUavIds.map((name) => (
+                        <MenuItem key={name} value={name}>
+                          {name}
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                  <IconButton
+                    aria-label='delete'
+                    onClick={() => deleteInput(input.id)}
+                  >
+                    <DeleteIcon />
+                  </IconButton>
+                </Box>
+              );
+            })}
           </DialogContent>
         );
         actions.push(

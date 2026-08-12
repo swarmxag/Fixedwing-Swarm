@@ -25,6 +25,7 @@ import SpareDronePanel from './spareDrone';
 import VtolPanel from './VTOL';
 import TargetCNF from './gimbalTarget';
 import AltitudeSettings from './altitudeSettings';
+import SimulatorPanel from './simulator';
 /* MapView not included as it is loaded lazily */
 
 const views = {
@@ -49,7 +50,8 @@ const views = {
   SpareDronePanel,
   VtolPanel,
   TargetCNF,
-  AltitudeSettings
+  AltitudeSettings,
+  SimulatorPanel
 };
 
 export default views;

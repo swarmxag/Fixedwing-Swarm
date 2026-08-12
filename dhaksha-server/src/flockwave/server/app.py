@@ -1417,26 +1417,33 @@ class SkybrushServer(DaemonApp):
             await sleep(1)
             result = landing_mission_send(parameters.get("mission"))
 
-        if msg == "navigate":
-            if get_origin() is None:
-                print("[origin reminder] Set Origin/Geofence before sending navigate")
-                result = "origin_not_set"
-            else:
-                print("............................")
-                stop_socket()
-                await sleep(1)
-                center_latlon = parameters.get("coords")
-                gridSpacing = parameters.get("gridSpacing")
-                coverage = parameters.get("coverage")
-                ids = parameters.get("ids")
-                path, time = navigate(center_latlon, gridSpacing, coverage, ids)
-                result = path
-                response.body["time"] = time
-                response.body["missionByUav"] = {
-                    str(uav_id): path[i]
-                    for i, uav_id in enumerate(ids or [])
-                    if i < len(path)
-                }
+        # "navigate" isn't needed for this mission -- disabled front-to-back
+        # (button removed in GCS-live's SwarmPanel.jsx; handler commented
+        # out here). Left in place rather than deleted in case it's needed
+        # again later.
+        # if msg == "navigate":
+        #     if get_origin() is None:
+        #         print("[origin reminder] Set Origin/Geofence before sending navigate")
+        #         result = "origin_not_set"
+        #     else:
+        #         print("............................")
+        #         stop_socket()
+        #         await sleep(1)
+        #         center_latlon = parameters.get("coords")
+        #         gridSpacing = parameters.get("gridSpacing")
+        #         coverage = parameters.get("coverage")
+        #         requested_ids = [int(uav_id) for uav_id in (parameters.get("ids") or [])]
+        #         ids = requested_ids or [
+        #             int(uav_id) for uav_id in app.object_registry.ids_by_type(UAV)
+        #         ]
+        #         path, time = navigate(center_latlon, gridSpacing, coverage, ids)
+        #         result = path
+        #         response.body["time"] = time
+        #         response.body["missionByUav"] = {
+        #             str(uav_id): path[i]
+        #             for i, uav_id in enumerate(ids or [])
+        #             if i < len(path)
+        #         }
 
         if msg == "loiter":
             stop_socket()
@@ -1582,6 +1589,34 @@ class SkybrushServer(DaemonApp):
                     print("[spificsplit] EXCEPTION:")
                     traceback.print_exc()
                     result = "error"
+
+        if msg == "startsimulation":
+            from .swarm_autoscript import is_server_running
+            from .simulation_autoscript import simulation_exe
+
+            if is_server_running("sim_launcher.exe"):
+                result = "Already Simulation Running"
+            else:
+                coords = parameters.get("coords")
+                lon, lat = coords[0]
+                simulation_exe(
+                    count=parameters.get("simNoUAVs"),
+                    spacing=parameters.get("simSpacing"),
+                    home_lat=lat,
+                    home_lon=lon,
+                    server_address="127.0.0.1",
+                    row=parameters.get("simRow"),
+                    col=parameters.get("simColumn"),
+                    pattern=parameters.get("simPattern"),
+                    vehicle=parameters.get("simVehicle", "plane"),
+                )
+                result = True
+
+        if msg == "endsimulation":
+            from .simulation_autoscript import stop_simulation
+
+            stop_simulation()
+            result = True
 
         response.body["message"] = result
         response.body["method"] = msg

@@ -118,6 +118,12 @@ const Sidebar = ({ experimentalFeaturesEnabled, isOpen, t, workbench }) => (
           component='swarm'
         />
         <Module
+          id='simulator'
+          icon={<SwarmIcon />}
+          label={'Simulator Panel'}
+          component='simulator'
+        />
+        <Module
           id={'strike'}
           icon={<SwarmIcon />}
           component={'strike'}

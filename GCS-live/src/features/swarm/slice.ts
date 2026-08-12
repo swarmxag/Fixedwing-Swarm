@@ -24,6 +24,12 @@ interface SwarmSlice {
   missionByUav: MissionByUav;
   baseAltitude: number;
   altitudeStep: number;
+  simPattern: string;
+  simVehicle: 'copter' | 'plane';
+  UAVRow: number;
+  UAVColumn: number;
+  UAVSpacing: number;
+  NoOfUAVs: number;
 }
 
 const initialState: SwarmSlice = {
@@ -45,6 +51,12 @@ const initialState: SwarmSlice = {
   // swarm computer already assumes before any "different" command is sent.
   baseAltitude: 300,
   altitudeStep: 10,
+  simPattern: 'Line',
+  simVehicle: 'plane',
+  NoOfUAVs: 1,
+  UAVSpacing: 10,
+  UAVRow: NaN,
+  UAVColumn: NaN,
 };
 
 const { actions, reducer } = createSlice({
@@ -116,6 +128,27 @@ const { actions, reducer } = createSlice({
     clearMissionByUav: noPayload<SwarmSlice>((state) => {
       state.missionByUav = {};
     }),
+    changeNoUAVs(state, action: PayloadAction<{ NoOfUAVs: number }>) {
+      state.NoOfUAVs = action.payload.NoOfUAVs;
+    },
+    changeUavSpacing(state, action: PayloadAction<{ UAVSpacing: number }>) {
+      state.UAVSpacing = action.payload.UAVSpacing;
+    },
+    changeUavRow(state, action: PayloadAction<{ UAVRow: number }>) {
+      state.UAVRow = action.payload.UAVRow;
+    },
+    changeUavColumn(state, action: PayloadAction<{ UAVColumn: number }>) {
+      state.UAVColumn = action.payload.UAVColumn;
+    },
+    changeSimPattern(state, action: PayloadAction<{ simPattern: string }>) {
+      state.simPattern = action.payload.simPattern;
+    },
+    changeSimVehicle(
+      state,
+      action: PayloadAction<{ simVehicle: SwarmSlice['simVehicle'] }>
+    ) {
+      state.simVehicle = action.payload.simVehicle;
+    },
   },
 });
 
@@ -137,6 +170,12 @@ export const {
   setTimerRunning,
   mergeMissionForUavs,
   clearMissionByUav,
+  changeNoUAVs,
+  changeUavSpacing,
+  changeUavRow,
+  changeUavColumn,
+  changeSimPattern,
+  changeSimVehicle,
 } = actions;
 
 export default reducer;

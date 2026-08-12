@@ -40,6 +40,11 @@ vtol_takeoff_height = {
     8: 40,
     9: 45,
     10: 50,
+    11: 55,
+    12: 60,
+    13: 65,
+    14: 70,
+    15: 75,
 }
 alts: dict[int, int] = {
     1: 50,
@@ -52,6 +57,11 @@ alts: dict[int, int] = {
     8: 120,
     9: 130,
     10: 140,
+    11: 150,
+    12: 160,
+    13: 170,
+    14: 180,
+    15: 190,
 }
 
 drone = {
@@ -75,6 +85,11 @@ drone = {
     8: 8,
     9: 9,
     10: 10,
+    11: 11,
+    12: 12,
+    13: 13,
+    14: 14,
+    15: 15,
 }
 
 
@@ -337,7 +352,7 @@ class GobalVariable:
     vtol_takeoff_height: dict[int, int]
     alts: dict[int, int]
     drone: dict[int, int]
-    
+
     def __init__(self):
         self.vtol_takeoff_height = {
             1: 30,
@@ -351,7 +366,7 @@ class GobalVariable:
             9: 45,
             10: 50,
         }
-        
+
         self.alts = {
             1: 50,
             2: 60,
@@ -377,12 +392,12 @@ class GobalVariable:
             9: 9,
             10: 10,
         }
-        
+
     def getAlts(self):
         return self.alts
-    
+
     def getVtolAlts(self):
         return self.vtol_takeoff_height
-    
+
     def getDrone(self):
         return self.drone

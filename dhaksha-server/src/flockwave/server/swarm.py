@@ -30,7 +30,7 @@ def fetch_file_content(file_path):
 
 master_udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-adderss = {1: ("172.26.96.1", 12002), 2: ("172.26.96.1", 12008)}
+adderss = {1: ("127.0.0.1", 12002), 2: ("127.0.0.1", 12008)}
 
 master_num = 0
 origin = None  # set by process_fence() once a fence has been drawn; consumed
@@ -160,7 +160,7 @@ def _origin_file_path():
     return os.path.join(swarm_folder, "rectangles.yaml")
 
 
-server_address_220 = ("172.26.96.1", 12008)
+server_address_220 = ("127.0.0.1", 12008)
 
 
 def push_origin_and_geofence(origin1):

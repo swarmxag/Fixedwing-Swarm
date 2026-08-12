@@ -227,7 +227,7 @@ def get_interface_mapping():
         if nic.GUID:
             mappings[nic.GUID.upper()] = nic.NetConnectionID or nic.Name
     #return get_wifi_ip(mappings)
-    return "172.26.96.1"
+    return "127.0.0.1"
 
 
 def vehicle_collision_moniter_receive():	
@@ -984,62 +984,62 @@ def vehicle_connection():
 		pass
 		print(	"Vehicle 5 is lost")
 	
-	# try:
-	# 	vehicle6= connect('udpin:{}:14556'.format(ip),baud=115200,heartbeat_timeout=heartbeat_ip_timeout[5])
-	# 	print('Drone6')
-	# 	num_bots+=1
-	# 	vehicles.append(vehicle6)
-	# 	pos_array.append(vehicle6._master.target_system)
-	# 	msg="Drone6 Connected"
-	# except:		
-	# 	pass	
-	# 	print(	"Vehicle 6 is lost")
+	try:
+		vehicle6= connect('udpin:{}:14556'.format(ip),baud=115200,heartbeat_timeout=heartbeat_ip_timeout[5])
+		print('Drone6')
+		num_bots+=1
+		vehicles.append(vehicle6)
+		pos_array.append(vehicle6._master.target_system)
+		msg="Drone6 Connected"
+	except:		
+		pass	
+		print(	"Vehicle 6 is lost")
 		
-	# try:
-	# 	vehicle7= connect('udpin:{}:14557'.format(ip),baud=115200,heartbeat_timeout=heartbeat_ip_timeout[6])
-	# 	print('Drone7')
-	# 	num_bots+=1
-	# 	vehicles.append(vehicle7)
-	# 	pos_array.append(vehicle7._master.target_system)
-	# 	msg="Drone7 Connected"
-	# except:		
-	# 	pass
-	# 	print(	"Vehicle 7 is lost")	
+	try:
+		vehicle7= connect('udpin:{}:14557'.format(ip),baud=115200,heartbeat_timeout=heartbeat_ip_timeout[6])
+		print('Drone7')
+		num_bots+=1
+		vehicles.append(vehicle7)
+		pos_array.append(vehicle7._master.target_system)
+		msg="Drone7 Connected"
+	except:		
+		pass
+		print(	"Vehicle 7 is lost")	
 	
-	# try:
-	# 	vehicle8= connect('udpin:{}:14558'.format(ip),baud=115200,heartbeat_timeout=heartbeat_ip_timeout[7])
-	# 	print('Drone8')
-	# 	num_bots+=1
-	# 	vehicles.append(vehicle8)
-	# 	pos_array.append(vehicle8._master.target_system)
-	# 	msg="Drone8 Connected"
-	# except:	
-	# 	pass
-	# 	print(	"Vehicle 8 is lost")
+	try:
+		vehicle8= connect('udpin:{}:14558'.format(ip),baud=115200,heartbeat_timeout=heartbeat_ip_timeout[7])
+		print('Drone8')
+		num_bots+=1
+		vehicles.append(vehicle8)
+		pos_array.append(vehicle8._master.target_system)
+		msg="Drone8 Connected"
+	except:	
+		pass
+		print(	"Vehicle 8 is lost")
 	
-	# try:	
-	# 	vehicle9= connect('udpin:{}:14559'.format(ip),baud=115200,heartbeat_timeout=heartbeat_ip_timeout[8])
-	# 	print('Drone9')
-	# 	num_bots+=1
-	# 	vehicles.append(vehicle9)
-	# 	pos_array.append(vehicle9._master.target_system)
-	# 	msg="Drone9 Connected"
-	# except:
-	# 	pass
-	# 	print(	"Vehicle 9 is lost")
+	try:	
+		vehicle9= connect('udpin:{}:14559'.format(ip),baud=115200,heartbeat_timeout=heartbeat_ip_timeout[8])
+		print('Drone9')
+		num_bots+=1
+		vehicles.append(vehicle9)
+		pos_array.append(vehicle9._master.target_system)
+		msg="Drone9 Connected"
+	except:
+		pass
+		print(	"Vehicle 9 is lost")
 	
-	# try:	
-	# 	vehicle10= connect('udpin:{}:14560'.format(ip),baud=115200,heartbeat_timeout=heartbeat_ip_timeout[9])
-	# 	print('Drone10')
-	# 	vehicles.append(vehicle10)
-	# 	pos_array.append(vehicle10._master.target_system)
-	# 	num_bots+=1
-	# 	msg="Drone10 Connected"
-	# except:
-	# 	pass
-	# 	print(	"Vehicle 10 is lost")
+	try:	
+		vehicle10= connect('udpin:{}:14560'.format(ip),baud=115200,heartbeat_timeout=heartbeat_ip_timeout[9])
+		print('Drone10')
+		vehicles.append(vehicle10)
+		pos_array.append(vehicle10._master.target_system)
+		num_bots+=1
+		msg="Drone10 Connected"
+	except:
+		pass
+		print(	"Vehicle 10 is lost")
 	
-	# print(len(vehicles))
+	print(len(vehicles))
 	'''
 	serialized_data = json.dumps(pos_array)
 	serialized_data="pos_array" + serialized_data
@@ -2393,6 +2393,7 @@ while(1):
 							if dis <= 300:
 								print(f"Bot {i} dis:{dis}.")
 								cmd =cvg.goal_area_cvg(i,b,goal)
+								cmd+= disp_field(b,neighbourhood_radius=100)
 								cmd.exec(b,step_size=1)
 							# cmd =cvg.goal_area_cvg(i,b,goal)
 							# cmd+= disp_field(b,neighbourhood_radius=100)
@@ -2417,7 +2418,8 @@ while(1):
 									    point1 = LocationGlobalRelative(float(base_lat),float(base_lon),different_height[i])
 								    vehicles[i].simple_goto(point1)
 								if step!=100:    
-								    current_altitude = vehicle.location.global_relative_frame.alt
+								    #current_altitude = vehicle.location.global_relative_frame.alt
+								    current_altitude = vehicles[i].location.global_relative_frame.alt
 								    distance = locatePosition.distance_bearing(vehicles[i].location.global_relative_frame.lat,vehicles[i].location.global_relative_frame.lon,float(base_lat),float(base_lon))
 								    if (different_height[i] - 5) <= current_altitude <= (different_height[i] + 5) and distance < 150:
 								        uav_home_pos=[]
@@ -2575,6 +2577,7 @@ while(1):
 						if dis <= 300:
 							print(f"Bot {i} dis:{dis}.")
 							cmd =cvg.goal_area_cvg(i,b,goal)
+							cmd += disp_field(b, neighbourhood_radius=100)
 							cmd.exec(b,step_size=1)
 						dx=abs(goal[0]-current_position[0])
 						dy=abs(goal[1]-current_position[1])						
@@ -2864,6 +2867,7 @@ while(1):
 					if dis <= 300:
 						print(f"Bot {i} dis:{dis}.")
 						cmd =cvg.goal_area_cvg(i,b,goal)
+						cmd += disp_field(b, neighbourhood_radius=100)
 						cmd.exec(b,step_size=1)
 					value=[b.x*2,b.y*2]
 					current_position=[b.x,b.y]

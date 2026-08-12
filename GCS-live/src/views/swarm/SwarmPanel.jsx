@@ -329,9 +329,20 @@ const SwarmPanel = ({
         // keeps showing that old grid on the map forever, since nothing
         // else ever clears missionByUav for it once it's no longer running
         // that mission.
+        //
+        // selectedUAVIds are zero-padded map/entity ids ("01", "02", ...
+        // per the mavlink extension's id_format), but missionByUav's keys
+        // are unpadded sysid strings ("1", "2", ...) from the swarm server
+        // -- clearing by the padded id just adds new, unrelated empty
+        // entries alongside the real ones instead of touching them.
         dispatch(
           mergeMissionForUavs(
-            Object.fromEntries(selectedUAVIds.map((uavId) => [uavId, []]))
+            Object.fromEntries(
+              selectedUAVIds.map((uavId) => [
+                String(Number.parseInt(uavId, 10)),
+                [],
+              ])
+            )
           )
         );
       }
@@ -509,12 +520,14 @@ const SwarmPanel = ({
             variant='standard'
             style={{ display: 'flex', flexDirection: 'row', gap: 10 }}
           >
-            <Button
-              variant='contained'
-              onClick={async () => await handlePoint('navigate')}
-            >
-              Navigation
-            </Button>
+            {/* Navigate isn't needed for this mission -- disabled front-to-back
+                (button here, "navigate" handler in dhaksha-server's app.py). */}
+            {/*<Button*/}
+            {/*  variant='contained'*/}
+            {/*  onClick={async () => await handlePoint('navigate')}*/}
+            {/*>*/}
+            {/*  Navigation*/}
+            {/*</Button>*/}
             {/*<Button variant='contained' onClick={async () => await handleMsg('clear_csv')}>*/}
             {/*  Clear CSV*/}
             {/*</Button>*/}
