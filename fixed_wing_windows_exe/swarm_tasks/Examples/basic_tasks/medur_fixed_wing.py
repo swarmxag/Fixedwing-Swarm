@@ -1,4 +1,5 @@
 import sys,os
+import math
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__),'../../..')))
 import swarm_tasks
 import time
@@ -227,7 +228,7 @@ def get_interface_mapping():
         if nic.GUID:
             mappings[nic.GUID.upper()] = nic.NetConnectionID or nic.Name
     #return get_wifi_ip(mappings)
-    return "127.0.0.1"
+    return "172.26.96.1"
 
 
 def vehicle_collision_moniter_receive():	
@@ -663,7 +664,116 @@ def print_sim_vs_real_latlon_with_bot(b,i, label=""):
 
     except Exception as e:
         print("[latlon-mismatch] failed for vehicle", i, e)
+        return float("inf")
     return distance
+
+
+# The swarm simulator is a virtual leader for each fixed-wing aircraft.  Do
+# not stop that leader when it gets ahead: a fixed-wing vehicle can loiter
+# around the frozen target and never reduce the error enough to restart it.
+# Instead, continuously reduce the virtual leader's step as its lead grows.
+# Distances are metres (the same units returned by distance_bearing).
+UAV_FOLLOW_WINDOW_M = 50.0
+UAV_MAX_VIRTUAL_LEAD_M = 140.0
+UAV_MIN_VIRTUAL_STEP = 0.15
+UAV_MAX_VIRTUAL_STEP = 1.0
+# This is only a maximum for original grid waypoints. It is capped by the
+# next leg length, and is never used for dense Bezier interpolation points.
+SEARCH_UAV_FLYBY_RADIUS_M = 100.0
+UAV_FINAL_WAYPOINT_RADIUS_M = 75.0
+UAV_CURVE_POINT_SWITCH_RADIUS = 2.0  # sim units, bot-only progression
+
+
+def advance_bot_with_uav_pacing(i, b, goal, label=""):
+    """Advance the virtual bot without letting it run far ahead of its UAV.
+
+    A non-zero minimum step is intentional: it keeps the CVG/dispersion
+    field active and moves the GUIDED target forward even while the aircraft
+    is turning to catch up.
+    """
+    dis = print_sim_vs_real_latlon_with_bot(b, i, label=label)
+    lead_fraction = max(
+        0.0,
+        min(1.0, (UAV_MAX_VIRTUAL_LEAD_M - dis) /
+        (UAV_MAX_VIRTUAL_LEAD_M - UAV_FOLLOW_WINDOW_M)),
+    )
+    step_size = UAV_MIN_VIRTUAL_STEP + (
+        UAV_MAX_VIRTUAL_STEP - UAV_MIN_VIRTUAL_STEP
+    ) * lead_fraction
+
+    cmd = cvg.goal_area_cvg(i, b, goal)
+    cmd += disp_field(b, neighbourhood_radius=100)
+    cmd.exec(b, step_size=step_size)
+
+    if dis > UAV_FOLLOW_WINDOW_M:
+        #print(f"[uav-pace] bot {i}: lead={dis:.1f} m, virtual step={step_size:.2f}")
+        pass
+    return dis
+
+
+def uav_distance_to_goal(i, goal):
+    """Return live UAV-to-goal distance in metres, or None without telemetry."""
+    if not master_flag or i >= len(vehicles) or origin is None:
+        return None
+    try:
+        goal_lat, goal_lon = locatePosition.cartToGeo(
+            origin, endDistance, [goal[0] * 2, goal[1] * 2]
+        )
+        frame = vehicles[i].location.global_relative_frame
+        if frame.lat is None or frame.lon is None:
+            return None
+        return locatePosition.distance_bearing(frame.lat, frame.lon, goal_lat, goal_lon)
+    except Exception as e:
+        print("[uav-flyby] distance unavailable for vehicle", i, e)
+        return None
+
+
+def waypoint_flyby_radius(goal, next_goal=None, is_final=False):
+    """Return a fly-by radius that cannot consume the following short leg."""
+    radius = UAV_FINAL_WAYPOINT_RADIUS_M if is_final else SEARCH_UAV_FLYBY_RADIUS_M
+    if next_goal is not None:
+        # Sim coordinates are half-scale; convert their separation to metres.
+        next_leg_m = 2.0 * math.hypot(next_goal[0] - goal[0], next_goal[1] - goal[1])
+        if next_leg_m > 0:
+            radius = min(radius, 0.4 * next_leg_m)
+    return radius
+
+
+def uav_reached_waypoint(i, b, goal, sim_radius=5.0, next_goal=None,
+                         is_curve=False, is_final=False):
+    """Keep all moving legs virtual; confirm only the mission endpoint by GPS.
+
+    In particular, the last normal point before a Bezier run must not wait
+    for a fixed-wing fly-by: parking the bot there holds the GUIDED target
+    still and prevents the aircraft from ever receiving the first curve
+    target.  Pacing limits virtual lead throughout the route; the final point
+    alone is a bot-and-UAV completion check.
+    """
+    if is_curve:
+        return (
+            abs(goal[0] - b.x) <= UAV_CURVE_POINT_SWITCH_RADIUS and
+            abs(goal[1] - b.y) <= UAV_CURVE_POINT_SWITCH_RADIUS
+        ), None
+
+    bot_reached = (
+        abs(goal[0] - b.x) <= sim_radius and
+        abs(goal[1] - b.y) <= sim_radius
+    )
+    # This includes the normal-point -> Bezier handoff and all other
+    # intermediate legs. Never park a fixed-wing at an in-route point.
+    if not is_final:
+        return bot_reached, None
+
+    distance = uav_distance_to_goal(i, goal)
+    if distance is not None:
+        return (
+            bot_reached and
+            distance <= waypoint_flyby_radius(goal, next_goal, is_final)
+        ), distance
+    if not master_flag:
+        return bot_reached, None
+    # Live missions must not falsely complete a leg during a telemetry gap.
+    return False, None
 
 
 def connection_string_for_sysid(sys_id):
@@ -1335,7 +1445,11 @@ def _reset_mission_state():
     guided_circle_formation_flag = False
 
 active_goal_tasks = {}
-active_goal_tasks_lock = threading.Lock()
+# A task replacement must be atomic with the runner tick that reads and
+# drives it.  RLock permits the task drivers' small state updates while the
+# runner holds this lock, preventing an overwritten task from issuing one
+# stale simple_goto or modifying the replacement task's waypoint index.
+active_goal_tasks_lock = threading.RLock()
 
 
 def assign_goal_tasks(selected_indexes, goal_xy, guided_circle_radius=None, guided_circle_direction=None):
@@ -1448,9 +1562,14 @@ def _drive_goal_task(i, b, task, completed):
 		completed.append(i)
 		return
 	goal_position = goals[goal_index]
-	dx = abs(goal_position[0] - b.x)
-	dy = abs(goal_position[1] - b.y)
-	if dx <= 5 and dy <= 5:
+	next_goal = goals[goal_index + 1] if goal_index + 1 < len(goals) else None
+	reached_goal, goal_distance = uav_reached_waypoint(
+		i, b, goal_position, sim_radius=5, next_goal=next_goal,
+		is_final=next_goal is None
+	)
+	if reached_goal:
+		if goal_distance is not None:
+			print(f"[uav-flyby] bot {i}: switching goal at {goal_distance:.1f} m")
 		goal_index += 1
 		if goal_index >= len(goals):
 			print("inddddd")
@@ -1472,12 +1591,7 @@ def _drive_goal_task(i, b, task, completed):
 	# b.set_goal(goal_position[0], goal_position[1])
 	# cmd = cvg.goal_area_cvg(i, b, goal_position)
 	# cmd.exec(b)
-	dis = print_sim_vs_real_latlon_with_bot(b,i, label="goal")
-	if dis <= 300:
-		print(f"Bot {i} dis:{dis}.")
-		cmd =cvg.goal_area_cvg(i,b,goal_position)
-		cmd += disp_field(b, neighbourhood_radius=100)
-		cmd.exec(b,step_size=1)
+	advance_bot_with_uav_pacing(i, b, goal_position, label="goal")
 	_drive_vehicle_towards(i, b)
 
 
@@ -1495,12 +1609,7 @@ def _drive_guided_circle_task(i, b, task, completed):
 	# cmd = cvg.goal_area_cvg(i, b, goal_position)
 	# cmd += disp_field(b, neighbourhood_radius=100)
 	# cmd.exec(b)
-	dis = print_sim_vs_real_latlon_with_bot(b,i, label="search")
-	if dis <= 300:
-		print(f"Bot {i} dis:{dis}.")
-		cmd =cvg.goal_area_cvg(i,b,goal_position)
-		cmd += disp_field(b, neighbourhood_radius=100)
-		cmd.exec(b,step_size=1)
+	advance_bot_with_uav_pacing(i, b, goal_position, label="guided_circle")
 	dx = abs(goal_position[0] - b.x)
 	dy = abs(goal_position[1] - b.y)
 	if dx <= 5 and dy <= 5:
@@ -1544,28 +1653,35 @@ def _drive_mission_task(i, b, task, completed):
 		completed.append(i)
 		return
 	goal_position = (goal_lat_lon[0][0], goal_lat_lon[0][1])
-	cmd = cvg.goal_area_cvg(i, b, goal_position)
-	dx = abs(goal_position[0] - b.x)
-	dy = abs(goal_position[1] - b.y)
+	is_curve = str(goal_lat_lon[0][2]).strip().lower() == "true"
 	is_last_point = line_index >= num_lines - 1
-	radius = MISSION_FINAL_POINT_RADIUS if is_last_point else MISSION_POINT_SWITCH_RADIUS
-	if dx <= radius and dy <= radius:
+	sim_radius = MISSION_FINAL_POINT_RADIUS if is_last_point else MISSION_POINT_SWITCH_RADIUS
+	next_goal = None
+	if not is_last_point:
+		try:
+			next_row = read_specific_line(task["csv_path"], line_index + 1)
+			next_goal = (next_row[0][0], next_row[0][1])
+		except Exception as e:
+			print(f"[{label}-task] next point read failed", e)
+	reached_goal, goal_distance = uav_reached_waypoint(
+		i, b, goal_position, sim_radius=sim_radius, next_goal=next_goal,
+		is_curve=is_curve, is_final=is_last_point
+	)
+	if reached_goal:
+		if goal_distance is not None:
+			print(f"[uav-flyby] bot {i}: switching {label} point at {goal_distance:.1f} m")
 		line_index += 1
 		with active_goal_tasks_lock:
 			if i in active_goal_tasks:
 				active_goal_tasks[i]["line_index"] = line_index
-	dis = print_sim_vs_real_latlon_with_bot(b,i, label="mission")
-	if dis <= 300:
-		print(f"Bot {i} dis:{dis}.")
-		cmd = cvg.goal_area_cvg(i,b,goal_position)
-		cmd+= disp_field(b,neighbourhood_radius=100)
-		cmd.exec(b,step_size=1)
+	advance_bot_with_uav_pacing(i, b, goal_position, label="mission")
 	_drive_vehicle_towards(i, b)
 
 
-def _drive_vehicle_towards(i, b):
+def _drive_vehicle_towards(i, b, guidance_position=None):
 	if master_flag and i < len(vehicles):
-		current_position = (b.x * 2, b.y * 2)
+		position = guidance_position if guidance_position is not None else (b.x, b.y)
+		current_position = (position[0] * 2, position[1] * 2)
 		lat, lon = locatePosition.cartToGeo(origin, endDistance, current_position)
 		if same_alt_flag:
 			point1 = LocationGlobalRelative(lat, lon, same_height)
@@ -1615,27 +1731,31 @@ def _goal_task_runner():
 	while True:
 		time.sleep(sleep_times.get(len(pos_array), 0.1))
 		try:
+			# Keep assignment/replacement and a complete drive tick mutually
+			# exclusive.  A selected-UAV command therefore takes effect at the
+			# next tick at the latest, with no stale command after replacement.
 			with active_goal_tasks_lock:
 				tasks_snapshot = list(active_goal_tasks.items())
-			if not tasks_snapshot:
-				continue
-			completed = []
-			for i, task in tasks_snapshot:
-				if i >= len(s.swarm) or i >= len(pos_array):
-					completed.append(i)
+				if not tasks_snapshot:
 					continue
-				b = s.swarm[i]
-				task_type = task.get("type")
-				if task_type == "mission":
-					_drive_mission_task(i, b, task, completed)
-				elif task_type == "guided_circle":
-					_drive_guided_circle_task(i, b, task, completed)
-				elif task_type == "altitude":
-					_drive_altitude_task(i, b, task, completed)
-				else:
-					_drive_goal_task(i, b, task, completed)
-			if completed:
-				with active_goal_tasks_lock:
+				completed = []
+				for i, task in tasks_snapshot:
+					if active_goal_tasks.get(i) is not task:
+						continue
+					if i >= len(s.swarm) or i >= len(pos_array):
+						completed.append(i)
+						continue
+					b = s.swarm[i]
+					task_type = task.get("type")
+					if task_type == "mission":
+						_drive_mission_task(i, b, task, completed)
+					elif task_type == "guided_circle":
+						_drive_guided_circle_task(i, b, task, completed)
+					elif task_type == "altitude":
+						_drive_altitude_task(i, b, task, completed)
+					else:
+						_drive_goal_task(i, b, task, completed)
+				if completed:
 					for i in completed:
 						active_goal_tasks.pop(i, None)
 			# NOTE: deliberately does not call gui.update() here.
@@ -2215,15 +2335,12 @@ while(1):
 						# cmd =cvg.goal_area_cvg(i,b,goal)
 						# cmd+= disp_field(b,neighbourhood_radius=100)
 						# cmd.exec(b)
-						dis = print_sim_vs_real_latlon_with_bot(b,i, label="Guided Circle")
-						if dis <= 300:
-							print(f"Bot {i} dis:{dis}.")
-							cmd =cvg.goal_area_cvg(i,b,goal)
-							cmd+= disp_field(b,neighbourhood_radius=100)
-							cmd.exec(b,step_size=1)
+						advance_bot_with_uav_pacing(i, b, goal, label="guided_circle_formation")
 						dx=abs(goal[0]-current_position[0])
 						dy=abs(goal[1]-current_position[1])	
 						circle_formation_table[i]=1					
+						# This is an intentional circular formation, not a finite
+						# fly-by route.  Advance its virtual circle points locally.
 						if(dx<=5 and dy<=5):
 							ind[i]+=1
 							print("inddddddd",ind)
@@ -2389,12 +2506,7 @@ while(1):
 							lon = vehicles[i].location.global_relative_frame.lon
 							x,y = locatePosition.geoToCart (origin, endDistance, [lat,lon])
 							plane_points=[x/2,y/2]
-							dis = print_sim_vs_real_latlon_with_bot(b,i, label="loiter_point")
-							if dis <= 300:
-								print(f"Bot {i} dis:{dis}.")
-								cmd =cvg.goal_area_cvg(i,b,goal)
-								cmd+= disp_field(b,neighbourhood_radius=100)
-								cmd.exec(b,step_size=1)
+							advance_bot_with_uav_pacing(i, b, goal, label="loiter_point")
 							# cmd =cvg.goal_area_cvg(i,b,goal)
 							# cmd+= disp_field(b,neighbourhood_radius=100)
 							# cmd.exec(b)
@@ -2573,12 +2685,7 @@ while(1):
 						# cmd =cvg.goal_area_cvg(i,b,goal)
 						# cmd+= disp_field(b,neighbourhood_radius=100)
 						# cmd.exec(b)	
-						dis = print_sim_vs_real_latlon_with_bot(b,i, label="navigate")
-						if dis <= 300:
-							print(f"Bot {i} dis:{dis}.")
-							cmd =cvg.goal_area_cvg(i,b,goal)
-							cmd += disp_field(b, neighbourhood_radius=100)
-							cmd.exec(b,step_size=1)
+						advance_bot_with_uav_pacing(i, b, goal, label="navigate")
 						dx=abs(goal[0]-current_position[0])
 						dy=abs(goal[1]-current_position[1])						
 						if(dx<=1 and dy<=1):							
@@ -2863,24 +2970,39 @@ while(1):
 					goal=(x,y)
 					current_goals[i]=goal
 					#print(f"CSV goal for bot {i}: {goal}, bot pos: {b.x:.1f}, {b.y:.1f}, ratio: {goal[0]/b.x:.2f}")
-					dis = print_sim_vs_real_latlon_with_bot(b,i, label="search")
-					if dis <= 300:
-						print(f"Bot {i} dis:{dis}.")
-						cmd =cvg.goal_area_cvg(i,b,goal)
-						cmd += disp_field(b, neighbourhood_radius=100)
-						cmd.exec(b,step_size=1)
+					advance_bot_with_uav_pacing(i, b, goal, label="search")
 					value=[b.x*2,b.y*2]
 					current_position=[b.x,b.y]
 					dx=abs(goal[0]-current_position[0])
 					dy=abs(goal[1]-current_position[1])
-					# if isCurve == "True":
-					# 	b.max_speed = 1.5
-					# 	step_size = 0.4
-					# 	# b.step_size = 0.08
-					# else:
-					# 	b.max_speed = 3
-					# 	step_size = 0.8
-					if(dx<=10 and dy<=10):
+					is_curve = str(isCurve).strip().lower() == "true"
+					next_goal = None
+					is_final = False
+					try:
+						if removed_grid_path_array_flag:
+							next_index = removed_grid_path_array_start_val[i] + 1
+							is_final = next_index >= removed_grid_path_array[i][1]
+							if not is_final:
+								next_row = read_specific_line(removed_grid_filename[i], next_index)
+								next_goal = (next_row[0][0], next_row[0][1])
+						else:
+							next_index = grid_path_array[i] + 1
+							is_final = next_index >= int(num_lines[i])
+							if not is_final:
+								next_row = read_specific_line(all_uav_csv_grid_array[i], next_index)
+								next_goal = (next_row[0][0], next_row[0][1])
+					except Exception as e:
+						print("[search] next point read failed", i, e)
+					reached_search_waypoint, uav_goal_distance = uav_reached_waypoint(
+						i, b, goal, sim_radius=10, next_goal=next_goal,
+						is_curve=is_curve, is_final=is_final
+					)
+					if reached_search_waypoint:
+						if uav_goal_distance is not None:
+							print(
+								f"[uav-flyby] bot {i}: switching search point at "
+								f"{uav_goal_distance:.1f} m"
+							)
 						if grid_path_array[i]>=int(num_lines[i]) and not removed_grid_path_array_flag:
 							continue
 						if grid_path_array[i]>=int(num_lines[i]) and removed_grid_path_array_flag:
@@ -2890,7 +3012,7 @@ while(1):
 						else:
 							grid_path_array[i]+=1
 							print("grid_path_array",grid_path_array)				
-					# cmd.exec(b,step_size)
+					# cmd.exec(b)
 					if master_flag:
 						if pop_flag_arr[i]==1:
 							lat,lon = locatePosition.cartToGeo (origin, endDistance, value)
@@ -3180,7 +3302,7 @@ while(1):
 						goal_lat_lon = read_specific_line(removed_grid_filename[i], removed_grid_path_array_start_val[i])						
 					else:					
 						goal_lat_lon = read_specific_line(all_uav_csv_grid_array[i], grid_path_array[i])
-					x,y = goal_lat_lon[0][0],goal_lat_lon[0][1]
+					x,y,isCurve = goal_lat_lon[0][0],goal_lat_lon[0][1],goal_lat_lon[0][2]
 					goal=(x,y)
 					current_goals[i]=goal
 					cmd =cvg.goal_area_cvg(i,b,goal)
@@ -3188,7 +3310,34 @@ while(1):
 					current_position=[b.x,b.y]
 					dx=abs(goal[0]-current_position[0])
 					dy=abs(goal[1]-current_position[1])
-					if(dx<=5 and dy<=5):						
+					is_curve = str(isCurve).strip().lower() == "true"
+					next_goal = None
+					is_final = False
+					try:
+						if removed_grid_path_array_flag:
+							next_index = removed_grid_path_array_start_val[i] + 1
+							is_final = next_index >= removed_grid_path_array[i][1]
+							if not is_final:
+								next_row = read_specific_line(removed_grid_filename[i], next_index)
+								next_goal = (next_row[0][0], next_row[0][1])
+						else:
+							next_index = grid_path_array[i] + 1
+							is_final = next_index >= int(num_lines[i])
+							if not is_final:
+								next_row = read_specific_line(all_uav_csv_grid_array[i], next_index)
+								next_goal = (next_row[0][0], next_row[0][1])
+					except Exception as e:
+						print("[split] next point read failed", i, e)
+					reached_split_waypoint, split_goal_distance = uav_reached_waypoint(
+						i, b, goal, sim_radius=5, next_goal=next_goal,
+						is_curve=is_curve, is_final=is_final
+					)
+					if(reached_split_waypoint):
+						if split_goal_distance is not None:
+							print(
+								f"[uav-flyby] bot {i}: switching split point at "
+								f"{split_goal_distance:.1f} m"
+							)
 						if grid_path_array[i]>=int(num_lines[i]) and not removed_grid_path_array_flag:
 							continue
 						if grid_path_array[i]>=int(num_lines[i]) and removed_grid_path_array_flag:
@@ -3197,15 +3346,10 @@ while(1):
 						else:
 							grid_path_array[i]+=1
 							print("grid_path_array",grid_path_array)	
-					dis = print_sim_vs_real_latlon_with_bot(b,i, label="split")
-					if dis <= 300:
-							print(f"Bot {i} dis:{dis}.")
-							cmd =cvg.goal_area_cvg(i,b,goal)
-							cmd += disp_field(b, neighbourhood_radius=100)
-							cmd.exec(b,step_size=1)
-					# cmd.exec(b)											
+					advance_bot_with_uav_pacing(i, b, goal, label="split")
+					# cmd.exec(b)
 					if master_flag:
-						if pop_flag_arr[i]==1:							
+						if pop_flag_arr[i]==1:
 							lat,lon = locatePosition.cartToGeo (origin, endDistance, value)
 							if same_alt_flag:
 								point1 = LocationGlobalRelative(lat,lon,same_height)
