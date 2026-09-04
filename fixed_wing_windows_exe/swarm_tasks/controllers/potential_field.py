@@ -262,6 +262,14 @@ from shapely.ops import nearest_points
 
 field_weights = {"bots": 150, "obstacles": 1, "borders": 1, "goal": -3, "items": 0}
 
+# Two GPS fixes can quantise to the same simulated point.  A zero-length
+# position difference has no geometric "away" direction, but treating every
+# bot at that point as self makes both aircraft receive the same goal command
+# and remain coupled.  This is deliberately tiny: it is used only to choose a
+# direction for an exact-overlap recovery, not as a replacement for the normal
+# distance-based repulsion.
+OVERLAP_EPSILON = 1e-6
+
 
 def get_field(
     i,
@@ -309,17 +317,31 @@ def get_field(
         vec += field * dir_vec
 
     # Robots field
-    for b in sim.swarm:
-        pos = Point(b.get_position())
-        if pos.x == point[0] and pos.y == point[1]:
+    for j, b in enumerate(sim.swarm):
+        if j == i:
             continue
+        pos = Point(b.get_position())
         r = pos.distance(p)
 
         if r > max_dist:
             continue
 
-        dir_vec = -np.array([pos.x - p.x, pos.y - p.y])
-        dir_vec = np.divide(dir_vec, np.linalg.norm(dir_vec))
+        if r <= OVERLAP_EPSILON:
+            # Give the pair opposite, repeatable escape headings.  Using the
+            # pair (rather than random headings) prevents command-to-command
+            # jitter and lets a fixed-wing aircraft fly forward while it
+            # separates instead of repeatedly changing heading in place.
+            lo, hi = sorted((i, j))
+            pair_angle = (lo * 2.399963229728653 + hi * 0.9272952180016122) % (
+                2 * np.pi
+            )
+            if i > j:
+                pair_angle += np.pi
+            dir_vec = np.array([np.cos(pair_angle), np.sin(pair_angle)])
+            r = OVERLAP_EPSILON
+        else:
+            dir_vec = -np.array([pos.x - p.x, pos.y - p.y])
+            dir_vec = np.divide(dir_vec, np.linalg.norm(dir_vec))
 
         field = weights["bots"] / np.abs(np.power(r + 0.001, order))
 

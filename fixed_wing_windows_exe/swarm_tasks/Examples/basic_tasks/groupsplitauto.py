@@ -9,7 +9,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 class AutoSplitMission():
-    def __init__(self, origin,center_lat_lons, drone_list, grid_spacing, coverage_area):
+    def __init__(self, origin,center_lat_lons, drone_list, grid_spacing, coverage_area,
+                 min_turn_radius=None, cruise_speed=None):
         self.origin = origin
         self.center_lat_lons = center_lat_lons
         # drone_list: the swarm computer's own actual connected UAV ids
@@ -22,9 +23,22 @@ class AutoSplitMission():
         self.coverage_area = coverage_area
         self.initial_heading = np.radians(0)  # Initial heading angle in radians
         self.G = 9.81  # Gravity (m/s²)
-        self.MAX_BANK_ANGLE = np.radians(20)  # 20 degrees in radians -- matches search's BezierCurveMultiple
-        self.SPEED = 18  # Aircraft speed in m/s
-        self.TURN_RATE = (self.G * np.tan(self.MAX_BANK_ANGLE)) / self.SPEED  # rad/s
+        self.MAX_BANK_ANGLE = np.radians(20)
+        # min_turn_radius (metres): shape every generated turn to this radius
+        # instead of the bank-angle default (~91 m at SPEED=18, bank=20 deg).
+        self.SPEED = (
+            float(cruise_speed) if cruise_speed and float(cruise_speed) > 0 else 18.0
+        )
+        if min_turn_radius and float(min_turn_radius) > 0:
+            self.TURN_RADIUS = float(min_turn_radius)
+        else:
+            self.TURN_RADIUS = (self.SPEED ** 2) / (self.G * np.tan(self.MAX_BANK_ANGLE))
+        self.TURN_RATE = self.SPEED / self.TURN_RADIUS
+        if grid_spacing and grid_spacing < 2 * self.TURN_RADIUS:
+            print(
+                f"[bezier] WARNING grid_spacing={grid_spacing} m < 2*turn_radius="
+                f"{2 * self.TURN_RADIUS:.0f} m -- turn-arounds will bulge past adjacent lines"
+            )
         self.sample_points = []
         self.path = []
         self.waypoints = []
@@ -50,7 +64,7 @@ class AutoSplitMission():
 
         num_rectangles = num_of_drones
         grid_spacing = grid_space
-        meters_for_extended_lines = 250
+        meters_for_extended_lines = max(250.0, 2.2 * self.TURN_RADIUS)
 
         full_width, full_height = coverage_area, coverage_area
 

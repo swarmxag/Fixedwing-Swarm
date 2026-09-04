@@ -28,6 +28,8 @@ import {
   mergeMissionForUavs,
   changeBaseAltitude,
   changeAltitudeStep,
+  changeAutomateBearing,
+  changeAutomateSafetyMargin,
 } from '~/features/swarm/slice';
 import { showError } from '~/features/snackbar/actions';
 import { getLandingMissionId } from '~/features/mission/selectors';
@@ -323,7 +325,7 @@ const SwarmPanel = ({
         } else {
           dispatch(setMissionFromServer(res.body.message));
         }
-      } else if (message == 'goal') {
+      } else if (message == 'goal' || message == 'autogoal') {
         // A goal command targets a single point, not a coverage grid --
         // without this, a UAV that previously ran a search/navigate/split
         // keeps showing that old grid on the map forever, since nothing
@@ -521,7 +523,7 @@ const SwarmPanel = ({
             style={{ display: 'flex', flexDirection: 'row', gap: 10 }}
           >
             {/* Navigate isn't needed for this mission -- disabled front-to-back
-                (button here, "navigate" handler in dhaksha-server's app.py). */}
+                (button here, "navigate" handler in Xag-Server's app.py). */}
             {/*<Button*/}
             {/*  variant='contained'*/}
             {/*  onClick={async () => await handlePoint('navigate')}*/}
@@ -556,6 +558,65 @@ const SwarmPanel = ({
               onClick={handleFenceMission}
             >
               Set Origin
+            </Button>
+          </FormControl>
+        </Box>
+        {/* "Automate Goals": one drawn point -> one non-overlapping loiter
+            circle per selected UAV, marching along the bearing below.
+            Loiter radius/direction still come from the Swarm UAVs settings
+            tab, same as "Goal Point". */}
+        <Box style={{ display: 'flex', gap: 20, alignItems: 'center' }}>
+          <FormControl
+            fullWidth
+            variant='standard'
+            style={{
+              display: 'flex',
+              flexDirection: 'row',
+              gap: 10,
+              alignItems: 'center',
+            }}
+          >
+            <FormControl variant='standard'>
+              <InputLabel htmlFor='automateBearing'>Bearing (deg)</InputLabel>
+              <Input
+                name='automateBearing'
+                type='number'
+                inputMode='numeric'
+                inputProps={{ id: 'automateBearing' }}
+                value={socketData.automateBearing}
+                onChange={({ target: { value } }) =>
+                  dispatch(
+                    changeAutomateBearing({
+                      automateBearing: Number.parseFloat(value) || 0,
+                    })
+                  )
+                }
+              />
+            </FormControl>
+            <FormControl variant='standard'>
+              <InputLabel htmlFor='automateSafetyMargin'>
+                Safety Margin (m)
+              </InputLabel>
+              <Input
+                name='automateSafetyMargin'
+                type='number'
+                inputMode='numeric'
+                inputProps={{ id: 'automateSafetyMargin' }}
+                value={socketData.automateSafetyMargin}
+                onChange={({ target: { value } }) =>
+                  dispatch(
+                    changeAutomateSafetyMargin({
+                      automateSafetyMargin: Number.parseFloat(value) || 0,
+                    })
+                  )
+                }
+              />
+            </FormControl>
+            <Button
+              variant='contained'
+              onClick={async () => await handlePoint('autogoal')}
+            >
+              Automate Goals
             </Button>
           </FormControl>
         </Box>

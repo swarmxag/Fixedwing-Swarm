@@ -82,7 +82,7 @@ const SwarmUavsTab = ({dispatch,speed,radius,direction,selectedIds,onClose}) => 
         <SimpleAirspeedField
           name='radius'
           min={200}
-          max={400}
+          max={2000}
           value={radius}
           variant='standard'
           onChange={(event) => dispatch(changeRadius({radius: parseInt(event.target.value)}))}

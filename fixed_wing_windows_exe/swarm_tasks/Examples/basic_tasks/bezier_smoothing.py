@@ -61,7 +61,13 @@ def predict_path_with_waypoints(
 
 
 def generate_bezier_path(
-    waypoints, speed, turn_rate, initial_heading=0.0, samples=10, max_iter=500000
+    waypoints,
+    speed,
+    turn_rate,
+    initial_heading=0.0,
+    samples=10,
+    max_iter=500000,
+    sample_spacing_m=15.0,
 ):
     """Smooths one drone's raw grid waypoints (row-boundary points plus a
     turn-around overshoot point every 3rd entry -- see GridFormation /
@@ -71,6 +77,17 @@ def generate_bezier_path(
     split, and specific-split all call, so their turn-around curves stay
     identical by construction instead of drifting out of sync (as the old
     per-class copies of this loop did).
+
+    The minimum radius of every generated turn is `speed / turn_rate` -- so
+    a caller that wants the path shaped to a specific aircraft turn radius R
+    passes `turn_rate = speed / R` (see the generator classes' min_turn_radius
+    argument).
+
+    `samples` is now a floor, not a fixed count: each turn is sampled at
+    roughly `sample_spacing_m` metres along its arc (with `samples` as the
+    minimum), so a wide turn from a large turn radius keeps enough curve
+    points for the downstream tight curve-point switching instead of being
+    cut to 10 coarse samples regardless of length.
 
     Returns (result, is_bezier): result is the smoothed point list, is_bezier
     a same-length list of bools flagging which points came from the bezier
@@ -97,7 +114,20 @@ def generate_bezier_path(
                 [waypoints[i], waypoints[i + 1], waypoints[i + 2]],
                 max_iter=max_iter,
             )
-            sampled_indices = np.linspace(0, len(path1) - 1, samples, dtype=int)
+            # Sample the turn at ~sample_spacing_m along its arc (arc length
+            # ~= number of dead-reckoned steps * step distance, step = speed*dt
+            # with predict_path_with_waypoints' default dt=0.1), never fewer
+            # than `samples`. A large turn radius makes this arc long, so a
+            # fixed count would leave the curve points too far apart for the
+            # tight curve-point switch radius downstream.
+            arc_m = max(1.0, len(path1) * speed * 0.1)
+            n_samples = max(int(samples), int(arc_m / max(1.0, sample_spacing_m)))
+            # Hard cap: a single turn-around never needs more than a couple of
+            # hundred samples, and path1 can run to max_iter on degenerate
+            # turn geometry -- without this the CSV would blow up to tens of
+            # thousands of rows for that one segment.
+            n_samples = min(n_samples, 200, len(path1))
+            sampled_indices = np.linspace(0, len(path1) - 1, n_samples, dtype=int)
             sampled_points = path1[sampled_indices]
             for sample_point in sampled_points:
                 data.append(sample_point.tolist())

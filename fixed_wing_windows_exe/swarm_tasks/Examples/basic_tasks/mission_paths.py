@@ -5,7 +5,7 @@ rectangles.yaml (see medur_fixed_wing.py::read_origin()), so mission output
 lives next to it instead of scattered flat across the script's own source
 folder.
 
-Twin of dhaksha-server/src/flockwave/server/mission_paths.py -- kept as a
+Twin of Xag-Server/src/flockwave/server/mission_paths.py -- kept as a
 separate file since the two sides run as independent processes/machines,
 not shared code.
 
@@ -13,7 +13,7 @@ One CSV + one KML per UAV, in a single flat directory, overwritten in place
 by whichever mission (search/split/specificsplit) most recently targeted
 that UAV -- there is deliberately no per-run history here. Only the path
 CSV is ever read back by anything (medur_fixed_wing.py during flight,
-dhaksha-server for the GCS trajectory display); the KML is written purely
+Xag-Server for the GCS trajectory display); the KML is written purely
 for a human to open in Earth/QGIS.
 
 A UAV removed mid-mission stays removed -- its uncovered remainder is

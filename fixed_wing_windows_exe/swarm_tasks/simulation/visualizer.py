@@ -37,6 +37,7 @@ class Gui:
 		self.gps_artists = []
 		self.circle_artists = []
 		self.planned_path_artists = []
+		self.lookahead_artists = []
 
 	def show_bots(self):
 
@@ -142,6 +143,40 @@ class Gui:
 				linestyle='', marker='o', markersize=4, color=color, alpha=0.8,
 			)
 			self.circle_artists.append(dots)
+
+	def show_lookahead(self, points, gps_points=None):
+		"""Draw the forward look-ahead / pursuit target actually handed to each
+		real UAV's simple_goto -- distinct from show_goals() (the current CSV
+		waypoint the simulated bot tracks) and show_gps_positions() (where the
+		aircraft actually is). Seeing all three at once shows the lead the
+		guidance is carrying: bot waypoint -> look-ahead target -> aircraft.
+
+		points: list aligned with s.swarm, each entry either None or an (x, y)
+		in the same local sim frame as s.swarm[i].x/y (already converted from
+		whatever the caller sent to the vehicle).
+		gps_points: optional, same shape -- when given, a thin line is drawn
+		from each aircraft's live position to its look-ahead target.
+		"""
+		for artist in self.lookahead_artists:
+			artist.remove()
+		self.lookahead_artists = []
+		for i, point in enumerate(points):
+			if point is None:
+				continue
+			lx, ly = point
+			color = self.state_colors[i % len(self.state_colors)]
+			if gps_points is not None and i < len(gps_points) and gps_points[i] is not None:
+				gx, gy = gps_points[i]
+				link, = self.ax.plot(
+					[gx, lx], [gy, ly], linestyle='-', linewidth=0.8,
+					color=color, alpha=0.5, zorder=59,
+				)
+				self.lookahead_artists.append(link)
+			# marker, = self.ax.plot(
+			# 	lx, ly, marker='D', markersize=7, markerfacecolor='none',
+			# 	markeredgewidth=1.5, color=color, zorder=61,
+			# )
+			# self.lookahead_artists.append(marker)
 
 	def show_planned_path(self, paths_by_bot):
 		"""Draw each bot's full planned waypoint list (the whole search/
@@ -327,5 +362,11 @@ class Gui:
 		plt.show(block=False)
 		
 	def close(self):
-		plt.close()
+		# Close THIS Gui's own figure, not plt.gcf(). A bare plt.close()
+		# closes whatever figure happens to be current, so once a second Gui
+		# had been created this one's figure was never destroyed -- it stayed
+		# alive with its tkinter objects until the garbage collector finalized
+		# them on some other thread, which is where
+		# "RuntimeError: main thread is not in main loop" comes from.
+		plt.close(self.fig)
 		

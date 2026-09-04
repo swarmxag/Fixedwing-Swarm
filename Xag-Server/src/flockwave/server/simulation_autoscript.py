@@ -55,6 +55,8 @@ def simulation_exe(
         str(count),
         "--spacing",
         str(spacing),
+        "--param-file",
+        "C:/Users/Dell/Downloads/simulator/simulator/default_params/quadplane.parm",
         "--home-lat",
         str(home_lat),
         "--home-lon",

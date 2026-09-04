@@ -685,7 +685,7 @@ def search_socket(points, gridspacing, coverage, ids):
     # curve.plot_curve()
     path = curve.return_latlon()
     time_sample = TimeCalculation(
-        missions=curve.search_grid, speed=18, loiter_radius=200
+        missions=curve.search_grid, speed=18, loiter_radius=250
     )
     """
     udp_socket.sendto(str(data).encode(), server_address1)
@@ -1106,6 +1106,60 @@ def goal_socket(goal_num, direction, radius, ids=None):
     return True
 
 
+def autogoal_socket(goal_num, direction, radius, ids=None, bearing=90, safety_margin=50):
+    """'Automate Goals' -- one operator point fans out into one
+    non-overlapping loiter circle per selected UAV on the swarm computer
+    (see medur_swarm/goal_point_generator.generate_loiter_goal_points).
+
+    Wire format mirrors goal_socket, with two trailing fields:
+        autogoal_<[[lat,lon]]>_<direction>_<radius>_<[ids]>_<bearing>_<safety_margin>
+    """
+    print("***Automate goals*****!!!!!")
+    ids = ids or []
+
+    def _num(value, fallback):
+        try:
+            if value is None:
+                return fallback
+            value = float(value)
+            return fallback if value != value else value  # NaN guard
+        except (TypeError, ValueError):
+            return fallback
+
+    bearing = _num(bearing, 90)
+    safety_margin = _num(safety_margin, 50)
+    radius = _num(radius, 0)
+    for num in goal_num:
+        num.reverse()
+    data = "_".join(
+        [
+            "autogoal",
+            json.dumps(goal_num),
+            str(direction),
+            str(radius),
+            json.dumps(ids),
+            str(bearing),
+            str(safety_margin),
+        ]
+    )
+    print("d", data)
+    master_udp.sendto(data.encode(), adderss.get(2))
+    return True
+
+
+def autogoal_radius_socket(radius, ids=None):
+    """Additive on-board loiter-radius change for an active 'Automate
+    Goals' layout -- the swarm computer regenerates every circle at the
+    new radius. Sent alongside (not instead of) the existing WP_LOITER_RAD
+    push, and a no-op on the swarm side if no autogoal layout is running.
+    """
+    ids = ids or []
+    data = "_".join(["autogoalrad", str(radius), json.dumps(ids)])
+    print("d", data)
+    master_udp.sendto(data.encode(), adderss.get(2))
+    return True
+
+
 def master(master_num):
 
     data = "master" + "-" + str(master_num)
@@ -1257,7 +1311,7 @@ def navigate(center_latlon, gridspacing, coverage, ids):
     curve.generate_bezier_curve()
     path = curve.return_latlon()
     time_sample = TimeCalculation(
-        missions=curve.search_grid, speed=18, loiter_radius=200
+        missions=curve.search_grid, speed=18, loiter_radius=250
     )
     return path, time_sample.max_time()
 
@@ -1353,5 +1407,5 @@ def specificsplit(center_latlon, uavs, gridspace, coverage):
     # split.waypoints/path store (lon, lat) pairs; TimeCalculation's haversine
     # call expects (lat, lon), so swap before estimating flight time.
     missions = [[(lat, lon) for lon, lat in segment] for segment in path]
-    time_sample = TimeCalculation(missions=missions, speed=20, loiter_radius=200)
+    time_sample = TimeCalculation(missions=missions, speed=20, loiter_radius=250)
     return path, time_sample.max_time()

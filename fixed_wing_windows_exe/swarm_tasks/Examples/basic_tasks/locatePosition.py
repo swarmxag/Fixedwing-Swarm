@@ -36,6 +36,16 @@ def distance_bearing(homeLattitude, homeLongitude, destinationLattitude, destina
     out = [distance, bearingDegrees]
     return out[0]
 
+def bearing(homeLattitude, homeLongitude, destinationLattitude, destinationLongitude):
+    rlat1 = homeLattitude * (math.pi/180)
+    rlat2 = destinationLattitude * (math.pi/180)
+    rlon1 = homeLongitude * (math.pi/180)
+    rlon2 = destinationLongitude * (math.pi/180)
+    y = math.sin(rlon2 - rlon1) * math.cos(rlat2)
+    x = math.cos(rlat1) * math.sin(rlat2) - math.sin(rlat1) * math.cos(rlat2) * math.cos(rlon2 - rlon1)
+    bearingRad = math.atan2(y, x)
+    return (bearingRad * (180/math.pi)) % 360
+
 def geoToCart(origin, endDistance, geoLocation):
     # The initial point of rectangle in (x,y) is (0,0) so considering the current
     # location as origin and retreiving the latitude and longitude from the GPS

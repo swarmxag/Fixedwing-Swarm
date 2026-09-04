@@ -976,6 +976,12 @@ class SkybrushServer(DaemonApp):
                     await uav.driver._set_parameter_single(
                         uav, "WP_LOITER_RAD", int(rad)
                     )
+            # Additive: if an "Automate Goals" layout is running on the
+            # swarm computer, tell it to regenerate every loiter circle at
+            # the new radius (re-spaced so they still don't overlap). No
+            # effect on the autopilot push above; a no-op on the swarm
+            # side when no autogoal layout is active.
+            autogoal_radius_socket(parameters.get("radius"), selectedIds)
 
         if msg == "setaltitude":
             alts = parameters.pop("alts", "")
@@ -1383,6 +1389,34 @@ class SkybrushServer(DaemonApp):
                     requested_ids,
                 )
 
+        if msg == "autogoal":
+            # "Automate Goals" button -- same front end as "goal" (one
+            # drawn point, the selected UAV subset, the Swarm-UAVs loiter
+            # radius/direction) plus a bearing and a safety margin from the
+            # panel. The swarm computer turns the single point into one
+            # non-overlapping loiter circle per UAV along that bearing.
+            if get_origin() is None:
+                print("[origin reminder] Set Origin/Geofence before sending autogoal")
+                result = "origin_not_set"
+            else:
+                requested_ids = [int(uav_id) for uav_id in parameters.get("ids", [])]
+                if not requested_ids:
+                    stop_socket()
+                    await sleep(1)
+                direction = (
+                    1
+                    if parameters.get("Direction", "").lower().startswith("c")
+                    else -1
+                )
+                result = autogoal_socket(
+                    parameters.get("coords"),
+                    direction,
+                    parameters.get("radius"),
+                    requested_ids,
+                    parameters.get("automateBearing", 90),
+                    parameters.get("automateSafetyMargin", 50),
+                )
+
         if msg == "home_goto":
             result = home_goto_socket()
 
@@ -1732,7 +1766,7 @@ class SkybrushServer(DaemonApp):
             speed = parameters.pop("speed")
             from .VTOL.new_left import generate_XY_Positions
 
-            res = generate_XY_Positions(10, 0, -100, point)
+            res = generate_XY_Positions(10, 100, 0, point)
             log.warning(str(res))
             self.run_in_background(self.check_height, uav_ids, alt - 1, speed, res)
             # self.run_in_background(self.send_guided_command,uav_ids,speed,res)

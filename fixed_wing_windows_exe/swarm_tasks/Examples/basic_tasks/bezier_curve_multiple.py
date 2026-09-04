@@ -313,12 +313,32 @@ class BezierCurveMultiple:
         grid_space,
         coverage_area,
         uav_ids=None,
+        min_turn_radius=None,
+        cruise_speed=None,
     ):
         self.initial_heading = np.radians(0)  # Initial heading angle in radians
         self.G = 9.81  # Gravity (m/s²)
-        self.MAX_BANK_ANGLE = np.radians(20)  # 20 degrees in radians
-        self.SPEED = 18  # Aircraft speed in m/s
-        self.TURN_RATE = (self.G * np.tan(self.MAX_BANK_ANGLE)) / self.SPEED  # rad/s
+        self.MAX_BANK_ANGLE = np.radians(20)
+        # min_turn_radius (metres): shape every generated turn to this radius
+        # instead of the bank-angle default (~91 m at SPEED=18, bank=20 deg),
+        # so the planned path is trackable by an aircraft flying that loiter
+        # radius. Falls back to the bank-angle geometry when not supplied.
+        self.SPEED = (
+            float(cruise_speed) if cruise_speed and float(cruise_speed) > 0 else 18.0
+        )
+        if min_turn_radius and float(min_turn_radius) > 0:
+            self.TURN_RADIUS = float(min_turn_radius)
+        else:
+            self.TURN_RADIUS = (self.SPEED ** 2) / (
+                self.G * np.tan(self.MAX_BANK_ANGLE)
+            )
+        self.TURN_RATE = self.SPEED / self.TURN_RADIUS
+        if grid_space and grid_space < 2 * self.TURN_RADIUS:
+            print(
+                f"[bezier] WARNING grid_space={grid_space} m < 2*turn_radius="
+                f"{2 * self.TURN_RADIUS:.0f} m -- 180 deg turn-arounds will bulge "
+                f"past adjacent lines / the coverage box"
+            )
         self.origin = origin
         self.center_latitude = center_latitude
         self.center_longitude = center_longitude
@@ -362,7 +382,10 @@ class BezierCurveMultiple:
 
         num_rectangles = self.num_of_drones
         grid_spacing = self.grid_space
-        meters_for_extended_lines = 250
+        # Turn-around overshoot beyond each row end. A 180 deg turn needs ~2R
+        # of lateral room, so scale this with the configured turn radius (kept
+        # at least the original 250 m so small-radius behaviour is unchanged).
+        meters_for_extended_lines = max(250.0, 2.2 * self.TURN_RADIUS)
         gap_between_rectangles = 50
 
         full_width, full_height = self.coverage_area, self.coverage_area
@@ -423,13 +446,10 @@ class BezierCurveMultiple:
         # back out below; nothing else ever needs the raw grid once the
         # bezier-smoothed path has been produced, so it's never written to
         # disk (see mission_paths.py module docstring).
-        minimum_waypoints = len(min(csv_datas, key=len))
         for i in range(len(csv_datas)):
             points = []
-            for j in range(len(csv_datas[i])):
-                if j >= minimum_waypoints:
-                    break
-                x, y = geoToCart(self.origin, 500000, csv_datas[i][j])
+            for waypoint in csv_datas[i]:
+                x, y = geoToCart(self.origin, 500000, waypoint)
                 points.append((x / 2, y / 2))
             self._grid_by_slot[i + 1] = points
 

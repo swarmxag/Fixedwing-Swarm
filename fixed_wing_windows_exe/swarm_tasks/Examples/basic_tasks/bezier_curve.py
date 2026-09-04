@@ -16,12 +16,29 @@ class BezierCurve:
         num_of_drones,
         grid_space,
         coverage_area,
+        min_turn_radius=None,
+        cruise_speed=None,
     ):
         self.initial_heading = np.radians(0)  # Initial heading angle in radians
         self.G = 9.81  # Gravity (m/s²)
-        self.MAX_BANK_ANGLE = np.radians(20)  # 40 degrees in radians
-        self.SPEED = 18  # Aircraft speed in m/s
-        self.TURN_RATE = (self.G * np.tan(self.MAX_BANK_ANGLE)) / self.SPEED  # rad/s
+        self.MAX_BANK_ANGLE = np.radians(20)
+        # min_turn_radius (metres): shape every generated turn to this radius
+        # instead of the bank-angle default (~91 m at SPEED=18, bank=20 deg).
+        self.SPEED = (
+            float(cruise_speed) if cruise_speed and float(cruise_speed) > 0 else 18.0
+        )
+        if min_turn_radius and float(min_turn_radius) > 0:
+            self.TURN_RADIUS = float(min_turn_radius)
+        else:
+            self.TURN_RADIUS = (self.SPEED ** 2) / (
+                self.G * np.tan(self.MAX_BANK_ANGLE)
+            )
+        self.TURN_RATE = self.SPEED / self.TURN_RADIUS
+        if grid_space and grid_space < 2 * self.TURN_RADIUS:
+            print(
+                f"[bezier] WARNING grid_space={grid_space} m < 2*turn_radius="
+                f"{2 * self.TURN_RADIUS:.0f} m -- turn-arounds will bulge past adjacent lines"
+            )
         # self.grid_csv_path = "grid.csv"
         # self.curve_csv_file = "curve.csv"
         # self.search_csv_name = "search_curve.kml"
@@ -93,7 +110,9 @@ class BezierCurve:
 
         num_rectangles = self.num_of_drones
         grid_spacing = self.grid_space
-        meters_for_extended_lines = 250
+        # Turn-around overshoot scaled with the configured turn radius (a
+        # 180 deg turn needs ~2R lateral room); never below the original 250 m.
+        meters_for_extended_lines = max(250.0, 2.2 * self.TURN_RADIUS)
         gap_between_rectangles = 50
 
         full_width, full_height = self.coverage_area, self.coverage_area

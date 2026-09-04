@@ -30,6 +30,11 @@ interface SwarmSlice {
   UAVColumn: number;
   UAVSpacing: number;
   NoOfUAVs: number;
+  // "Automate Goals": bearing the per-UAV loiter circles march along, and
+  // the extra clearance (m) left between neighbouring circles on top of
+  // the two radii.
+  automateBearing: number;
+  automateSafetyMargin: number;
 }
 
 const initialState: SwarmSlice = {
@@ -57,6 +62,8 @@ const initialState: SwarmSlice = {
   UAVSpacing: 10,
   UAVRow: NaN,
   UAVColumn: NaN,
+  automateBearing: 90,
+  automateSafetyMargin: 50,
 };
 
 const { actions, reducer } = createSlice({
@@ -149,6 +156,18 @@ const { actions, reducer } = createSlice({
     ) {
       state.simVehicle = action.payload.simVehicle;
     },
+    changeAutomateBearing(
+      state,
+      action: PayloadAction<{ automateBearing: number }>
+    ) {
+      state.automateBearing = action.payload.automateBearing;
+    },
+    changeAutomateSafetyMargin(
+      state,
+      action: PayloadAction<{ automateSafetyMargin: number }>
+    ) {
+      state.automateSafetyMargin = action.payload.automateSafetyMargin;
+    },
   },
 });
 
@@ -176,6 +195,8 @@ export const {
   changeUavColumn,
   changeSimPattern,
   changeSimVehicle,
+  changeAutomateBearing,
+  changeAutomateSafetyMargin,
 } = actions;
 
 export default reducer;
