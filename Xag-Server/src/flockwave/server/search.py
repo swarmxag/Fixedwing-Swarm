@@ -21,9 +21,9 @@
 #         self.MAX_BANK_ANGLE = np.radians(40)  # 40 degrees in radians
 #         self.SPEED = 18  # Aircraft speed in m/s
 #         self.TURN_RATE = (self.G * np.tan(self.MAX_BANK_ANGLE)) / self.SPEED  # rad/s
-#         self.grid_csv_path = "D:/Kamikaze-Fuze-GUI/dhaksha-server/src/flockwave/server/search/csv/grid_{}.csv"
-#         self.curve_csv_file = "D:/Kamikaze-Fuze-GUI/dhaksha-server/src/flockwave/server/search/csv/curve_{}.csv"
-#         self.search_csv_name = "D:/Kamikaze-Fuze-GUI/dhaksha-server/src/flockwave/server/search/kml/search_{}.kml"
+#         self.grid_csv_path = "D:/Kamikaze-Fuze-GUI/Xag-Server/src/flockwave/server/search/csv/grid_{}.csv"
+#         self.curve_csv_file = "D:/Kamikaze-Fuze-GUI/Xag-Server/src/flockwave/server/search/csv/curve_{}.csv"
+#         self.search_csv_name = "D:/Kamikaze-Fuze-GUI/Xag-Server/src/flockwave/server/search/kml/search_{}.kml"
 #         self.origin = [12.918539181520373, 80.03802393847818]
 #         # self.origin = [13.375812, 80.225549]
 #         self.center_latitude = center_latitude
@@ -170,7 +170,7 @@
 #                 )
 #             kml_filename = f"search-drone-{i+1}.kml"
 #             path = os.path.join(
-#                 "D:/Kamikaze-Fuze-GUI/dhaksha-server/src/flockwave/server/search/kml/",
+#                 "D:/Kamikaze-Fuze-GUI/Xag-Server/src/flockwave/server/search/kml/",
 #                 kml_filename,
 #             )
 #             kml.save(path)

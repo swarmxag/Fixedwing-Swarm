@@ -10,7 +10,7 @@ simulation_process = None
 #                       ArduPlane.exe, etc.
 SIM_LAUNCHER_DIR = os.environ.get(
     "SIM_LAUNCHER_DIR",
-    r"C:\Users\Dell\Documents\Mission Planner\sitl\simulator",
+    r"C:\Users\Dell\Downloads\simulator\simulator",
 )
 
 # Per-vehicle SITL binary + --model flag, keyed by the lowercase value the
