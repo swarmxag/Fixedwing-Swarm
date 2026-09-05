@@ -1,0 +1,26 @@
+Setting MAV_SYSID=4
+Suggested EK3_DRAG_BCOEF_* = 17.209, EK3_DRAG_MCOEF = 0.209
+Home: 13.112777 79.492576 alt=5.000000m hdg=0.000000
+Starting sketch 'ArduPlane'
+Starting SITL input
+Using Irlock at port : 9035
+Using \clock topic for DDS timing: disabled
+bind port 5970 for SERIAL0
+SERIAL0 on TCP port 5970
+Waiting for connection ....
+Connection on serial port 5970
+Loaded defaults from @ROMFS/default_params/quadplane.parm
+bind port 5972 for SERIAL1
+SERIAL1 on TCP port 5972
+bind port 5973 for SERIAL2
+SERIAL2 on TCP port 5973
+Loaded defaults from @ROMFS/default_params/quadplane.parm
+Smoothing reset at 0.001
+validate_structures:538: Validating structures
+Waiting for internal clock bits to be set (current=0x00)
+Loaded defaults from @ROMFS/default_params/quadplane.parm
+Loaded defaults from @ROMFS/default_params/quadplane.parm
+Loaded defaults from @ROMFS/default_params/quadplane.parm
+Loaded defaults from @ROMFS/default_params/quadplane.parm
+Loaded defaults from @ROMFS/default_params/quadplane.parm
+Closed connection on SERIAL0

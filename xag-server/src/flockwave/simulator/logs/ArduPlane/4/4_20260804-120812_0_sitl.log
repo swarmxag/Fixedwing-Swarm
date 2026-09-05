@@ -1,0 +1,9 @@
+Setting MAV_SYSID=4
+Suggested EK3_DRAG_BCOEF_* = 17.209, EK3_DRAG_MCOEF = 0.209
+Home: 13.006700 80.256954 alt=5.000000m hdg=0.000000
+Starting sketch 'ArduPlane'
+Starting SITL input
+Using Irlock at port : 9035
+Using \clock topic for DDS timing: disabled
+bind port 5970 for SERIAL0
+bind failed on port 5970 - Address already in use

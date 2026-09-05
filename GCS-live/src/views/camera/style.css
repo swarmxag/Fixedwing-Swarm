@@ -1,0 +1,98 @@
+.container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  justify-content: center;
+  padding: 15px;
+  max-height: calc(100vh - 120px);
+  overflow-y: auto;
+  /* background-color: #f9f9f9; */
+  border-radius: 8px;
+}
+
+.img-card {
+  position: relative;
+  border-radius: 8px;
+  box-shadow: 0 3px 6px rgba(0, 0, 0, 0.1);
+  transition:
+    transform 0.2s,
+    box-shadow 0.2s;
+  overflow: hidden;
+  background-color: #fff;
+  width: 250px;
+  height: 250px;
+  display: flex;
+  flex-direction: column;
+}
+
+.img-card:hover {
+  transform: translateY(-5px);
+  box-shadow: 0 10px 20px rgba(0, 0, 0, 0.15);
+}
+
+.img-style {
+  border-radius: 8px 8px 0 0;
+  cursor: pointer;
+  width: 100%;
+  height: 200px;
+  object-fit: cover;
+  transition: all 0.3s ease;
+}
+
+.img-info {
+  padding: 10px;
+  font-size: 0.75rem;
+  color: #333;
+  background-color: #f8f8f8;
+  flex-grow: 1;
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.selected {
+  border: 3px solid #3f51b5;
+  box-shadow: 0 0 0 3px rgba(63, 81, 181, 0.3);
+}
+
+.selected .img-info {
+  background-color: #e8eaf6;
+}
+
+.img-card.selected::after {
+  content: '✓';
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 24px;
+  height: 24px;
+  background-color: #3f51b5;
+  color: white;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: bold;
+  z-index: 10;
+}
+
+.img-card.selected::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(63, 81, 181, 0.05);
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* Fix for person detection boxes showing in images */
+.img-style img {
+  max-width: 100%;
+  max-height: 100%;
+}

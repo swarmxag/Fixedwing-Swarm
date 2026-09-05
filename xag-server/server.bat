@@ -1,0 +1,1 @@
+poetry run skybrushd -c .\etc\conf\skybrush-outdoor.jsonc

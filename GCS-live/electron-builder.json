@@ -1,0 +1,45 @@
+{
+  "appId": "com.collmot.skybrush.live",
+  "productName": "XAG Swarm GCS",
+
+  "artifactName": "${productName} ${version}.${ext}",
+
+  "directories": {
+    "output": "dist",
+    "buildResources": "build"
+  },
+
+  "files": ["!**/*", "package.json", { "from": "build" }],
+
+  "extraFiles": [
+    { "from": "extra/server", "to": "." },
+    { "from": "extra/missions", "to": "missions" }
+  ],
+
+  "linux": {
+    "category": "Utility",
+    "target": {
+      "target": "AppImage",
+      "arch": "x64"
+    }
+  },
+
+  "mac": {
+    "category": "public.app-category.utilities",
+    "target": "dmg",
+    "darkModeSupport": true
+  },
+
+  "win": {
+    "target": {
+      "target": "nsis",
+      "arch": "x64"
+    }
+  },
+
+  "nsis": {
+    "artifactName": "${productName} Setup ${version}.${ext}",
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true
+  }
+}

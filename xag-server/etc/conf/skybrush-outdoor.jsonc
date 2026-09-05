@@ -1,0 +1,36 @@
+{
+  "EXTENSIONS": {
+    "http_server": {
+      "host": ""
+    },
+    "map_cache": {
+      "enabled": true,
+      "route": "/map_cache"
+    },
+    // "location": {
+    //   "enabled": true,
+    //   "fixed": {
+    //     "position": [12.948916, 80.141855],
+    //     "fixed": 1
+    //   }
+    // },
+    "http": {
+      "enable": true,
+      "detectionFolder": "detection"
+    },
+    "mavlink": {
+      "enabled": true,
+      "networks": {
+        "mav": {
+          "connections": ["udp-listen://:14550?broadcast_port=14555"],
+          "id_format": "{0:02}",
+          "statustext_targets": ["client", "server"],
+          "system_id": 254
+        }
+      }
+    },
+    "rtk": {
+      "add_serial_ports": [9600, 57600]
+    }
+  }
+}

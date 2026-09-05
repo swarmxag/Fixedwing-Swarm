@@ -1,0 +1,302 @@
+{
+  "": "",
+  "ConnectionStatusMiniList": {
+    "noConnections": "This server uses no connections.",
+    "useSecondaryChannel": "Use secondary channel"
+  },
+  "DrawingToolbar": {
+    "addMarker": "Add marker",
+    "cutHole": "Cut hole into polygon",
+    "distance": "Distance",
+    "drawCircle": "Draw circle",
+    "drawPath": "Draw path",
+    "drawPolygon": "Draw polygon",
+    "drawRectangle": "Draw rectangle",
+    "editFeature": "Edit feature",
+    "select": "Select",
+    "zoom": "Zoom"
+  },
+  "OnboardPreflightChecksDialog": {
+    "noError": "None of the UAVs indicated an error.",
+    "passed": "Onboard preflight checks passed.",
+    "signOffOn": "Sign off on onboard preflight checks"
+  },
+  "RTKStatusMiniList": {
+    "satelliteCount": "Satellite count",
+    "surveyInProgress": "Survey in progress...",
+    "surveyNo": "No survey in progress",
+    "surveySuccesful": "Survey successful"
+  },
+  "UAVOpButtonGrp": {
+    "armMotors": "Arm motors",
+    "disarmMotors": "Disarm motors",
+    "flashLights": "Flash lights",
+    "land": "Land",
+    "positionHold": "Position hold",
+    "powerOff": "Power off",
+    "powerOn": "Power on",
+    "properties": "Properties",
+    "reboot": "Reboot",
+    "removeItemsMarkedGone": "Remove items marked as gone",
+    "removeSelectedItems": "Remove selected items",
+    "returnToHome": "Return to home",
+    "sleep": "Sleep",
+    "takeOff": "Takeoff"
+  },
+  "UAVStatus": {
+    "noConnected": "There are no connected UAVs at the moment"
+  },
+  "alerts": {
+    "acknowledgeAlerts": "Click to acknowledge alerts",
+    "clickToMute": "Click to mute audible alerts.",
+    "muted": "Audible alerts are muted. Click to unmute."
+  },
+  "altitudeSummaryButton": {
+    "clickToChange": "Click to change to {{altitudeType}}.",
+    "showingCurrent": "Showing maximum and minimum {{altitudeType}}."
+  },
+  "authentication": "Authentication",
+  "batteryStatusHeaderButton": "Showing average and minimum charge levels.",
+  "broadcastButton": {
+    "disable": "Disable broadcast",
+    "enable": "Enable broadcast for {{time}} seconds"
+  },
+  "fieldNotesPanel": {
+    "exportNotesAsFile": "Export notes as Markdown file"
+  },
+  "fitAllFeaturesButton": {
+    "fitAllDrones": "Fit all drones",
+    "fitAllFeatures": "Fit all features"
+  },
+  "fullScreen": {
+    "exit": "Exit full screen mode",
+    "on": "Full screen mode"
+  },
+  "geofence": {
+    "statusText": {
+      "automatic": "Automatic geofence in use",
+      "error": "Show area lies outside the geofence",
+      "manual": "Manual geofence in use",
+      "no": "No geofence defined yet"
+    }
+  },
+  "geofenceDialog": {
+    "apply": "Apply",
+    "clear": "Clear current fence",
+    "close": "Close",
+    "fenceAction": "Fence action",
+    "fenceActionHelperText": "Support for these options depends on the drones themselves; not all options are supported by all drones.",
+    "fenceActionLabel": "Primary fence action",
+    "horizontal": "Horizontal",
+    "maxAltitude": "Max altitude",
+    "maxDistance": "Max distance",
+    "maxVertexCount": "Maximum vertex count",
+    "proposedLimits": "Proposed limits for current mission",
+    "safetyMargins": "Safety margins",
+    "simplifyPolygon": "Simplify polygon",
+    "title": "Geofence settings",
+    "vertexCountReduction": "Vertex count reduction",
+    "vertical": "Vertical"
+  },
+  "help": "Help",
+  "lightControl": {
+    "fromGCS": "Lights controlled from GCS",
+    "notConnected": "Not connected to server",
+    "notFromGCS": "Lights not controlled from GCS"
+  },
+  "map": {
+    "resetRotation": "Reset rotation"
+  },
+  "mappingToggleButton": {
+    "sortByMissionID": "Sort by mission IDs"
+  },
+  "notifications": {
+    "connectedToSkybrushServer": "Connected to XAG Server"
+  },
+  "preferences": "Preferences",
+  "safetyDialog": {
+    "geofenceTab": {
+      "apply": "Apply",
+      "clear": "Clear current fence",
+      "close": "Close",
+      "errors": {
+        "distance": "Could not calculate distance",
+        "height": "Could not calculate height"
+      },
+      "fenceAction": "Fence action",
+      "fenceActionHelperText": "Support for these options depends on the drones themselves; not all options are supported by all drones.",
+      "fenceActionLabel": "Primary fence action",
+      "horizontal": "Horizontal",
+      "maxAltitude": "Max altitude",
+      "maxDistance": "Max distance",
+      "maxVertexCount": "Maximum vertex count",
+      "proposedLimits": "Proposed limits for current mission",
+      "safetyMargins": "Safety margins",
+      "simplifyPolygon": "Simplify polygon",
+      "vertexCountReduction": "Vertex count reduction",
+      "vertical": "Vertical"
+    },
+    "title": "Safety"
+  },
+  "serverConnectionStatus": {
+    "clockSkew": "Clock skew",
+    "clocksSync": "Clocks synchronized",
+    "connected": "Connected",
+    "connecting": "Connection in progress...",
+    "disconnected": "Disconnected from server",
+    "disconnecting": "Disconnection in progress...",
+    "roundTripTime": "Round-trip time",
+    "unknownState": "Unknown state",
+    "version": "Server version"
+  },
+  "settings": {
+    "display": {
+      "coordinateFormat": "Coordinate format",
+      "enableExperimentalFeatures": "Enable experimental features (advanced)",
+      "flatEarthCoordinateSystem": "Flat Earth coordinate system",
+      "hideInactiveSegmentsOnDarkLCD": "Enhance contrast on dark mode LCD clocks",
+      "language": "Language",
+      "mapOrigin": "Map origin",
+      "mapWidgets": "Map widgets",
+      "miscellaneous": "Miscellaneous",
+      "operationModes": "Operation modes",
+      "optimizeForSingleUAV": "Optimize the interface for single UAV operation",
+      "optimizeUIForTouch": "Optimize the interface for touchscreen devices",
+      "showMouseCoordinates": "Show mouse coordinates",
+      "showScaleLine": "Show scale line"
+    },
+    "tabs": {
+      "apiKeys": "API keys",
+      "display": "Display",
+      "preflight": "Preflight",
+      "server": "Server",
+      "threeDView": "3D View",
+      "uavs": "UAVs"
+    },
+    "threeDView": {
+      "1x1": "10x10 meters",
+      "2x2": "20x20 meters",
+      "auto": "Automatic",
+      "dark": "Dark",
+      "environment": "Environment",
+      "grid": "Grid",
+      "indoor": "Indoor",
+      "light": "Light",
+      "lighting": "Lighting",
+      "none": "No grid",
+      "outdoor": "Outdoor",
+      "rendering": "Rendering",
+      "scenery": "Scenery",
+      "showAxes": "Show coordinate system axes",
+      "showHomePositions": "Show home positions",
+      "showLandingPositions": "Show landing positions",
+      "showStatistics": "Show rendering statistics (advanced)",
+      "showTrajectoriesOfSelection": "Show trajectories of selected UAVs"
+    },
+    "uavs": {
+      "batteryDisplayStyle": "Battery display style",
+      "cellCount": "Cell count",
+      "criticalTreshold": "Critical threshold",
+      "defaultBatterySettings": "Default battery settings",
+      "desiredHeadingAccuracy": "Desired heading accuracy",
+      "desiredPlacementAccuracy": "Desired placement accuracy",
+      "forget": "Forget unseen drones after",
+      "fullCharge": "Full charge",
+      "gone": "Mark drones as gone after",
+      "lowTreshold": "Low threshold",
+      "missionSetup": "Mission setup",
+      "missionSetupDescription": "Used before multi-drone missions to check whether each drone is at its prescribed takeoff position and is facing the right direction.",
+      "warn": "Warn about drones not seen for at least"
+    }
+  },
+  "show": {
+    "authorizationReq": "Authorization required before takeoff",
+    "authorizeTheStart": "Authorize start of show",
+    "authorized": "Show authorized to start",
+    "chooseStartTime": "Choose start time",
+    "chooseStartTimeNotSet": "Not set yet",
+    "clear": "Clear loaded show",
+    "clock": "Show clock:",
+    "dronePlacementApproved": "Drone placement approved",
+    "dronePlacementCheck": "Checking drone placement…",
+    "dronePlacementError": "Error in drone placement",
+    "dronePlacementPartial": "Partial drone placement approved",
+    "fromCloud": "Load show from cloud",
+    "indoor": "Indoor",
+    "loading": "Please wait, loading show file…",
+    "manualPreflightChecks": "Manual preflight checks",
+    "noFileLoaded": "Select Inital mission",
+    "onboardPreflightChecks": "Onboard preflight checks",
+    "outdoor": {
+      "invalidAltitudeReference": "Outdoor, invalid altitude reference",
+      "relativeToAMSL": "Outdoor, relative to {{altitude}}m AMSL",
+      "relativeToHome": "Outdoor, relative to home",
+      "unknownAltitudeReference": "Outdoor, unknown altitude reference"
+    },
+    "placementAccuracy": "Placement accuracy ≤ {{distance}}",
+    "reload": "Reload show",
+    "revokeAuthorization": "Click here to revoke authorization",
+    "selectFile": "Click to Select runway for initial mission",
+    "setupEnvironment": "Setup environment",
+    "setupGeofence": "Setup geofence",
+    "setupTakeoffArea": "Setup takeoff area",
+    "startMethod": {
+      "AUTO": "Show will start automatically",
+      "RC": "Use the switch on your RC to start"
+    },
+    "startTimeNotSet": "Start time not set yet",
+    "startsAt": "Starts at {{time}}",
+    "takeOffMore": "{{quantity}} drones will take off automatically",
+    "takeOffNoPosition": "No position yet for at least one drone",
+    "takeOffOne": "One drone will take off automatically",
+    "takeOffPlace": "Place the drones in the takeoff area",
+    "unknown": "Unknown",
+    "unknownStartMode": "This show uses an unknown start mode",
+    "uploadShowData": "Upload show data",
+    "uploadShowDataLoading": "Please wait, uploading…",
+    "uploadShowDataStart": "Click here to start the upload process"
+  },
+  "sidebar": {
+    "missionType": "Mission type: ({{missionType}})"
+  },
+  "toolbox": {
+    "averagingInProgress": "{{number}} in progress",
+    "coordinateAveraging": "Coordinate averaging",
+    "licenseInfo": "License info",
+    "offlineMaps": "Offline maps",
+    "paramUpload": "Parameter upload",
+    "tooltip": "Toolbox",
+    "uploadInProgress": "Upload in progress"
+  },
+  "view": {
+    "beacon-list": "Beacons",
+    "camera": "Camera",
+    "dock-list": "Docks",
+    "feature-list": "Features",
+    "field-notes": "Field notes",
+    "layer-list": "Layers",
+    "lcd-clock-panel": "Clocks",
+    "light-control": "Light control",
+    "log-panel": "Event log",
+    "map": "Map",
+    "mission-editor": "Mission editor",
+    "saved-location-list": "Locations",
+    "show-control": "Show control",
+    "strike": "Strike panel",
+    "swarm": "",
+    "three-d-view": "3D View",
+    "uav-details": "UAV details",
+    "uav-list": "UAVs"
+  },
+  "weatherMiniList": {
+    "compassDeclination": "Compass declination",
+    "kpIndex": "Kp index",
+    "lastUpdate": "Last update",
+    "noWeatherInfo": "No weather information on this day",
+    "refreshing": "Refreshing...",
+    "sunrise": "Sunrise",
+    "sunset": "Sunset",
+    "timezone": "Timezone",
+    "utcOffset": "UTC offset"
+  }
+}

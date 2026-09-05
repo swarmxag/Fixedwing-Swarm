@@ -1,0 +1,27 @@
+[1mdiff --git a/.gitignore b/.gitignore[m
+[1mindex 2359a8f..9656db8 100644[m
+[1m--- a/.gitignore[m
+[1m+++ b/.gitignore[m
+[36m@@ -2,4 +2,19 @@[m
+ *.csv[m
+ *kml[m
+ venv[m
+[31m-.venv[m
+\ No newline at end of file[m
+[32m+[m[32m.venv[m
+[32m+[m[32m# Simulation logs[m
+[32m+[m[32m*.tlog[m
+[32m+[m[32m*.tlog.raw[m
+[32m+[m[32m*.BIN[m
+[32m+[m
+[32m+[m[32m# Simulation backup files[m
+[32m+[m[32m*.bak_*[m
+[32m+[m
+[32m+[m[32m# Python / build caches[m
+[32m+[m[32m__pycache__/[m
+[32m+[m[32m*.pyc[m
+[32m+[m
+[32m+[m[32m# Generated build directories[m
+[32m+[m[32mdist/[m
+[32m+[m[32mbuild/[m
+\ No newline at end of file[m
