@@ -65,7 +65,11 @@ import {
   getLoadMissionState,
   getMissionFromServer,
 } from '~/features/uavs/details';
-import { getMissionByUav } from '~/features/swarm/selectors';
+import { getAutoGoalPreview, getMissionByUav } from '~/features/swarm/selectors';
+import {
+  AutoGoalPreviewPropType,
+  createAutoGoalPreviewFeatures,
+} from '../features/AutoGoalPreviewFeature';
 import store from '~/store';
 import { MessageSemantics } from '~/features/snackbar/types';
 import { showNotification } from '~/features/snackbar/slice';
@@ -86,6 +90,7 @@ const MissionInfoLayerSettingsPresentation = ({
     showLandingPositions,
     showMissionOrigin,
     showTrajectoriesOfSelection,
+    showAutoGoalPreview,
   } = parameters || {};
 
   const handleChange = (name) => (event) =>
@@ -152,6 +157,16 @@ const MissionInfoLayerSettingsPresentation = ({
           />
         }
         label='Show trajectories of selected drones'
+      />
+      <FormControlLabel
+        control={
+          <Checkbox
+            checked={showAutoGoalPreview !== false}
+            value='showAutoGoalPreview'
+            onChange={handleChange('showAutoGoalPreview')}
+          />
+        }
+        label='Show "Automate Goals" preview'
       />
     </FormGroup>
   );
@@ -350,6 +365,7 @@ const MissionInfoVectorSource = ({
   loadMission,
   missionArray,
   missionByUav,
+  autoGoalPreview,
 }) => {
   const features = [];
 
@@ -576,10 +592,19 @@ const MissionInfoVectorSource = ({
     }
   }
 
+  // "Automate Goals" preview -- what the CURRENT panel inputs would lay out,
+  // drawn before anything is sent and redrawn live as the bearing, safety
+  // margin or loiter radius is edited. Pushed last so its circles sit on top
+  // of the mission overlays.
+  if (autoGoalPreview) {
+    features.push(...createAutoGoalPreviewFeatures(autoGoalPreview));
+  }
+
   return <source.Vector>{features}</source.Vector>;
 };
 
 MissionInfoVectorSource.propTypes = {
+  autoGoalPreview: AutoGoalPreviewPropType,
   convexHull: PropTypes.arrayOf(CustomPropTypes.coordinate),
   coordinateSystemType: PropTypes.oneOf(['neu', 'nwu']),
   homePositions: PropTypes.arrayOf(CustomPropTypes.coordinate),
@@ -645,6 +670,14 @@ export const MissionInfoLayer = connect(
       : undefined,
     loadMission: getLoadMissionState(state),
     missionArray: getMissionFromServer(state),
+    // Checked against `!== false` rather than for truthiness: layer
+    // parameters are persisted, so a layer saved before this option existed
+    // has no value for it at all, and those users should still get the
+    // preview without having to find and tick a new checkbox first.
+    autoGoalPreview:
+      layer?.parameters?.showAutoGoalPreview !== false
+        ? getAutoGoalPreview(state)
+        : undefined,
     // mergeMissionForUavs only ever adds/overwrites entries, it never
     // removes them -- so a UAV dropped from the swarm (e.g. going from a
     // 10-bot run to a 5-bot run) leaves its old grid sitting in

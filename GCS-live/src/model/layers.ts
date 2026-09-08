@@ -208,6 +208,7 @@ const propertiesForLayerTypes: Record<
       showHomePositions: true,
       showLandingPositions: false,
       showTrajectoriesOfSelection: true,
+      showAutoGoalPreview: true,
     },
   },
   [LayerType.OWN_LOCATION]: {
