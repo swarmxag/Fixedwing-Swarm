@@ -114,7 +114,7 @@ def real_uav_avoidance_vector(i):
     )
 
 
-def pursuit_target_with_avoidance(i, b, distance=720):
+def pursuit_target_with_avoidance(i, b, distance=700):
     """Convenience wrapper combining compute_lookahead_target and
     real_uav_avoidance_vector: the pursuit point ahead of the bot's own
     heading (see compute_lookahead_target), corrected by every other real
@@ -141,8 +141,8 @@ def pursuit_target_with_avoidance(i, b, distance=720):
     tx, ty = compute_lookahead_target(
         b.x, b.y, b.theta, rx / 2, ry / 2, distance=distance
     )
-    avoid_x, avoid_y = real_uav_avoidance_vector(i)
-    return (tx + avoid_x, ty + avoid_y)
+    # avoid_x, avoid_y = real_uav_avoidance_vector(i)
+    return (tx, ty)
 
 
 def signed_uav_lead(i, b):
@@ -345,8 +345,7 @@ def advance_bot_with_uav_pacing(i, b, goal, label=""):
             lead_text = "n/a"
         else:
             lead_text = (
-                f"{signed_lead:+.1f}m "
-                f"({'AHEAD' if signed_lead > 0 else 'BEHIND'})"
+                f"{signed_lead:+.1f}m " f"({'AHEAD' if signed_lead > 0 else 'BEHIND'})"
             )
         print(
             f"[bot-sync] label={label} bot={i} "

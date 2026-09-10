@@ -170,7 +170,15 @@ class ActiveUAVsLayerSource extends React.Component {
     const getFeatureById = source.getFeatureById.bind(source);
     let features;
 
+    // The .filter(Boolean) before .map() is the load-bearing one: it drops nil
+    // IDs *before* they reach getFeatureById. OpenLayers implements that as
+    // featureId.toString(), so a nil throws rather than returning nothing --
+    // the trailing .filter(Boolean) only ever removed IDs that matched no
+    // feature, and never ran at all once one of them threw. updateSelection
+    // now keeps nils out of the store, but a selection persisted before that
+    // fix can still contain one.
     features = difference(newSelection, oldSelection)
+      .filter(Boolean)
       .map(getFeatureById)
       .filter(Boolean);
     for (const feature of features) {
@@ -178,6 +186,7 @@ class ActiveUAVsLayerSource extends React.Component {
     }
 
     features = difference(oldSelection, newSelection)
+      .filter(Boolean)
       .map(getFeatureById)
       .filter(Boolean);
     for (const feature of features) {

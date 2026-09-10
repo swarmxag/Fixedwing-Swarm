@@ -42,7 +42,17 @@ export const hasPrefix: (prefix: string) => (input: string) => boolean =
 export const stripPrefix: (
   prefix: string
 ) => (input: string) => string | undefined = (prefix) => (input) => {
-  if (input.startsWith(prefix)) {
+  // Conditional chaining for the same reason `hasPrefix` above needs it: these
+  // operators are handed OpenLayers feature ids, and `feature.getId()` is
+  // null/undefined for features that were never given one (graticules, and
+  // anything drawn without an explicit id). `stripPrefix` was the unguarded
+  // twin, so e.g. handleFeatureUpdatesInOpenLayers -> globalIdToFeatureId(null)
+  // threw "Cannot read properties of null (reading 'startsWith')".
+  //
+  // Returning undefined is the documented contract anyway: an input that does
+  // not start with the prefix yields undefined, and a missing id certainly
+  // does not start with it.
+  if (input?.startsWith(prefix)) {
     return input.slice(prefix.length);
   }
 

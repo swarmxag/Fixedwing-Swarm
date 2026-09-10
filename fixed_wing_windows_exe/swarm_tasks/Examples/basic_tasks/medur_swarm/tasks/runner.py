@@ -9,6 +9,7 @@ with whatever the rest of the swarm is doing.
 """
 
 import csv
+import math
 import threading
 import time
 
@@ -22,9 +23,9 @@ from medur_swarm.uav.guidance import (
     advance_bot_with_uav_pacing,
     pursuit_target_with_avoidance,
     signed_uav_lead,
+    real_uav_avoidance_vector,
     uav_reached_waypoint,
 )
-from medur_swarm.uav.telemetry import uav_distance_to_goal
 
 
 def _reset_mission_state():
@@ -222,7 +223,9 @@ def synchronize_mission_topology(
     still executing.
     """
     removed_indexes = (
-        sorted(set(state.remove_bot_array), reverse=True) if state.remove_bot_flag else []
+        sorted(set(state.remove_bot_array), reverse=True)
+        if state.remove_bot_flag
+        else []
     )
     for removed_index in removed_indexes:
         # csv_file_paths is indexed by selected_indexes, not by bot index.
@@ -286,6 +289,62 @@ def _build_circle_points(center_xy, radius, direction):
     return points
 
 
+def _ring_entry_index(i, circle_points, center):
+    """Pick the ring point this bot should enter the loiter on.
+
+    The point geometrically nearest the bot wins, so a UAV arriving from the
+    north takes the north arc instead of being sent across the circle. Any
+    point another bot on this same ring is currently heading for is skipped --
+    the search walks outward from the nearest one until it finds a free
+    index -- so the bots still fan out onto distinct points, which is what the
+    old slot rule was for.
+
+    That old rule spread them by `circle_slot`, the bot's position in the
+    selection list, which takes no account of where the aircraft actually is.
+    With every bot approaching from the same side (the normal case -- they
+    launch together) it handed the slot-0 bot the arc in front of it and sent
+    the rest around the ring: measured on a 1920 m ring, one bot was assigned
+    a point 4842 m away, 2.5 radii, straight across the circle.
+
+    Called from _start_guided_circle_task, which the runner only reaches while
+    holding active_goal_tasks_lock -- so reading the other bots' live tasks
+    here is safe.
+    """
+    point_count = len(circle_points)
+    if point_count == 0:
+        return 0
+    bot = state.s.swarm[i]
+    nearest = min(
+        range(point_count),
+        key=lambda k: (circle_points[k][0] - bot.x) ** 2
+        + (circle_points[k][1] - bot.y) ** 2,
+    )
+    # Ring points another bot on this same centre is already tracking. Matching
+    # on the live circle_index (not a stored entry index) means a point frees
+    # up again as soon as its bot walks on past it.
+    taken = set()
+    for other_index, other_task in state.active_goal_tasks.items():
+        if other_index == i or other_task.get("type") != "guided_circle":
+            continue
+        if tuple(other_task.get("center") or ()) != tuple(center):
+            continue
+        other_ring_index = other_task.get("circle_index")
+        if other_ring_index is not None:
+            taken.add(other_ring_index % point_count)
+    if nearest not in taken:
+        return nearest
+    for step in range(1, point_count):
+        for candidate in (
+            (nearest + step) % point_count,
+            (nearest - step) % point_count,
+        ):
+            if candidate not in taken:
+                return candidate
+    # More bots than ring points -- doubling up is unavoidable; disp_field in
+    # advance_bot_with_uav_pacing keeps them apart from here.
+    return nearest
+
+
 def _start_guided_circle_task(i, task):
     """Transitions a completed goal task into a loitering circle around its
     final goal point. Mirrors the original (dead) foreground guided_circle
@@ -321,8 +380,10 @@ def _start_guided_circle_task(i, task):
     if radius <= 0:
         radius = requested_radius
     print(
-        "guided_circle radius (live WP_LOITER_RAD)", radius,
-        "requested", requested_radius,
+        "guided_circle radius (live WP_LOITER_RAD)",
+        radius,
+        "requested",
+        requested_radius,
     )
     try:
         # goals[-1] is a local sim-frame (x, y) point (the /2-scaled output
@@ -336,14 +397,18 @@ def _start_guided_circle_task(i, task):
     except Exception as e:
         print("[guided-circle] failed to start for UAV", state.pos_array[i], e)
         return None
-    # Stagger this bot's starting ring point by its slot among the bots
-    # that were assigned this goal together, so they fan out onto distinct
-    # circle_points immediately instead of every bot heading for
-    # circle_points[0] and fighting over the same physical spot.
-    circle_slot = task.get("circle_slot", 0)
-    circle_slot_count = task.get("circle_slot_count") or 1
-    start_index = round(circle_slot * len(circle_points) / circle_slot_count) % len(
-        circle_points
+    # Enter the ring at the arc nearest this bot, skipping points another bot
+    # on the same ring is already tracking (see _ring_entry_index). This
+    # replaces a stagger by circle_slot -- the bot's position in the selection
+    # list -- which fanned the bots out evenly but ignored where they actually
+    # were, so a bot could be assigned the far side and cross the whole circle
+    # to take up station. circle_slot/circle_slot_count are still set by the
+    # assign_* functions; nothing reads them now.
+    center = (last_goal_x, last_goal_y)
+    start_index = _ring_entry_index(i, circle_points, center)
+    entry_distance_m = 2.0 * math.hypot(
+        circle_points[start_index][0] - state.s.swarm[i].x,
+        circle_points[start_index][1] - state.s.swarm[i].y,
     )
     print(
         "[guided-circle] starting for UAV",
@@ -352,12 +417,9 @@ def _start_guided_circle_task(i, task):
         radius,
         "direction",
         direction,
-        "slot",
-        circle_slot,
-        "of",
-        circle_slot_count,
-        "start_index",
+        "entry_index",
         start_index,
+        f"({entry_distance_m:.0f} m away)",
     )
     return {
         "type": "guided_circle",
@@ -369,7 +431,7 @@ def _start_guided_circle_task(i, task):
         # autopilot flies a true constant-radius orbit instead of chasing the
         # synthesized ring. circle_points is kept for the plot overlay (and
         # for the pursuit path, if it is ever restored).
-        "center": (last_goal_x, last_goal_y),
+        "center": center,
         # What circle_points was drawn at, so _drive_guided_circle_task can
         # notice a mid-flight WP_LOITER_RAD change and redraw the ring.
         "radius": radius,
@@ -386,61 +448,51 @@ def _drive_goal_task(i, b, task, completed):
     goal_position = goals[goal_index]
     next_goal = goals[goal_index + 1] if goal_index + 1 < len(goals) else None
     if next_goal is None:
-        # FINAL goal point: the bot keeps flying to its exact xy and the real
-        # UAV keeps following it, but the guided circle is triggered purely by
-        # the real UAV closing within its own live WP_LOITER_RAD of the goal --
-        # no bot-arrival requirement and no extra flyby margin, so it peels
-        # into the loiter the way native GUIDED mode does instead of first
-        # having to reach the exact point. (uav_reached_waypoint's general
-        # bot_reached AND flyby-radius rule still applies everywhere else --
-        # intermediate points here, and search/split via _drive_mission_task.)
-        goal_distance = uav_distance_to_goal(i, goal_position)
-        if goal_distance is not None:
+        # FINAL goal point. The bot does NOT have to reach the exact goal xy:
+        # as soon as it comes within one loiter radius of the goal it stops
+        # transiting and hands off to the guided circle. It is already standing
+        # on the loiter ring at that moment, so there is nothing left to fly.
+        #
+        # The aircraft ends up on that same ring without being tested for it:
+        # the loiter commands the CENTRE, and ArduPilot answers a GUIDED
+        # position target by orbiting it at WP_LOITER_RAD -- so the aircraft
+        # converges to exactly the loiter radius on its own. Testing the bot
+        # rather than the aircraft is what lets both arrive together instead of
+        # the bot parking on the goal while the aircraft is still inbound.
+        #
+        # This replaces a test on the real UAV's distance to the goal, which
+        # needed a closest-approach latch and an extra margin on top of
+        # WP_LOITER_RAD to be satisfiable at all: once the aircraft was
+        # orbiting, its distance to the centre converged to the loiter radius
+        # and could never drop below it, so "distance <= radius" tested the
+        # boundary of what is physically achievable and failed by a couple of
+        # metres forever (observed: dis pinned at 2162.4 m against a ~2160 m
+        # radius, frozen tick after tick, bot parked 0.45 m from its goal).
+        #
+        # (uav_reached_waypoint's general bot_reached AND flyby-radius rule
+        # still applies everywhere else -- intermediate points below, and
+        # search/split via _drive_mission_task.)
+        try:
+            requested_radius = int(float(task.get("guided_circle_radius") or 0))
+        except (TypeError, ValueError):
+            requested_radius = 0
+        # Sim units are half-scale, so double to compare in real metres.
+        goal_distance = 2.0 * math.hypot(goal_position[0] - b.x, goal_position[1] - b.y)
+        if requested_radius > 0:
             radius = _uav_loiter_radius_m(i)
-            # The threshold MUST sit outside WP_LOITER_RAD, not on it. Once
-            # the bot parks on the final goal the aircraft is commanded that
-            # exact point, and ArduPilot answers a GUIDED position target by
-            # loitering around it at WP_LOITER_RAD -- so the aircraft's
-            # distance to the goal converges to the loiter radius itself and
-            # can never go below it. Testing "distance <= radius" therefore
-            # tests the boundary of what is physically achievable and fails by
-            # a couple of metres, forever (observed: dis pinned at 2162.4 m
-            # against a ~2160 m radius, frozen tick after tick, bot parked
-            # 0.45 m from its goal). The margin is what makes "the aircraft
-            # has settled into its loiter around the goal" actually testable.
-            arrival_radius = radius + config.UAV_FINAL_WAYPOINT_RADIUS_MARGIN_M
-            reached_goal = goal_distance <= arrival_radius
-            # Latch the closest approach. Testing "inside the radius right
-            # now" alone needs a tick to sample the aircraft while it is in
-            # there, and a mid-flight radius reduction (e.g. 1000 -> 600) can
-            # take that window away from a UAV that was already inside the old
-            # one -- it then flies past, starts receding, and never qualifies
-            # again. Once the aircraft has come within a couple of radii and
-            # then clearly turned away, it has made its pass: hand off.
-            min_seen = state.goal_min_distance.get(i)
-            if min_seen is None or goal_distance < min_seen:
-                state.goal_min_distance[i] = goal_distance
-                min_seen = goal_distance
-            if (
-                not reached_goal
-                and min_seen <= arrival_radius * config.GOAL_CLOSEST_APPROACH_FACTOR
-                and goal_distance > min_seen + config.GOAL_RECEDE_MARGIN_M
-            ):
-                reached_goal = True
+            reached_goal = goal_distance <= radius
+            if reached_goal:
                 print(
-                    f"[goal-task] UAV {state.pos_array[i]} passed closest "
-                    f"approach {min_seen:.0f} m (now {goal_distance:.0f} m, "
-                    f"radius {radius:.0f} m) -- starting circle"
+                    f"[goal-task] UAV {state.pos_array[i]} bot reached "
+                    f"{goal_distance:.0f} m from goal (loiter radius "
+                    f"{radius:.0f} m) -- starting circle"
                 )
-        elif not state.master_flag:
-            # Sim-only run (no real vehicles): fall back to the bot's own
-            # arrival test, exactly as uav_reached_waypoint does.
+        else:
+            # No circle was requested, so there is no ring for the bot to stop
+            # on -- it has to actually arrive before the task can complete.
             reached_goal, goal_distance = uav_reached_waypoint(
                 i, b, goal_position, sim_radius=15, is_final=True
             )
-        else:
-            # Live mission with a telemetry gap -- never complete on a guess.
-            reached_goal = False
     else:
         reached_goal, goal_distance = uav_reached_waypoint(
             i,
@@ -511,7 +563,14 @@ def _drive_goal_task(i, b, task, completed):
     # goal the aircraft was still being sent 1.4 km past it, flew out there,
     # loitered on that point, and receded from the goal it was meant to
     # capture. Restore pursuit_target_with_avoidance(i, b) here to go back.)
-    _drive_vehicle_towards(i, b, (b.x, b.y))
+    # Real-UAV separation, layered on top: the aircraft still follows its own
+    # bot, but the commanded point is nudged away from every OTHER aircraft's
+    # live GPS position inside UAV_COLLISION_AVOID_RADIUS_M. Computed from
+    # real telemetry, so it stays meaningful even when a bot and its aircraft
+    # have drifted apart, and it is a no-op ((0, 0)) whenever there is no fix
+    # or nothing is in range -- the follow-the-bot behaviour is unchanged then.
+    # avoid_x, avoid_y = real_uav_avoidance_vector(i)
+    _drive_vehicle_towards(i, b, pursuit_target_with_avoidance(i, b))
 
 
 def _drive_guided_circle_task(i, b, task, completed):
@@ -593,8 +652,22 @@ def _drive_guided_circle_task(i, b, task, completed):
     # Uncomment it (and comment out the centre command) to go back.
     # `center` is resolved once at the top of this function (the ring rebuild
     # needs it too), so it is just used here.
-    _drive_vehicle_towards(i, b, center)
-    # _drive_vehicle_towards(i, b, pursuit_target_with_avoidance(i, b))
+    #
+    # Real-UAV separation is layered on the CENTRE, not on the aircraft:
+    # shifting the point ArduPilot is orbiting shifts the whole orbit with it,
+    # which is the only lever available while the autopilot owns the turn. The
+    # push is (0, 0) whenever nothing is inside UAV_COLLISION_AVOID_RADIUS_M,
+    # so an uncontested loiter orbits exactly the commanded centre as before.
+    #
+    # NOTE: on a shared ring (a plain 'goal', where every selected UAV loiters
+    # one centre) the bearing from a neighbour sweeps round as the aircraft
+    # orbits, so this offset rotates with it and walks the centre in a small
+    # circle. That is negligible at the current gain but grows in proportion to
+    # it -- if UAV_COLLISION_AVOID_GAIN is raised far, damp or latch this term
+    # rather than applying it raw every tick.
+    # avoid_x, avoid_y = real_uav_avoidance_vector(i)
+    # _drive_vehicle_towards(i, b, (center[0] + avoid_x, center[1] + avoid_y))
+    _drive_vehicle_towards(i, b, pursuit_target_with_avoidance(i, b))
 
 
 def _drive_mission_task(i, b, task, completed):
@@ -615,7 +688,9 @@ def _drive_mission_task(i, b, task, completed):
     is_curve = str(goal_lat_lon[0][2]).strip().lower() == "true"
     is_last_point = line_index >= num_lines - 1
     sim_radius = (
-        config.MISSION_FINAL_POINT_RADIUS if is_last_point else config.MISSION_POINT_SWITCH_RADIUS
+        config.MISSION_FINAL_POINT_RADIUS
+        if is_last_point
+        else config.MISSION_POINT_SWITCH_RADIUS
     )
     next_goal = None
     if not is_last_point:
@@ -637,7 +712,9 @@ def _drive_mission_task(i, b, task, completed):
         abs(goal_position[0] - b.x) <= sim_radius
         and abs(goal_position[1] - b.y) <= sim_radius
     )
-    pacing_target = next_goal if (already_at_goal and next_goal is not None) else goal_position
+    pacing_target = (
+        next_goal if (already_at_goal and next_goal is not None) else goal_position
+    )
     dis, _step_size = advance_bot_with_uav_pacing(i, b, pacing_target, label="mission")
     reached_goal, goal_distance = uav_reached_waypoint(
         i,

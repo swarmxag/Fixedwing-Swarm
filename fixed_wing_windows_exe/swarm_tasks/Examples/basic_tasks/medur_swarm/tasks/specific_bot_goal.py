@@ -61,9 +61,7 @@ def run_specific_bot_goal_command(data):
                             "specific_bot_goal_flag_array",
                             specific_bot_goal_flag_array,
                         )
-                    if all(
-                        flag == False for flag in specific_bot_goal_flag_array
-                    ):
+                    if all(flag == False for flag in specific_bot_goal_flag_array):
                         state.specific_bot_goal_flag = True
                         break
                     else:

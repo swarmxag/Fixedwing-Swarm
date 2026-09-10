@@ -40,9 +40,7 @@ def reload_geofence(data):
         with open(rectangles_path) as f:
             world_data = yaml.safe_load(f)
         new_size = (world_data["size"]["x"], world_data["size"]["y"])
-        new_obstacles = [
-            Polygon(o) for o in (world_data.get("obstacles") or [])
-        ]
+        new_obstacles = [Polygon(o) for o in (world_data.get("obstacles") or [])]
         state.s.env.obstacles = new_obstacles
         state.s.env.size = new_size
         state.s.size = new_size
@@ -57,9 +55,7 @@ def reload_geofence(data):
         # rebuild picks up the current drawn area too, not just
         # this already-running s.
         worlds_dir = sim.envs.world.worlds_path
-        shutil.copyfile(
-            rectangles_path, os.path.join(worlds_dir, "rectangles.yaml")
-        )
+        shutil.copyfile(rectangles_path, os.path.join(worlds_dir, "rectangles.yaml"))
         state.file_name = "rectangles"
 
         print(
@@ -125,7 +121,9 @@ def refresh_origin_and_rebuild_sim(data):
     for vehicle in state.vehicles:
         lat_i = vehicle.location.global_relative_frame.lat
         lon_i = vehicle.location.global_relative_frame.lon
-        x, y = locatePosition.geoToCart(state.origin, config.END_DISTANCE, [lat_i, lon_i])
+        x, y = locatePosition.geoToCart(
+            state.origin, config.END_DISTANCE, [lat_i, lon_i]
+        )
         state.uav_home_pos.append((x / 2, y / 2))
         # switches env to the dynamically-written world file
     state.s = sim.Simulation(

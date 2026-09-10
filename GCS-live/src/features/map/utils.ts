@@ -1,4 +1,6 @@
 import difference from 'lodash-es/difference';
+import isNil from 'lodash-es/isNil';
+import reject from 'lodash-es/reject';
 import uniq from 'lodash-es/uniq';
 
 import flock from '~/flock';
@@ -38,7 +40,15 @@ export function updateSelection(
 
   if (add && add.length > 0) {
     result.splice(0, 0, ...add);
-    return uniq(result);
+    // Nils are rejected here because this is the single funnel every selection
+    // write passes through (setSelection, addToSelection, toggleInSelection,
+    // selectAllUAVs). Some callers pass a raw item id straight from a list row
+    // -- see makeSelectionHandlerFactory in components/helpers/lists.jsx, which
+    // does setSelection([id]) with no check, unlike setSelectedUAVIds and
+    // setSelectedMissionSlots which both filter. A nil reaching the store is
+    // then handed to OpenLayers' getFeatureById, which does id.toString() and
+    // throws "Cannot read properties of null (reading 'toString')".
+    return reject(uniq(result), isNil);
   }
 
   return result;

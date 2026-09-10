@@ -212,7 +212,12 @@ export const findFeaturesById = curry(
       }
 
       for (const [i, featureId] of featureIds.entries()) {
-        if (!features[i]) {
+        // `featureId` must be checked, not just `features[i]`: OpenLayers
+        // implements getFeatureById as `featureId.toString()`, so a nil id
+        // throws rather than returning null. The slot is simply left empty,
+        // which is already how a miss is represented -- callers filter the
+        // result -- so index alignment with featureIds is preserved.
+        if (!features[i] && featureId !== null && featureId !== undefined) {
           const feature = source.getFeatureById(featureId);
           if (feature) {
             features[i] = feature;

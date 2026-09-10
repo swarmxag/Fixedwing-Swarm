@@ -275,6 +275,21 @@ const SwarmPanel = ({
     }
   };
 
+  // The server refuses a command that would fly a UAV into terrain by
+  // returning "terrain_unsafe|<detail>" on the same round trip, the way
+  // "origin_not_set" already works. It has to be intercepted before the
+  // generic Boolean(res.body.message) success branch below, which would
+  // otherwise report a refusal as "Message sent".
+  const refusedForTerrain = (res) => {
+    const body = res?.body?.message;
+    if (typeof body !== 'string' || !body.startsWith('terrain_unsafe')) {
+      return false;
+    }
+    const detail = body.slice(body.indexOf('|') + 1);
+    dispatch(showError(`Blocked — terrain above commanded altitude. ${detail}`));
+    return true;
+  };
+
   const handlePoint = async (message) => {
     if (selectedFeatureIds.length === 0) {
       dispatch(showError(`${message} needs a path or point`));
@@ -293,6 +308,10 @@ const SwarmPanel = ({
 
       if (res?.body?.message === 'origin_not_set') {
         dispatch(showError('Draw a geofence (Set Origin) before sending this command'));
+        return;
+      }
+
+      if (refusedForTerrain(res)) {
         return;
       }
 
@@ -397,6 +416,10 @@ const SwarmPanel = ({
         alt_diff: socketData.altitudeStep,
         ids: selectedUAVIds,
       });
+
+      if (refusedForTerrain(res)) {
+        return;
+      }
 
       if (Boolean(res?.body?.message)) {
         dispatch(

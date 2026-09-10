@@ -17,7 +17,7 @@ from swarm_tasks.simulation import visualizer as viz
 
 import locatePosition
 
-from medur_swarm import config, state
+from medur_swarm import config, state, terrain_gate
 from medur_swarm.utils import parse_selected_uav_ids, selected_swarm_indexes
 from medur_swarm.uav.telemetry import live_gps_plot_points
 from medur_swarm.tasks.runner import assign_goal_tasks, assign_autogoal_tasks
@@ -52,6 +52,14 @@ def handle_concurrent_goal_command(command_data):
             goal_xy.append((x / 2, y / 2))
         guided_circle_direction = msg_parts[2]
         guided_circle_radius = msg_parts[3]
+        # Concurrent goals never pass back through the server's gate, so this
+        # is the only terrain check they get.
+        route = [(float(p[0]), float(p[1])) for p in goal_latlon]
+        ok, _ = terrain_gate.check_goals(
+            selected_indexes, route, guided_circle_radius, label="concurrent goal"
+        )
+        if not ok:
+            return False
         assign_goal_tasks(
             selected_indexes, goal_xy, guided_circle_radius, guided_circle_direction
         )
@@ -121,6 +129,16 @@ def run_goal_command(data):
             "selected_indexes",
             selected_indexes,
         )
+        # Second-layer terrain gate. The server already refused an unsafe goal
+        # before transmitting it (that is where the operator sees a warning);
+        # this re-checks against each UAV's live position and its actual
+        # different_height[i], which the server does not have.
+        route = [(float(p[0]), float(p[1])) for p in goal_latlon]
+        ok, _ = terrain_gate.check_goals(
+            selected_indexes, route, guided_circle_radius, label="goal"
+        )
+        if not ok:
+            return True
         assign_goal_tasks(
             selected_indexes,
             goal_xy,
@@ -294,6 +312,24 @@ def _apply_autogoal(
     centers_latlon = loiter_goal_latlon_list(
         goal_lat, goal_lon, num_uavs, radius, bearing_deg, safety_margin_m
     )
+    # Every autogoal path lands here -- foreground, concurrent, and the
+    # regenerate triggered by an in-flight 'autogoalrad' radius change -- so
+    # one gate here covers all three. Each UAV gets its own circle, so each is
+    # checked against its own centre rather than the operator's single point.
+    problems = []
+    for index, center in zip(selected_indexes, centers_latlon):
+        ok, msgs = terrain_gate.check_goals(
+            [index],
+            [(float(center[0]), float(center[1]))],
+            radius,
+            label="autogoal",
+        )
+        if not ok:
+            problems.extend(msgs)
+    if problems:
+        print("[autogoal] refused -- terrain above commanded altitude")
+        return False
+
     per_uav_xy = _autogoal_centers_to_sim_xy(centers_latlon)
     assign_autogoal_tasks(selected_indexes, per_uav_xy, radius, direction)
     state.autogoal_params = {

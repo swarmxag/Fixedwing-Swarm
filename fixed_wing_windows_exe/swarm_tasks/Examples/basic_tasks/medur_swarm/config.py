@@ -168,4 +168,13 @@ MISSION_FINAL_POINT_RADIUS = 10
 # other's guidance target apart.
 UAV_COLLISION_AVOID_RADIUS_M = 150.0
 # How strongly that push is applied to the final guidance target (0 = off).
-UAV_COLLISION_AVOID_GAIN = 0.6
+# The push per neighbour is a UNIT vector scaled by weight (1 at zero
+# separation, 0 at the radius) times this gain, in SIM units -- so the real
+# displacement of the commanded point is 2 * weight * gain metres. At the
+# old 0.6 that was 1.2 m at its absolute maximum, i.e. nothing at all next to
+# a ~200 m fixed-wing turn radius; the term was wired up but could never
+# actually move an aircraft. 50 gives it authority on the scale of the
+# separations it is trying to defend:
+#     10 m apart -> 93 m shift    50 m apart -> 67 m shift
+#     25 m apart -> 83 m shift   100 m apart -> 33 m shift
+UAV_COLLISION_AVOID_GAIN = 50.0

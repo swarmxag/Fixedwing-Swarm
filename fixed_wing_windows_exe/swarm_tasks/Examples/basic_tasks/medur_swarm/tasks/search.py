@@ -83,6 +83,11 @@ def compute_lookahead_target(x, y, theta, rx, ry, distance, min_lead=None):
     return lookahead_point(x, y, theta, target_along)
 
 
+def return_distance(loiter_radius):
+    """Calculates the return distance based on the loiter radius."""
+    return (loiter_radius / 2) + 100
+
+
 def start_search_mission(decoded_index):
     """Parses a 'search,...' command and registers it as a background
     mission task for whichever UAV subset it targets, without touching
@@ -530,11 +535,13 @@ def run_search_command(data):
             # without touching grid_path_array[i] itself; that still only
             # advances once uav_reached_waypoint/the lead cap below allow
             # it.
-            already_at_goal = (
-                abs(goal[0] - b.x) <= 15 and abs(goal[1] - b.y) <= 15
+            already_at_goal = abs(goal[0] - b.x) <= 15 and abs(goal[1] - b.y) <= 15
+            pacing_target = (
+                next_goal if (already_at_goal and next_goal is not None) else goal
             )
-            pacing_target = next_goal if (already_at_goal and next_goal is not None) else goal
-            dis, step_size = advance_bot_with_uav_pacing(i, b, pacing_target, label="search")
+            dis, step_size = advance_bot_with_uav_pacing(
+                i, b, pacing_target, label="search"
+            )
             current_position = [b.x, b.y]
             dx = abs(goal[0] - current_position[0])
             dy = abs(goal[1] - current_position[1])

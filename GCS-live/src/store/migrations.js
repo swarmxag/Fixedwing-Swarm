@@ -18,6 +18,20 @@ const migrations = {
       criticalVoltageThreshold: LIPO_CRITICAL_VOLTAGE_THRESHOLD,
     };
   }),
+
+  // `map` is not blacklisted, so map.selection is persisted -- which meant a
+  // nil that got into the selection survived every restart and threw on each
+  // launch, as soon as anything handed it to OpenLayers' getFeatureById
+  // (implemented as `featureId.toString()`). updateSelection now keeps nils
+  // out of the store, but that does nothing for a selection already written to
+  // disk, so the stored copy is cleaned once here.
+  3: createNextState((state) => {
+    if (Array.isArray(state?.map?.selection)) {
+      state.map.selection = state.map.selection.filter(
+        (id) => id !== null && id !== undefined
+      );
+    }
+  }),
 };
 
 export default createMigrate(migrations);

@@ -1336,9 +1336,6 @@ class SkybrushServer(DaemonApp):
 
         if msg == "different":  # TODO
             ids = parameters.get("ids")
-            result = different_alt_socket(
-                parameters.get("alt"), parameters.get("alt_diff"), ids
-            )
             from .socket.globalVariable import changeAlts
 
             data = {}
@@ -1348,7 +1345,14 @@ class SkybrushServer(DaemonApp):
             ]
             for i, id in enumerate(ids):
                 data[id] = new_altitudes[i]
-            print(data)
+            print("altitude", data)
+            # Terrain clearance for the new ladder is checked on the swarm
+            # computer (medur_swarm/terrain_gate.py), against each vehicle's
+            # own home datum, live position and current altitude -- none of
+            # which exist here.
+            result = different_alt_socket(
+                parameters.get("alt"), parameters.get("alt_diff"), ids
+            )
             newalts = changeAlts(data)
 
         if msg == "same":  # TODO
@@ -1382,6 +1386,13 @@ class SkybrushServer(DaemonApp):
                 direction = (
                     1 if parameters.get("Direction", "").lower().startswith("c") else -1
                 )
+                # Terrain clearance is checked on the swarm computer, which is
+                # the only side with the vehicles -- their own home datum,
+                # live position and current altitude. Gating here as well
+                # meant two checks on different data, and they disagreed
+                # (a fleet-wide altitude change has ids == [], so the
+                # server-side altitude gate silently passed everything while
+                # the swarm computer refused it).
                 result = goal_socket(
                     parameters.get("coords"),
                     direction,
@@ -1404,9 +1415,7 @@ class SkybrushServer(DaemonApp):
                     stop_socket()
                     await sleep(1)
                 direction = (
-                    1
-                    if parameters.get("Direction", "").lower().startswith("c")
-                    else -1
+                    1 if parameters.get("Direction", "").lower().startswith("c") else -1
                 )
                 result = autogoal_socket(
                     parameters.get("coords"),

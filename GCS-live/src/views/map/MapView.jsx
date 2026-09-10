@@ -1,9 +1,11 @@
 import config from 'config';
 import filter from 'lodash-es/filter';
 import partial from 'lodash-es/partial';
+import unary from 'lodash-es/unary';
 import PropTypes from 'prop-types';
 import React, { useEffect, useState } from 'react';
 import { connect } from 'react-redux';
+import { Fill, Style, Text } from 'ol/style';
 import { MessageSemantics } from '~/features/snackbar/types';
 import { Map, View, control, interaction, withMap } from '@collmot/ol-react';
 import { showNotification } from '~/features/snackbar/slice';
@@ -36,6 +38,7 @@ import {
   getVisibleSelectableLayers,
   isLayerVisibleAndSelectable,
 } from '~/model/layers';
+import { FeatureType } from '~/model/features';
 import {
   createFeatureFromOpenLayers,
   handleFeatureUpdatesInOpenLayers,
@@ -61,7 +64,14 @@ import {
   mapViewCoordinateFromLonLat,
   findFeaturesById,
   lonLatFromMapViewCoordinate,
+  measureFeature,
 } from '~/utils/geography';
+import {
+  primaryColor,
+  thinOutline,
+  whiteThickOutline,
+  whiteThinOutline,
+} from '~/utils/styles';
 import { toDegrees } from '~/utils/math';
 import 'ol/ol.css';
 import { ImageLayer } from './layers/image';
@@ -309,6 +319,75 @@ const MapViewToolbars = () => {
 /* ********************************************************************** */
 
 /**
+ * Outline of the path that is currently being drawn. Mirrors the way the
+ * features layer styles a finished line string so that the sketch does not
+ * change its appearance when the drawing is completed.
+ */
+const sketchOutlineStyles = [
+  new Style({ stroke: whiteThickOutline }),
+  new Style({ stroke: thinOutline(primaryColor) }),
+];
+
+/**
+ * Style function of the path that is currently being drawn; adds a length
+ * readout that is recalculated from the sketch geometry on every render, so
+ * it follows the pointer while the path is being drawn.
+ *
+ * @param  {ol.Feature}  olFeature  the sketch feature of the draw interaction
+ * @return {ol.style.Style[]}  the styles of the sketch feature
+ */
+const sketchStyle = (olFeature) => {
+  const coordinates = olFeature.getGeometry().getCoordinates();
+
+  // `measureFeature()` works on our own feature representation, which stores
+  // its points in lon-lat, while the sketch geometry is in map view
+  // coordinates. Going through it keeps the units and the rounding of the
+  // live readout identical to the label of the finished feature.
+  const length = measureFeature({
+    type: FeatureType.LINE_STRING,
+    points: coordinates.map(unary(lonLatFromMapViewCoordinate)),
+  });
+
+  return [
+    ...sketchOutlineStyles,
+    new Style({
+      text: new Text({
+        font: '20px sans-serif',
+        fill: new Fill({ color: 'black' }),
+        offsetY: 3,
+        // Keep the readout visible even when the path drawn so far is still
+        // shorter than the text itself
+        overflow: true,
+        placement: 'line',
+        stroke: whiteThinOutline,
+        text: `(${length})`,
+        textAlign: 'center',
+        textBaseline: 'top',
+      }),
+    }),
+  ];
+};
+
+/**
+ * Event handler that is called when the user starts drawing a new feature on
+ * the map; attaches the live length readout to the sketch geometry of a path.
+ *
+ * The style has to be set on the sketch feature itself because the draw
+ * interaction of `@collmot/ol-react` does not forward a `style` prop to
+ * OpenLayers. Other drawing tools are left with the default sketch style.
+ *
+ * @param  {ol.interaction.Draw.Event}  event  the event dispatched by the
+ *         draw interaction
+ */
+const showLengthWhileDrawing = (event) => {
+  const { feature } = event;
+
+  if (feature?.getGeometry()?.getType() === 'LineString') {
+    feature.setStyle(sketchStyle);
+  }
+};
+
+/**
  * React component that renders the active interactions of the map.
  *
  * @param  {Object}  props    the props of the component
@@ -432,6 +511,7 @@ const MapViewInteractions = withMap((props) => {
       <interaction.AbortableDraw
         key='Draw'
         {...toolToDrawInteractionProps(selectedTool, props.map)}
+        onDrawStart={showLengthWhileDrawing}
         onDrawEnd={onDrawEnded}
         abortCondition={Condition.escapeKeyDown}
       />

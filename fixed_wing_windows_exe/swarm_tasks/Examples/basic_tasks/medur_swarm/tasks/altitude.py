@@ -5,7 +5,7 @@ the fly by whatever task is already driving a busy bot."""
 from swarm_tasks.modules.dispersion import disp_field
 from swarm_tasks.tasks import area_coverage as cvg
 
-from medur_swarm import state
+from medur_swarm import state, terrain_gate
 from medur_swarm.utils import parse_selected_uav_ids, selected_swarm_indexes
 from medur_swarm.uav.guidance import _drive_vehicle_towards
 
@@ -34,6 +34,19 @@ def apply_different_heights(decoded_index):
     selected_uav_raw = parts[3] if len(parts) > 3 else None
     selected_uav_ids = parse_selected_uav_ids(selected_uav_raw)
     selected_indexes = selected_swarm_indexes(selected_uav_ids)
+    # Terrain check on the new ladder, ADVISORY ONLY -- it reports and the
+    # command proceeds regardless. Raising altitude is how an operator clears a
+    # terrain-blocked goal, so refusing the climb would trap the fleet: the
+    # goal is refused for being under terrain, the fix is refused too, and
+    # refusing leaves them at the OLD, lower altitude. Refusal belongs on the
+    # goal command, which is what actually flies them at the terrain.
+    proposed = {
+        bot_index: height + step * bot_index
+        for bot_index in selected_indexes
+        if bot_index < len(state.different_height)
+    }
+    terrain_gate.check_altitude_change(proposed, label="different")
+
     state.same_alt_flag = False
     for bot_index in selected_indexes:
         if bot_index < len(state.different_height):
@@ -93,7 +106,15 @@ def _drive_altitude_task(i, b, task, completed):
     cmd = cvg.goal_area_cvg(i, b, goal_position)
     cmd += disp_field(b, neighbourhood_radius=100)
     cmd.exec(b)
-    _drive_vehicle_towards(i, b)
+    # The bot's own position must be passed EXPLICITLY. Calling this with no
+    # guidance_position means "no target this tick", which falls back to
+    # state.uav_lookahead_points[i] -- the last target some earlier command
+    # left behind -- and commands nothing at all when there isn't one. A bot
+    # that has not flown a goal yet this session therefore got no simple_goto,
+    # so the aircraft was never told to change altitude and simply never
+    # climbed. Passing (b.x, b.y) is what the docstring above already says
+    # this does: hold station here and change height.
+    _drive_vehicle_towards(i, b, (b.x, b.y))
     if state.master_flag and i < len(state.vehicles) and i < len(state.different_height):
         try:
             current_alt = state.vehicles[i].location.global_relative_frame.alt
