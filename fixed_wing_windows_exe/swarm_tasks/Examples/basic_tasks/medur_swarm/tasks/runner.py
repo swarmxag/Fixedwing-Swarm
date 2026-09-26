@@ -451,12 +451,12 @@ def _drive_goal_task(i, b, task, completed):
             is_final=False,
         )
     if reached_goal:
-        if config.BOT_SYNC_DEBUG:
-            print(
-                f"[waypoint-advance] label=goal bot={i} "
-                f"index={goal_index}->{goal_index + 1} "
-                f"bot=({b.x:.2f},{b.y:.2f}) goal=({goal_position[0]:.2f},{goal_position[1]:.2f})"
-            )
+        # if config.BOT_SYNC_DEBUG:
+        #     print(
+        #         f"[waypoint-advance] label=goal bot={i} "
+        #         f"index={goal_index}->{goal_index + 1} "
+        #         f"bot=({b.x:.2f},{b.y:.2f}) goal=({goal_position[0]:.2f},{goal_position[1]:.2f})"
+        #     )
         if goal_distance is not None:
             print(f"[uav-flyby] bot {i}: switching goal at {goal_distance:.1f} m")
         goal_index += 1

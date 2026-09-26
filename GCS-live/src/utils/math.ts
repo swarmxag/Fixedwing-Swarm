@@ -154,12 +154,12 @@ export function getCentroid(points: number[][], dim = 2): number[] {
 
   for (const point of points) {
     for (let i = 0; i < dim; i++) {
-      result[i] += point[i] || 0;
+      result[i]! += point[i] || 0;
     }
   }
 
   for (let i = 0; i < dim; i++) {
-    result[i] /= n;
+    result[i]! /= n;
   }
 
   return result;
@@ -227,8 +227,8 @@ export function closePolygon(poly: Coordinate2D[]): void {
     return;
   }
 
-  const firstPoint = poly.at(0);
-  const lastPoint = poly.at(-1);
+  const firstPoint = poly[0];
+  const lastPoint = poly[poly.length - 1];
 
   if (!isCoordinate2D(firstPoint) || !isCoordinate2D(lastPoint)) {
     return;
@@ -395,7 +395,7 @@ export const simplifyPolygonUntilLimit = (
 
   const getCoordinate = (i: number): Coordinate2D =>
     // NOTE: Bang justified by remainder operation and `coordinates.length >= 3`
-    coordinates.at(i % coordinates.length)!;
+    coordinates[(i % coordinates.length + coordinates.length) % coordinates.length]!;
 
   const setCoordinate = (i: number, v: Coordinate2D): void => {
     coordinates[(i + coordinates.length) % coordinates.length] = v;

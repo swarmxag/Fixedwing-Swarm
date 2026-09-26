@@ -96,6 +96,7 @@ EXTENSIONS = {
     "ssdp": {},
     "system_clock": {},
     "tcp": {},
+    "terrain": {},
     "udp": {},
     "virtual_uavs": {
         "arm_after_boot": True,

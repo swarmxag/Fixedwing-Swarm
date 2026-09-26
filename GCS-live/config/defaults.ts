@@ -128,7 +128,7 @@ const defaults: Config = {
     },
     {
       id: 5,
-      url: 'http://192.168.6.155:8000/strike',
+      url: 'http://192.168.2.116:8000/strike',
     },
     {
       id: 6,
@@ -154,7 +154,7 @@ const defaults: Config = {
   camera_url: [
     {
       id: 1,
-      url: '192.168.6.155',
+      url: '192.168.2.116',
       connection: false,
     },
     // {
@@ -174,7 +174,7 @@ const defaults: Config = {
     // },
     // {
     //   id: 5,
-    //   url: '192.168.6.155',
+    //   url: '192.168.2.116',
     //   connection: false,
     // },
     // {

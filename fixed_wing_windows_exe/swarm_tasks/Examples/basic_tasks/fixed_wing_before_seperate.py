@@ -937,16 +937,16 @@ def advance_bot_with_uav_pacing(i, b, goal, label="", is_curve=False):
     before_x, before_y = b.x, b.y
     cmd.exec(b, step_size=step_size)
     moved_m = 2.0 * math.hypot(b.x - before_x, b.y - before_y)
-    if BOT_SYNC_DEBUG:
-        goal_distance_m = 2.0 * math.hypot(goal[0] - b.x, goal[1] - b.y)
-        print(
-            f"[bot-sync] label={label} bot={i} "
-            f"dis={dis:.1f}m gs={_uav_ground_speed_mps(i):.1f}m/s "
-            f"loiter={_uav_loiter_radius_m(i):.0f}m curve={is_curve} "
-            f"step={step_size:.2f} cmd_speed={cmd.speed:.3f} "
-            f"moved={moved_m:.2f}m goal_dist={goal_distance_m:.2f}m "
-            f"pos=({b.x:.2f},{b.y:.2f}) goal=({goal[0]:.2f},{goal[1]:.2f})"
-        )
+    # if BOT_SYNC_DEBUG:
+    #     goal_distance_m = 2.0 * math.hypot(goal[0] - b.x, goal[1] - b.y)
+    #     print(
+    #         f"[bot-sync] label={label} bot={i} "
+    #         f"dis={dis:.1f}m gs={_uav_ground_speed_mps(i):.1f}m/s "
+    #         f"loiter={_uav_loiter_radius_m(i):.0f}m curve={is_curve} "
+    #         f"step={step_size:.2f} cmd_speed={cmd.speed:.3f} "
+    #         f"moved={moved_m:.2f}m goal_dist={goal_distance_m:.2f}m "
+    #         f"pos=({b.x:.2f},{b.y:.2f}) goal=({goal[0]:.2f},{goal[1]:.2f})"
+    #     )
     if moved_m < 1e-6:
         # A constant step cannot move a bot when the combined field has no
         # magnitude or Bot.step() rejects its proposed position as occupied.

@@ -133,7 +133,7 @@ export const formatNumberAndUnit = (
       }
     }
 
-    const [mul, u] = unit.at(-1) ?? [1, ''];
+    const [mul, u] = unit[unit.length - 1] ?? [1, ''];
     return joinUnit(number === 0 ? '0' : (number / mul).toFixed(digits), u);
   } else {
     return joinUnit(number === 0 ? '0' : number.toFixed(digits), unit);

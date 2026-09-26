@@ -51,6 +51,12 @@ import { getSelectedTool } from '~/features/map/tools';
 import { getSelectedFeatureIds } from '~/features/map-features/selectors';
 import { getVisibleLayersInOrder } from '~/selectors/ordered';
 import { getExtendedCoordinateFormatter } from '~/selectors/formatting';
+import { subscribeTerrainUpdates } from '~/utils/terrain';
+import {
+  TerrainSafetySync,
+  TerrainSafetyWidget,
+  TerrainUnsafeAreasLayer,
+} from './TerrainUnsafeAreas';
 import {
   getMapViewCenterPosition,
   getMapViewRotationAngle,
@@ -200,23 +206,33 @@ const MapViewControlsPresentation = ({
   formatCoordinate,
   showMouseCoordinates,
   showScaleLine,
-}) => (
-  <>
-    <control.Zoom />
-    <control.Attribution collapsed collapsible collapseLabel='&laquo;' />
-    {showMouseCoordinates && (
-      <control.MousePosition
-        key='control.MousePosition'
-        hideWhenOut
-        projection='EPSG:4326'
-        coordinateFormat={formatCoordinate}
-      />
-    )}
-    {showScaleLine && (
-      <control.ScaleLine key='control.ScaleLine' minWidth={128} />
-    )}
-  </>
-);
+}) => {
+  const [terrainVersion, setTerrainVersion] = useState(0);
+
+  useEffect(() => {
+    return subscribeTerrainUpdates(() => {
+      setTerrainVersion((v) => v + 1);
+    });
+  }, []);
+
+  return (
+    <>
+      <control.Zoom />
+      <control.Attribution collapsed collapsible collapseLabel='&laquo;' />
+      {showMouseCoordinates && (
+        <control.MousePosition
+          key={`control.MousePosition.${terrainVersion}`}
+          hideWhenOut
+          projection='EPSG:4326'
+          coordinateFormat={formatCoordinate}
+        />
+      )}
+      {showScaleLine && (
+        <control.ScaleLine key='control.ScaleLine' minWidth={128} />
+      )}
+    </>
+  );
+};
 
 MapViewControlsPresentation.propTypes = {
   formatCoordinate: PropTypes.func,
@@ -290,6 +306,8 @@ const MapViewToolbars = () => {
       <MapToolbar />
     </Widget>
   );
+
+  toolbars.push(<TerrainSafetyWidget key='Widget.TerrainSafety' />);
 
   if (hasFeature('mapFeatures')) {
     toolbars.push(
@@ -587,6 +605,8 @@ class MapViewPresentation extends React.Component {
 
             <MapViewToolbars />
             <MapViewLayers onFeaturesModified={this._onFeaturesModified} />
+            <TerrainUnsafeAreasLayer />
+            <TerrainSafetySync />
 
             <MapViewControls />
             <MapViewInteractions

@@ -39,6 +39,7 @@ import {
   getLoadMissionState,
 } from '~/features/uavs/details';
 import { addLayer, toggleLayerVisibility } from '~/features/map/layers';
+import { requestTerrainRange } from '~/utils/terrain';
 import { getLayersInBottomFirstOrder } from '~/selectors/ordered';
 import { ConnectionState } from '~/model/enums';
 import { LayerType } from '~/model/layers';
@@ -143,6 +144,14 @@ const SwarmPanel = ({
       return;
     }
 
+    // Pre-fetch SRTM terrain tiles covering the drawn origin/geofence area
+    // so hovering the map afterwards reads elevation from the local cache
+    // instead of each point lazily triggering its own download. Fires
+    // independently of the fence-mission request below -- a slow or failed
+    // terrain download must never block or fail "Set Origin" itself; the
+    // "downloading"/"download completed" indication arrives separately as
+    // a server-pushed notification.
+    requestTerrainRange(validateFence[0].points);
 
     try {
       const res = await messageHub.sendMessage({

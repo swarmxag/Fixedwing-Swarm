@@ -1301,7 +1301,7 @@ export default class MessageHub {
    *        only the given type is created)
    * @return {Promise} a promise that resolves to the response of the server
    */
-  async sendMessage(body = {}) {
+  async sendMessage(body = {}, options = {}) {
     if (!this._emitter) {
       console.warn(
         'sendMessage() was called before associating an emitter ' +
@@ -1313,8 +1313,10 @@ export default class MessageHub {
     const message = createMessage(body);
     const messageId = message.id;
 
+    const timeout = options.timeout !== undefined ? options.timeout : this.timeout;
+
     const pendingResponse = new PendingResponse(messageId, {
-      timeout: this.timeout,
+      timeout,
       onTimeout: this._onMessageTimedOut,
     });
 

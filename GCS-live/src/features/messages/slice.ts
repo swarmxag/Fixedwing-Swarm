@@ -121,7 +121,9 @@ const { actions, reducer } = createSlice({
 
       (action as Record<string, unknown>)['messageId'] = messageId;
 
-      if (state.commandHistory.at(-1) !== message) {
+      if (
+        state.commandHistory[state.commandHistory.length - 1] !== message
+      ) {
         state.commandHistory.push(message);
       }
     },

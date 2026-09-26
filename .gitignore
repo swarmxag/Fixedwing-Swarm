@@ -1,5 +1,27 @@
+# Python virtual environments
+venv/
+.venv/
+**/venv/
+**/.venv/
+
+# Terrain downloaded data
+*.hgt
+
+# Terrain generated cache
+terrain_grid/
+terrain_grid_cache.json
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# SITL / runtime logs
+*.log
+*.tlog
+*.tlog.raw
+
+# Other generated files
 *.zip
 *.csv
 *kml
-venv
-.venv

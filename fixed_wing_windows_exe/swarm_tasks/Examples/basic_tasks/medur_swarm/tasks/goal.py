@@ -295,6 +295,83 @@ def _apply_autogoal(
         goal_lat, goal_lon, num_uavs, radius, bearing_deg, safety_margin_m
     )
     per_uav_xy = _autogoal_centers_to_sim_xy(centers_latlon)
+
+    # ---- DIAGNOSTIC: terrain under each UAV's loiter circle --------------
+    # Read-only: samples SRTM elevation across each loiter circle and logs
+    # the highest point found. Does not touch geometry/altitude and never
+    # blocks assignment -- see terrain_check.py for the vertical-clearance
+    # follow-up this is laying groundwork for.
+    #
+    # Uses each vehicle's LIVE WP_LOITER_RAD (same value guidance.py flies
+    # to), not the generation radius above -- they can differ if the
+    # onboard radius was changed outside the "Automate Goals" radius field,
+    # and the terrain check is only meaningful against what the plane is
+    # actually going to fly.
+    try:
+        from medur_swarm.terrain_check import check_loiter_circle_terrain
+        from medur_swarm.uav.guidance import _uav_loiter_radius_m
+
+        for slot, (center_lat, center_lon) in enumerate(centers_latlon, start=1):
+            try:
+                uav_index = selected_indexes[slot - 1]
+                live_radius = _uav_loiter_radius_m(uav_index)
+                check_loiter_circle_terrain(
+                    center_lat, center_lon, live_radius, label=f"UAV{slot}"
+                )
+            except Exception as terrain_exc:
+                print(f"[TERRAIN CHECK] UAV{slot} failed:", terrain_exc)
+    except Exception as terrain_import_exc:
+        print("[TERRAIN CHECK] unavailable:", terrain_import_exc)
+    # ---- END DIAGNOSTIC ---------------------------------------------------
+
+    # ---- DEBUG: safety-margin / loiter-circle spacing breakdown ----------
+    # Generation spaces centres by (2*radius + safety_margin) -- so the
+    # edge-to-edge gap between two circles is exactly safety_margin WHEN both
+    # circles are drawn at `radius`. But the circle actually flown/drawn per
+    # UAV is sized from that vehicle's live WP_LOITER_RAD (see
+    # runner._start_guided_circle_task / _drive_guided_circle_task). If a
+    # vehicle's live radius is larger than `radius`, its circle eats into the
+    # margin and can intersect the neighbour even though margin > 0.
+    # All distances below are TRUE METRES (great-circle between the centres).
+    try:
+        import math as _m
+
+        from medur_swarm.goal_point_generator import loiter_center_spacing
+        from medur_swarm.uav.guidance import _uav_loiter_radius_m
+
+        def _gc_m(a, b):
+            R = 6371000.0
+            la1, lo1, la2, lo2 = map(_m.radians, (a[0], a[1], b[0], b[1]))
+            h = (
+                _m.sin((la2 - la1) / 2) ** 2
+                + _m.cos(la1) * _m.cos(la2) * _m.sin((lo2 - lo1) / 2) ** 2
+            )
+            return 2 * R * _m.asin(_m.sqrt(h))
+
+        center_spacing = loiter_center_spacing(radius, safety_margin_m)
+        print(
+            f"[autogoal-spacing] gen_radius={radius} m  safety_margin={safety_margin_m} m"
+            f"  ->  intended center_spacing = 2*{radius} + {safety_margin_m}"
+            f" = {center_spacing} m (intended edge gap = {safety_margin_m} m)"
+        )
+        for slot in range(1, len(centers_latlon)):
+            center_dist_m = _gc_m(centers_latlon[slot - 1], centers_latlon[slot])
+            edge_gap_gen = center_dist_m - 2.0 * radius
+            r_prev = _uav_loiter_radius_m(selected_indexes[slot - 1])
+            r_curr = _uav_loiter_radius_m(selected_indexes[slot])
+            edge_gap_live = center_dist_m - (r_prev + r_curr)
+            flag = "  <-- CIRCLES INTERSECT" if edge_gap_live < 0 else ""
+            print(
+                f"[autogoal-spacing] UAV{slot}->UAV{slot + 1}: "
+                f"center_dist={center_dist_m:.1f} m | "
+                f"edge_gap if both r={radius:.0f}: {edge_gap_gen:.1f} m | "
+                f"live WP_LOITER_RAD={r_prev:.0f}/{r_curr:.0f} m | "
+                f"actual edge_gap={edge_gap_live:.1f} m{flag}"
+            )
+    except Exception as _dbg_exc:
+        print("[autogoal-spacing] debug print failed:", _dbg_exc)
+    # ---- END DEBUG ------------------------------------------------------
+
     assign_autogoal_tasks(selected_indexes, per_uav_xy, radius, direction)
     state.autogoal_params = {
         "goal_lat": goal_lat,

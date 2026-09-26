@@ -21,6 +21,8 @@ import {
 import { handleObjectDeletionMessage } from './model/objects';
 import { handleIncomeSDALINF, handleIncomeTargetCNF } from './model/target';
 
+import { handleUnsafeTerrainMessage } from './features/terrain-safety/handlers';
+
 import { addInboundMessage } from './features/messages/slice';
 import { showError, showNotification } from './features/snackbar/actions';
 import { semanticsFromSeverity } from './features/snackbar/utils';
@@ -92,6 +94,8 @@ messageHub.registerNotificationHandlers({
     handleDebugRequest(message.body, messageHub.execute.sendDebugMessage),
   'X-TARGET-CNF': (message) =>
     handleIncomeTargetCNF(message.body.coords, dispatch),
+  'X-TERRAIN-UNSAFE-AREA-RESP': (message) =>
+    handleUnsafeTerrainMessage(message.body, dispatch),
   'X-SDAL-HEL': (message) => handleIncomeSDALINF(message.body, dispatch),
   // dispatch(
   //   showNotification({

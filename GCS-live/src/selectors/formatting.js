@@ -15,6 +15,7 @@ import {
 } from '~/utils/geography';
 
 import { getFlatEarthCoordinateTransformer } from './map';
+import { getElevationFormatted } from '~/utils/terrain';
 
 const trailingZeroRegExp = /\.?0+([°′″'"]?)$/;
 
@@ -246,11 +247,12 @@ export const getExtendedCoordinateFormatter = createSelector(
   getFlatEarthCombinedCoordinateFormatter,
   (geographicFormatter, flatEarthFormatter) => (coords) => {
     const geoCoords = geographicFormatter(coords);
+    const elevLine = getElevationFormatted(coords);
 
     if (flatEarthFormatter === undefined) {
-      return geoCoords;
+      return geoCoords + '<br/>' + elevLine;
     }
 
-    return geoCoords + '<br/>' + flatEarthFormatter(coords);
+    return geoCoords + '<br/>' + flatEarthFormatter(coords) + '<br/>' + elevLine;
   }
 );

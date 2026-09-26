@@ -69,11 +69,15 @@ module.exports = {
   ].filter(Boolean),
 
   resolve: {
+    fullySpecified: false,
     alias: {
       '~': path.resolve(projectRoot, 'src'),
       config: path.resolve(projectRoot, 'config'),
       'config-overrides': path.resolve(projectRoot, 'config', 'none'),
       'layout-bmfont-text': '@collmot/layout-bmfont-text',
+      'react/jsx-runtime': 'react/jsx-runtime.js',
+      'react/jsx-dev-runtime': 'react/jsx-dev-runtime.js',
+      aframe$: 'aframe/src/index',
     },
     extensions: [
       '.webpack.js',

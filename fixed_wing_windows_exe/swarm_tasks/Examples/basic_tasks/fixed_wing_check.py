@@ -830,23 +830,23 @@ def advance_bot_with_uav_pacing(i, b, goal, label=""):
     cmd += disp_field(b, neighbourhood_radius=100)
     cmd.exec(b, step_size=step_size)
     moved_m = 2.0 * math.hypot(b.x - before_x, b.y - before_y)
-    if BOT_SYNC_DEBUG:
-        goal_distance_m = 2.0 * math.hypot(goal[0] - b.x, goal[1] - b.y)
-        print(
-            f"[bot-sync] label={label} bot={i} "
-            f"dis={dis:.1f}m step={step_size:.2f} cmd_speed={cmd.speed:.3f} "
-            f"moved={moved_m:.2f}m goal_dist={goal_distance_m:.2f}m "
-            f"pos=({b.x:.2f},{b.y:.2f}) goal=({goal[0]:.2f},{goal[1]:.2f})"
-        )
-    if moved_m < 1e-6:
-        # A constant step cannot move a bot when the combined field has no
-        # magnitude or Bot.step() rejects its proposed position as occupied.
-        # Log only the stalled case so a live search is not flooded.
-        print(
-            f"[bot-stall] bot={i} label={label} cmd_speed={cmd.speed:.3f} "
-            f"step={step_size:.2f} pos=({before_x:.2f},{before_y:.2f}) "
-            f"goal=({goal[0]:.2f},{goal[1]:.2f})"
-        )
+    # if BOT_SYNC_DEBUG:
+    #     goal_distance_m = 2.0 * math.hypot(goal[0] - b.x, goal[1] - b.y)
+    #     print(
+    #         f"[bot-sync] label={label} bot={i} "
+    #         f"dis={dis:.1f}m step={step_size:.2f} cmd_speed={cmd.speed:.3f} "
+    #         f"moved={moved_m:.2f}m goal_dist={goal_distance_m:.2f}m "
+    #         f"pos=({b.x:.2f},{b.y:.2f}) goal=({goal[0]:.2f},{goal[1]:.2f})"
+    #     )
+    # if moved_m < 1e-6:
+    #     # A constant step cannot move a bot when the combined field has no
+    #     # magnitude or Bot.step() rejects its proposed position as occupied.
+    #     # Log only the stalled case so a live search is not flooded.
+    #     print(
+    #         f"[bot-stall] bot={i} label={label} cmd_speed={cmd.speed:.3f} "
+    #         f"step={step_size:.2f} pos=({before_x:.2f},{before_y:.2f}) "
+    #         f"goal=({goal[0]:.2f},{goal[1]:.2f})"
+    #     )
 
     return dis, step_size
 
@@ -1902,12 +1902,12 @@ def _drive_goal_task(i, b, task, completed):
         is_final=next_goal is None,
     )
     if reached_goal:
-        if BOT_SYNC_DEBUG:
-            print(
-                f"[waypoint-advance] label=goal bot={i} "
-                f"index={goal_index}->{goal_index + 1} "
-                f"bot=({b.x:.2f},{b.y:.2f}) goal=({goal_position[0]:.2f},{goal_position[1]:.2f})"
-            )
+        # if BOT_SYNC_DEBUG:
+        #     print(
+        #         f"[waypoint-advance] label=goal bot={i} "
+        #         f"index={goal_index}->{goal_index + 1} "
+        #         f"bot=({b.x:.2f},{b.y:.2f}) goal=({goal_position[0]:.2f},{goal_position[1]:.2f})"
+        #     )
         if goal_distance is not None:
             print(f"[uav-flyby] bot {i}: switching goal at {goal_distance:.1f} m")
         goal_index += 1

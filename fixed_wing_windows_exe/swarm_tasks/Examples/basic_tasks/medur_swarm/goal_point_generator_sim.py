@@ -27,7 +27,7 @@ GOAL_LAT, GOAL_LON = 26.96256333, 70.95419682
 NUM_UAVS = 5
 BEARING_DEG = 90.0
 SAFETY_MARGIN_M = 50.0
-RADII_M = [400.0, 700.0]   # first = initial, rest = mid-flight radius changes
+RADII_M = [400.0, 700.0]  # first = initial, rest = mid-flight radius changes
 
 
 def _to_local_m(lat, lon):
@@ -52,18 +52,27 @@ def main():
             ax.plot(
                 [cx + radius * sin(t) for t in ring_theta],
                 [cy + radius * cos(t) for t in ring_theta],
-                style, color=colors[i], linewidth=1.2,
+                style,
+                color=colors[i],
+                linewidth=1.2,
                 label=label_r if i == 0 else None,
             )
             ax.plot(cx, cy, "o", color=colors[i], markersize=5)
             if step == 0:
                 ax.annotate(
-                    f"UAV{i + 1}", (cx, cy), textcoords="offset points",
-                    xytext=(0, 8), ha="center", fontsize=8,
+                    f"UAV{i + 1}",
+                    (cx, cy),
+                    textcoords="offset points",
+                    xytext=(0, 8),
+                    ha="center",
+                    fontsize=8,
                 )
-        print(f"r={radius:.0f}: " + ", ".join(
-            f"UAV{p['uav_id']}@{p['distance_from_center_m']:.0f}m" for p in pts
-        ))
+        print(
+            f"r={radius:.0f}: "
+            + ", ".join(
+                f"UAV{p['uav_id']}@{p['distance_from_center_m']:.0f}m" for p in pts
+            )
+        )
 
     ax.plot(0, 0, "k+", markersize=14)
     ax.set_aspect("equal")

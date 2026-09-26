@@ -348,22 +348,22 @@ def advance_bot_with_uav_pacing(i, b, goal, label=""):
                 f"{signed_lead:+.1f}m "
                 f"({'AHEAD' if signed_lead > 0 else 'BEHIND'})"
             )
-        print(
-            f"[bot-sync] label={label} bot={i} "
-            f"dis={dis:.1f}m lead={lead_text} "
-            f"step={step_size:.2f} cmd_speed={cmd.speed:.3f} "
-            f"moved={moved_m:.2f}m goal_dist={goal_distance_m:.2f}m "
-            f"pos=({b.x:.2f},{b.y:.2f}) goal=({goal[0]:.2f},{goal[1]:.2f})"
-        )
-    if moved_m < 1e-6:
-        # A constant step cannot move a bot when the combined field has no
-        # magnitude or Bot.step() rejects its proposed position as occupied.
-        # Log only the stalled case so a live search is not flooded.
-        print(
-            f"[bot-stall] bot={i} label={label} cmd_speed={cmd.speed:.3f} "
-            f"step={step_size:.2f} pos=({before_x:.2f},{before_y:.2f}) "
-            f"goal=({goal[0]:.2f},{goal[1]:.2f})"
-        )
+        # print(
+        #     f"[bot-sync] label={label} bot={i} "
+        #     f"dis={dis:.1f}m lead={lead_text} "
+        #     f"step={step_size:.2f} cmd_speed={cmd.speed:.3f} "
+        #     f"moved={moved_m:.2f}m goal_dist={goal_distance_m:.2f}m "
+        #     f"pos=({b.x:.2f},{b.y:.2f}) goal=({goal[0]:.2f},{goal[1]:.2f})"
+        # )
+    # if moved_m < 1e-6:
+    #     # A constant step cannot move a bot when the combined field has no
+    #     # magnitude or Bot.step() rejects its proposed position as occupied.
+    #     # Log only the stalled case so a live search is not flooded.
+    #     print(
+    #         f"[bot-stall] bot={i} label={label} cmd_speed={cmd.speed:.3f} "
+    #         f"step={step_size:.2f} pos=({before_x:.2f},{before_y:.2f}) "
+    #         f"goal=({goal[0]:.2f},{goal[1]:.2f})"
+    #     )
 
     return dis, step_size
 

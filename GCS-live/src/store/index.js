@@ -64,6 +64,8 @@ const persistConfig = {
     'servers',
     'session',
     'snackbar',
+    // unsafe terrain areas come live from the server; never restore stale ones
+    'terrainSafety',
     'uavs',
     'weather',
   ],
