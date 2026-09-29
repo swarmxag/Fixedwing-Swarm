@@ -178,3 +178,17 @@ UAV_COLLISION_AVOID_RADIUS_M = 150.0
 #     10 m apart -> 93 m shift    50 m apart -> 67 m shift
 #     25 m apart -> 83 m shift   100 m apart -> 33 m shift
 UAV_COLLISION_AVOID_GAIN = 50.0
+
+# --- Terrain data ---------------------------------------------------------
+
+# Folder of SRTM .hgt tiles. terrain_gate reads from it and terrain_data
+# downloads into it, so both must agree on this one path.
+TERRAIN_DIR = os.environ.get(
+    "XAG_TERRAIN_DIR",
+    os.path.join(os.path.expanduser("~"), "Documents", "swarm_env", "terrain"),
+)
+
+# Ground fetched beyond the fence polygon on every side. The terrain gate
+# samples past the polygon edge (1 km corridors, loiter radius + 1 km, 3 km on
+# an altitude change), and a route check fails if a tile it touches is missing.
+TERRAIN_FENCE_MARGIN_M = 5000.0

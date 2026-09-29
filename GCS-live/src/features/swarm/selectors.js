@@ -74,10 +74,12 @@ export const getMissionByUav = (state) => state.socket.missionByUav;
  * boxes (and on a loiter-radius or selection change), which is what makes
  * the preview move "on spot while changing" without anything being sent.
  *
- * Returns undefined -- i.e. draw nothing -- unless the command would
- * actually be accepted: a drawn point selected to anchor it (handlePoint
- * uses selectedFeatureIds[0] and the swarm computer takes coords[0]), and a
- * positive loiter radius (_apply_autogoal bails on radius <= 0).
+ * Returns undefined -- i.e. draw nothing -- unless the operator has asked
+ * for the plan on this feature ("Show plan" in the map context menu, which
+ * sets showPlan) AND the command would actually be accepted: a drawn point
+ * selected to anchor it (handlePoint uses selectedFeatureIds[0] and the
+ * swarm computer takes coords[0]), and a positive loiter radius
+ * (_apply_autogoal bails on radius <= 0).
  */
 export const getAutoGoalPreview = createSelector(
   getSelectedFeatureIds,
@@ -88,6 +90,14 @@ export const getAutoGoalPreview = createSelector(
   (selectedFeatureIds, featuresById, selectedUAVIds, allUAVIds, socket) => {
     const anchorFeature = featuresById[selectedFeatureIds[0]];
     if (anchorFeature?.type !== FeatureType.POINTS) {
+      return undefined;
+    }
+
+    // Opt-in per feature: the plan is only drawn once the operator asks for
+    // it via "Show plan" in the map context menu. Selecting a point to
+    // anchor a command is not on its own a request to see the whole
+    // fanned-out layout.
+    if (!anchorFeature.showPlan) {
       return undefined;
     }
 

@@ -3,7 +3,7 @@ import filter from 'lodash-es/filter';
 import partial from 'lodash-es/partial';
 import unary from 'lodash-es/unary';
 import PropTypes from 'prop-types';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { connect } from 'react-redux';
 import { Fill, Style, Text } from 'ol/style';
 import { MessageSemantics } from '~/features/snackbar/types';
@@ -54,6 +54,12 @@ import { getSelectedTool } from '~/features/map/tools';
 import { getSelectedFeatureIds } from '~/features/map-features/selectors';
 import { getVisibleLayersInOrder } from '~/selectors/ordered';
 import { getExtendedCoordinateFormatter } from '~/selectors/formatting';
+import { subscribeTerrainUpdates } from '~/utils/terrain';
+import {
+  TerrainSafetySync,
+  TerrainSafetyWidget,
+  TerrainUnsafeAreasLayer,
+} from './TerrainUnsafeAreas';
 import {
   getMapViewCenterPosition,
   getMapViewRotationAngle,
@@ -210,23 +216,56 @@ const MapViewControlsPresentation = ({
   formatCoordinate,
   showMouseCoordinates,
   showScaleLine,
-}) => (
-  <>
-    <control.Zoom />
-    <control.Attribution collapsed collapsible collapseLabel='&laquo;' />
-    {showMouseCoordinates && (
-      <control.MousePosition
-        key='control.MousePosition'
-        hideWhenOut
-        projection='EPSG:4326'
-        coordinateFormat={formatCoordinate}
-      />
-    )}
-    {showScaleLine && (
-      <control.ScaleLine key='control.ScaleLine' minWidth={128} />
-    )}
-  </>
-);
+}) => {
+  // An SRTM elevation lookup resolves asynchronously, after the readout was
+  // drawn with "Elev: ---". When it arrives, redraw the readout for the point
+  // the mouse is still over. It must be redrawn in place: a freshly mounted
+  // OpenLayers MousePosition control starts blank and stays hidden until the
+  // next mouse move, so remounting it made the whole box vanish every time an
+  // elevation came in.
+  const mousePositionRef = useRef(null);
+  const lastPointer = useRef(null);
+
+  useEffect(() => {
+    const remember = (event) => {
+      lastPointer.current = { clientX: event.clientX, clientY: event.clientY };
+    };
+    window.addEventListener('pointermove', remember, { passive: true });
+
+    const unsubscribe = subscribeTerrainUpdates(() => {
+      const control = mousePositionRef.current?.control;
+      const pointer = lastPointer.current;
+
+      // "hidden" means the mouse is off the map; leave the box hidden then.
+      if (control && pointer && control.element.style.visibility !== 'hidden') {
+        control.handleMouseMove(pointer);
+      }
+    });
+
+    return () => {
+      window.removeEventListener('pointermove', remember);
+      unsubscribe();
+    };
+  }, []);
+
+  return (
+    <>
+      <control.Zoom />
+      <control.Attribution collapsed collapsible collapseLabel='&laquo;' />
+      {showMouseCoordinates && (
+        <control.MousePosition
+          ref={mousePositionRef}
+          hideWhenOut
+          projection='EPSG:4326'
+          coordinateFormat={formatCoordinate}
+        />
+      )}
+      {showScaleLine && (
+        <control.ScaleLine key='control.ScaleLine' minWidth={128} />
+      )}
+    </>
+  );
+};
 
 MapViewControlsPresentation.propTypes = {
   formatCoordinate: PropTypes.func,
@@ -300,6 +339,8 @@ const MapViewToolbars = () => {
       <MapToolbar />
     </Widget>
   );
+
+  toolbars.push(<TerrainSafetyWidget key='Widget.TerrainSafety' />);
 
   if (hasFeature('mapFeatures')) {
     toolbars.push(
@@ -667,6 +708,8 @@ class MapViewPresentation extends React.Component {
 
             <MapViewToolbars />
             <MapViewLayers onFeaturesModified={this._onFeaturesModified} />
+            <TerrainUnsafeAreasLayer />
+            <TerrainSafetySync />
 
             <MapViewControls />
             <MapViewInteractions

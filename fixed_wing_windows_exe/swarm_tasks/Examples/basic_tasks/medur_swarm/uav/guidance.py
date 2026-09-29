@@ -139,7 +139,7 @@ def pursuit_target_with_avoidance(i, b, distance=700):
         print("[pursuit-target] telemetry unavailable for vehicle", i, e)
         return None
     tx, ty = compute_lookahead_target(
-        b.x, b.y, b.theta, rx / 2, ry / 2, distance=distance
+        b.x, b.y, b.theta, rx / 2, ry / 2, distance=state._loiter_radius
     )
     # avoid_x, avoid_y = real_uav_avoidance_vector(i)
     return (tx, ty)

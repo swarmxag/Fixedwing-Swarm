@@ -167,7 +167,10 @@ const performMassOperation =
         const data = getFeatureById(store.getState(),'marker');
         msg = {
           type,
-          coords:[data.points[0][1],data.points[0][0]],
+          // Number(): a persisted marker can hold its points as strings, and
+          // the server's VTOL math multiplies them by a float -- which raises
+          // on a str rather than coercing.
+          coords: [Number(data.points[0][1]), Number(data.points[0][0])],
           alt:getTakeOff(store.getState()),
           speed: getSpeed(store.getState()),
           ids: uavs,

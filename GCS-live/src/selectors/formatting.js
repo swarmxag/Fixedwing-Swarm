@@ -13,6 +13,7 @@ import {
   makePolarCoordinateFormatter,
   toPolar,
 } from '~/utils/geography';
+import { getElevationFormatted } from '~/utils/terrain';
 
 import { getFlatEarthCoordinateTransformer } from './map';
 
@@ -246,11 +247,16 @@ export const getExtendedCoordinateFormatter = createSelector(
   getFlatEarthCombinedCoordinateFormatter,
   (geographicFormatter, flatEarthFormatter) => (coords) => {
     const geoCoords = geographicFormatter(coords);
+    // Always a non-empty string ('Elev: N/A' / '---' / '123 m'), and it queues
+    // the SRTM lookup for this ~100 m cell on a cache miss.
+    const elevLine = getElevationFormatted(coords);
 
     if (flatEarthFormatter === undefined) {
-      return geoCoords;
+      return geoCoords + '<br/>' + elevLine;
     }
 
-    return geoCoords + '<br/>' + flatEarthFormatter(coords);
+    return (
+      geoCoords + '<br/>' + flatEarthFormatter(coords) + '<br/>' + elevLine
+    );
   }
 );

@@ -2,7 +2,7 @@ import binascii, socket, time, math, threading
 from functools import lru_cache
 
 from flockwave.gps.vectors import GPSCoordinate
-from typing import Self
+
 
 
 class Gimbal:
@@ -20,7 +20,7 @@ class Gimbal:
     position: GPSCoordinate
 
     def __init__(
-        self:Self, host="192.168.6.121", port=2000, position=GPSCoordinate(0, 0, 0, 0)
+        self, host="192.168.6.121", port=2000, position=GPSCoordinate(0, 0, 0, 0)
     ) -> None:
         self.host = host
         self.port = port
@@ -52,7 +52,7 @@ class Gimbal:
         #     target=self.connect_to_gimbal,
         # ).start()
 
-    def calculate_coords(self: Self) -> None:
+    def calculate_coords(self) -> None:
         while self.connected:
             self.socket.sendall(self.bytePacket)
             if not self.is_connected():
@@ -60,7 +60,7 @@ class Gimbal:
             data, address = self.socket.recvfrom(1024)
             self.get_latlon(data)
 
-    def is_connected(self: Self) -> bool:
+    def is_connected(self) -> bool:
         try:
             self.socket.send(b"")
             self.connected = True
@@ -69,7 +69,7 @@ class Gimbal:
             return False
         return True
 
-    def connect_to_gimbal(self: Self) -> None:
+    def connect_to_gimbal(self) -> None:
         try:
             # self.socket.connect((self.host, self.port))
             time.sleep(1)
@@ -81,7 +81,7 @@ class Gimbal:
             self.connected = False
 
     @lru_cache(maxsize=None)
-    def hex_to_signed_int(self: Self, hex_str: str) -> int:
+    def hex_to_signed_int(self, hex_str: str) -> int:
         """
         Converts a little-endian hexadecimal string to a signed integer.
         """
@@ -90,7 +90,7 @@ class Gimbal:
             value -= 2 ** (len(hex_str) * 4)
         return value
 
-    def extract_imu_angle(self: Self, data: str) -> tuple[float, float] | None:
+    def extract_imu_angle(self, data: str) -> tuple[float, float] | None:
         """
         Extracts and calculates the IMU angles from the provided data string.
         """
@@ -102,20 +102,20 @@ class Gimbal:
 
             return tlat / 1e7, tlon / 1e7
 
-    def get_latlon(self: Self, data_1: bytes) -> None:
+    def get_latlon(self, data_1: bytes) -> None:
         response_hex = binascii.hexlify(data_1).decode("utf-8")
         if len(response_hex) in [94, 108]:
             tlat, tlon = self.extract_imu_angle(response_hex)
             self.tlat = tlat
             self.tlon = tlon
 
-    def get_target_coords(self: Self) -> tuple[float, float]:
+    def get_target_coords(self) -> tuple[float, float]:
         """
         Returns the Target Latitude and Longitude of the Gimbal.
         """
         return self.tlat, self.tlon
 
-    def get_gps_bearing_loop(self: Self) -> None:
+    def get_gps_bearing_loop(self) -> None:
         """
         Calculate the GPS bearing with every 0.5sec.
         """
@@ -127,7 +127,7 @@ class Gimbal:
 
     @lru_cache(maxsize=None)
     def get_gps_bearing(
-        self: Self, lat1: float, lon1: float, lat2: float, lon2: float
+        self, lat1: float, lon1: float, lat2: float, lon2: float
     ) -> float:
         """
         Calculate and cache the GPS bearing based on coordinates.
@@ -146,7 +146,7 @@ class Gimbal:
         bearing_degrees = bearing * (180 / math.pi)
         return bearing_degrees
 
-    def run_in_background_thread(self: Self) -> None:
+    def run_in_background_thread(self) -> None:
         # thread1 = threading.Thread(target=self.calculate_coords, daemon=True)
         thread2 = threading.Thread(target=self.get_gps_bearing_loop, daemon=True)
         # self.connection_event.wait()

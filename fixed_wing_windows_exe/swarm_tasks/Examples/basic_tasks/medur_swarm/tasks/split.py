@@ -233,7 +233,9 @@ def _run_split_movement(selected_uav_ids):
         for vehicle in state.vehicles:
             lat = vehicle.location.global_relative_frame.lat
             lon = vehicle.location.global_relative_frame.lon
-            x, y = locatePosition.geoToCart(state.origin, config.END_DISTANCE, [lat, lon])
+            x, y = locatePosition.geoToCart(
+                state.origin, config.END_DISTANCE, [lat, lon]
+            )
             state.uav_home_pos.append((x / 2, y / 2))
         swarm_tasks.utils.robot.DEFAULT_SIZE = 0.4
         state.s = sim.Simulation(
@@ -387,9 +389,7 @@ def _run_split_movement(selected_uav_ids):
                         continue
                     elif allocation[x] == 0:
                         continue
-                    add_points = math.ceil(
-                        remaining_points_list[x] / allocation[x]
-                    )
+                    add_points = math.ceil(remaining_points_list[x] / allocation[x])
                     print("add_points", math.ceil(add_points))
                     end_index = start_index + add_points + 1
                     print("end_index", math.ceil(end_index))
@@ -408,9 +408,9 @@ def _run_split_movement(selected_uav_ids):
                         state.removed_grid_path_array_start_val[
                             state.removed_grid_path_array_index
                         ] = start_index
-                        state.removed_grid_filename[state.removed_grid_path_array_index] = (
-                            state.removed_uav_grid[x]
-                        )
+                        state.removed_grid_filename[
+                            state.removed_grid_path_array_index
+                        ] = state.removed_uav_grid[x]
                         print(
                             "removed_grid_path_array",
                             state.removed_grid_path_array,
@@ -464,9 +464,9 @@ def _run_split_movement(selected_uav_ids):
                             state.removed_grid_path_array_start_val[i] = (
                                 state.uncovered_area_points[u]
                             )
-                            state.removed_grid_filename[i] = state.uncovered_area_filename[
-                                u
-                            ]
+                            state.removed_grid_filename[i] = (
+                                state.uncovered_area_filename[u]
+                            )
                             state.removed_grid_path_array[i] = (
                                 state.uncovered_area_points[u],
                                 int(num_lines[i]),
@@ -547,7 +547,9 @@ def _run_split_movement(selected_uav_ids):
             # without touching grid_path_array[i] itself; that still only
             # advances once the lead cap below allows it.
             already_at_goal = abs(goal[0] - b.x) <= 5 and abs(goal[1] - b.y) <= 5
-            pacing_target = next_goal if (already_at_goal and next_goal is not None) else goal
+            pacing_target = (
+                next_goal if (already_at_goal and next_goal is not None) else goal
+            )
             dis, step_size = advance_bot_with_uav_pacing(
                 i, b, pacing_target, label="split"
             )
@@ -605,7 +607,7 @@ def _run_split_movement(selected_uav_ids):
                     state.origin, config.END_DISTANCE, [lat_v, lon_v]
                 )
                 tx, ty = compute_lookahead_target(
-                    b.x, b.y, b.theta, rx / 2, ry / 2, distance=720
+                    b.x, b.y, b.theta, rx / 2, ry / 2, distance=state._loiter_radius
                 )
                 # Collision avoidance: nudge the target away from every
                 # OTHER real UAV's live GPS position within range. Computed
@@ -621,9 +623,7 @@ def _run_split_movement(selected_uav_ids):
                 if state.same_alt_flag:
                     point1 = LocationGlobalRelative(lat, lon, state.same_height)
                 else:
-                    point1 = LocationGlobalRelative(
-                        lat, lon, state.different_height[i]
-                    )
+                    point1 = LocationGlobalRelative(lat, lon, state.different_height[i])
                 state.vehicles[i].simple_goto(point1)
 
         state.s.time_elapsed += 1

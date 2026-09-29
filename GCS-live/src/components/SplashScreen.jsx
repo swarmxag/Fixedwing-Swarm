@@ -26,7 +26,7 @@ const SplashScreen = ({ loading, visible }) => (
       )
     }
     loading={loading}
-    icon={<img src={config.branding.splashIcon} width={96} height={96} />}
+    icon={<img src={skybrushLogo} width={150} height={96} />}
     title={config.branding.splashTitle}
     visible={visible}
   />

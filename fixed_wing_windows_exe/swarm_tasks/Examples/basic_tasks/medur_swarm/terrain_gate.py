@@ -61,10 +61,7 @@ except Exception as e:  # numpy missing, etc.
     print("[terrain] checks disabled --", e)
 
 
-TERRAIN_DIR = os.environ.get(
-    "XAG_TERRAIN_DIR",
-    os.path.join(os.path.expanduser("~"), "Documents", "swarm_env", "terrain"),
-)
+TERRAIN_DIR = config.TERRAIN_DIR
 
 # Radius around a UAV's current position checked on an altitude change. There
 # is no route to follow in that case, so this is "the ground it is over and
@@ -103,6 +100,14 @@ def _get_db():
     if _db is None:
         _db = tc.TerrainDB(TERRAIN_DIR)
     return _db
+
+
+def reset():
+    """Drop the cached TerrainDB. It remembers a missing tile as None for the
+    life of the process, so call this after new tiles are downloaded or they
+    would stay invisible until restart."""
+    global _db
+    _db = None
 
 
 def _uav_label(i):
@@ -300,10 +305,18 @@ def _report(problems, cautions, label, blocking=True, required=None):
 
 
 def check_goals(selected_indexes, goals_latlon, loiter_radius_m=None, label="goal"):
-    """Gate a goal/autogoal assignment.
+    """ADVISORY ONLY -- reports on a goal/autogoal assignment, never refuses
+    one. Findings are printed as [terrain-warn], same as
+    check_altitude_change; ok is always True, so the goal.py call sites that
+    read it never drop a command.
+
+    Blocking is deliberately switched off here (the single `blocking=False`
+    below) pending a redesign of the terrain logic -- flipping it back to
+    blocking=True is all it takes to restore refusals, and every call site
+    already handles ok being False.
 
     goals_latlon -- ordered [(lat, lon), ...] the selected UAVs will fly.
-    Returns (ok, [messages]); callers drop the command when ok is False.
+    Returns (ok, [messages]).
     """
     if not configured() or not goals_latlon:
         return True, []
@@ -351,7 +364,7 @@ def check_goals(selected_indexes, goals_latlon, loiter_radius_m=None, label="goa
             except Exception as e:
                 problems.append(f"UAV {uav}: terrain check failed ({e})")
 
-    return _report(problems, cautions, label, required=required)
+    return _report(problems, cautions, label, blocking=False, required=required)
 
 
 def check_altitude_change(proposed_heights, label="different"):

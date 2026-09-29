@@ -309,6 +309,23 @@ const { actions, reducer } = createSlice({
         feature.showPoints = Boolean(visible);
       }
     },
+    updateFeaturePlanVisible(
+      state,
+      action: PayloadAction<{
+        id: FeatureProperties['id'];
+        visible: FeatureProperties['showPlan'];
+      }>
+    ) {
+      const { id, visible } = action.payload;
+      const feature = state.byId[id];
+
+      if (feature === undefined) {
+        console.warn(`Cannot set plan visibility of non-existent feature ${id}`);
+      } else {
+        feature.showPlan = Boolean(visible);
+      }
+    },
+
     renameFeatureLatitudeLongitude(
       state,
       action: PayloadAction<{
@@ -391,6 +408,7 @@ export const {
   setFeatureColor,
   updateFeatureFillVisible,
   updateFeatureMeasurementVisible,
+  updateFeaturePlanVisible,
   updateFeaturePointsVisible,
   updateFeaturePropertiesByIds,
   updateFeatureVisibility,

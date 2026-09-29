@@ -1299,9 +1299,11 @@ export default class MessageHub {
    * @param {Object} body  the body of the message to send, or the type of
    *        the message to send (in which case an appropriate body with
    *        only the given type is created)
+   * @param {Object} options  optional settings for this one message;
+   *        `timeout` overrides the hub-wide {@link MessageHub#timeout}
    * @return {Promise} a promise that resolves to the response of the server
    */
-  async sendMessage(body = {}) {
+  async sendMessage(body = {}, options = {}) {
     if (!this._emitter) {
       console.warn(
         'sendMessage() was called before associating an emitter ' +
@@ -1313,8 +1315,13 @@ export default class MessageHub {
     const message = createMessage(body);
     const messageId = message.id;
 
+    // Callers that pass no `options` (every pre-existing one) keep the
+    // hub-wide default, so their behaviour is unchanged.
+    const timeout =
+      options.timeout === undefined ? this.timeout : options.timeout;
+
     const pendingResponse = new PendingResponse(messageId, {
-      timeout: this.timeout,
+      timeout,
       onTimeout: this._onMessageTimedOut,
     });
 

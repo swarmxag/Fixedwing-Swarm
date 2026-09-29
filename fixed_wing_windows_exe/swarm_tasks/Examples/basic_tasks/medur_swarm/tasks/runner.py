@@ -281,7 +281,7 @@ def _build_circle_points(center_xy, radius, direction):
     center_lat, center_lon = locatePosition.cartToGeo(
         state.origin, config.END_DISTANCE, [center_xy[0] * 2, center_xy[1] * 2]
     )
-    circle_latlon = generate_points(center_lat, center_lon, 8, radius, direction)
+    circle_latlon = generate_points(center_lat, center_lon, 16, radius, direction)
     points = []
     for m in circle_latlon:
         x, y = locatePosition.geoToCart(state.origin, config.END_DISTANCE, m)
@@ -638,35 +638,7 @@ def _drive_guided_circle_task(i, b, task, completed):
         with state.active_goal_tasks_lock:
             if i in state.active_goal_tasks:
                 state.active_goal_tasks[i]["circle_index"] = circle_index
-    # NATIVE LOITER: command the ring's CENTRE and let the autopilot orbit it.
-    # ArduPilot Plane in GUIDED flies to a position target and then loiters
-    # around it at its own WP_LOITER_RAD (direction from that parameter's
-    # sign), giving a true constant-radius orbit flown within the aircraft's
-    # own turn limits.
-    #
-    # The pursuit path below did the opposite: pursuit_target_with_avoidance
-    # defaults to distance=720 SIM units = 1440 m real, i.e. ~7x a 200 m ring
-    # radius, projected along the bot's instantaneous heading -- so the plane
-    # was being sent 1.4 km out on the ring's TANGENT every tick and wandered
-    # far outside the intended loiter radius instead of circling it.
-    # Uncomment it (and comment out the centre command) to go back.
-    # `center` is resolved once at the top of this function (the ring rebuild
-    # needs it too), so it is just used here.
-    #
-    # Real-UAV separation is layered on the CENTRE, not on the aircraft:
-    # shifting the point ArduPilot is orbiting shifts the whole orbit with it,
-    # which is the only lever available while the autopilot owns the turn. The
-    # push is (0, 0) whenever nothing is inside UAV_COLLISION_AVOID_RADIUS_M,
-    # so an uncontested loiter orbits exactly the commanded centre as before.
-    #
-    # NOTE: on a shared ring (a plain 'goal', where every selected UAV loiters
-    # one centre) the bearing from a neighbour sweeps round as the aircraft
-    # orbits, so this offset rotates with it and walks the centre in a small
-    # circle. That is negligible at the current gain but grows in proportion to
-    # it -- if UAV_COLLISION_AVOID_GAIN is raised far, damp or latch this term
-    # rather than applying it raw every tick.
-    # avoid_x, avoid_y = real_uav_avoidance_vector(i)
-    # _drive_vehicle_towards(i, b, (center[0] + avoid_x, center[1] + avoid_y))
+
     _drive_vehicle_towards(i, b, pursuit_target_with_avoidance(i, b))
 
 

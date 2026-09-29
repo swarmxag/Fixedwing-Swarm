@@ -3,3 +3,18 @@
 *kml
 venv
 .venv
+
+# Simulator: built binaries, PyInstaller output, and telemetry recordings --
+# reproducible/regenerated locally, and mav.tlog(.raw) alone run into GBs.
+simulator/
+simulator.rar
+
+# JVM crash dumps and replay debug logs dropped in the repo root.
+hs_err_pid*.log
+replay_pid*.log
+
+# SRTM elevation tiles and the derived terrain grid cache -- downloaded/built
+# data, not source; see medur_swarm/terrain_data.py and Xag-Server's ext/terrain.py.
+*.hgt
+*.HGT
+terrain_grid/

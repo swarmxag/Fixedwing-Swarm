@@ -1,9 +1,18 @@
 import gzip
 import shutil
+import threading
 import urllib.request
 from pathlib import Path
 import struct
 import math
+
+import yaml
+
+from medur_swarm import config, state
+
+# SRTM 1 arc-second (3601 x 3601) and 3 arc-second (1201 x 1201) tile sizes in
+# bytes -- the only two sizes terrain_check can read.
+_VALID_HGT_BYTES = (3601 * 3601 * 2, 1201 * 1201 * 2)
 
 
 class TerrainManager:
@@ -68,6 +77,39 @@ class TerrainManager:
         print()
         print("[TERRAIN] Range download completed.")
 
+    def download_bbox(self, lat_min, lat_max, lon_min, lon_max):
+        """
+        Download every SRTM tile that overlaps a lat/lon bounding box.
+
+        Returns {"downloaded": [...], "cached": [...], "failed": [...]} of
+        tile names, so the caller can tell whether anything new arrived and
+        which tiles are still missing.
+        """
+        result = {"downloaded": [], "cached": [], "failed": []}
+
+        for lat in range(math.floor(lat_min), math.floor(lat_max) + 1):
+            for lon in range(math.floor(lon_min), math.floor(lon_max) + 1):
+                tile = self.get_tile_name(lat, lon)
+                if self._is_cached(tile):
+                    result["cached"].append(tile)
+                elif self.download_tile(lat, lon) is not None:
+                    result["downloaded"].append(tile)
+                elif self._is_cached(tile):
+                    # Our download failed, but another process (the server's
+                    # terrain extension) delivered the tile meanwhile.
+                    result["downloaded"].append(tile)
+                else:
+                    result["failed"].append(tile)
+
+        return result
+
+    def _is_cached(self, tile):
+        """True only for a complete tile. A truncated .hgt (download killed
+        mid-write) is not a cache hit -- it would be reused forever and then
+        rejected by terrain_check as 'not a square SRTM tile'."""
+        hgt_file = self.terrain_dir / f"{tile}.hgt"
+        return hgt_file.exists() and hgt_file.stat().st_size in _VALID_HGT_BYTES
+
     def download_tile(self, lat, lon):
 
         lat = math.floor(lat)
@@ -76,10 +118,14 @@ class TerrainManager:
         tile = self.get_tile_name(lat, lon)
 
         hgt_file = self.terrain_dir / f"{tile}.hgt"
-        gz_file = self.terrain_dir / f"{tile}.hgt.gz"
+        # Temp names are this script's own. The server's terrain extension
+        # downloads the same tiles (into the same folder when both run on one
+        # machine) via "<tile>.hgt.gz", and two writers on one file corrupts it.
+        gz_file = self.terrain_dir / f"{tile}.swarm.gz.tmp"
+        part_file = self.terrain_dir / f"{tile}.swarm.hgt.part"
 
         # Already downloaded
-        if hgt_file.exists():
+        if self._is_cached(tile):
             print(f"[TERRAIN] Using cached {tile}.hgt")
             return hgt_file
 
@@ -92,13 +138,18 @@ class TerrainManager:
 
         try:
 
-            urllib.request.urlretrieve(url, gz_file)
+            with urllib.request.urlopen(url, timeout=30) as response:
+                with open(gz_file, "wb") as destination:
+                    shutil.copyfileobj(response, destination)
 
+            # Unzip to a .part file and rename, so hgt_file only ever exists
+            # when it is complete.
             with gzip.open(gz_file, "rb") as source:
-                with open(hgt_file, "wb") as destination:
+                with open(part_file, "wb") as destination:
                     shutil.copyfileobj(source, destination)
 
             gz_file.unlink()
+            part_file.replace(hgt_file)
 
             print(f"[TERRAIN] Downloaded {tile}.hgt")
 
@@ -111,8 +162,8 @@ class TerrainManager:
             if gz_file.exists():
                 gz_file.unlink()
 
-            if hgt_file.exists():
-                hgt_file.unlink()
+            if part_file.exists():
+                part_file.unlink()
 
             return None
 
@@ -170,11 +221,126 @@ class TerrainManager:
             return None
 
 
-terrain = TerrainManager(
-    r"C:\Users\Dell\Documents\Fixedwing-Swarm\fixed_wing_windows_exe\swarm_tasks\Examples\basic_tasks\medur_swarm\terrain"
-)
+# --- Fence-driven download ----------------------------------------------------
 
-elevation = terrain.get_elevation(26.384215926666556, 70.86223468339631)
-# terrain.download_range(26.37761818434305, 70.75533129776274, 50)
-# terrain.download_range(12.989756, 80.164780, 5)
-print("Elevation:", elevation, "meters")
+
+def fence_bounds_latlon(yaml_path, margin_m):
+    """(lat_min, lat_max, lon_min, lon_max) of the drawn fence, plus margin_m.
+
+    rectangles.yaml stores the fence only in the sim frame (metres / 2, measured
+    from `origin`, which is the SW corner of the outer polygon), so the vertices
+    are converted back with cartToGeo -- the inverse of what the server used to
+    write them. Every obstacle vertex is used: the outer polygon's wall quads
+    are not labelled in the file, and inner fences lie inside the outer one.
+    """
+    import locatePosition
+
+    with open(yaml_path) as f:
+        world = yaml.safe_load(f)
+
+    origin = world["origin"]
+    if isinstance(origin, str):
+        lat, lon = origin.strip("()").split(",")
+        origin = (float(lat), float(lon))
+
+    points = [p for wall in (world.get("obstacles") or []) for p in wall]
+    if not points:
+        raise ValueError(f"{yaml_path} has no obstacles to derive a fence from")
+
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+
+    # cartToGeo is linear in each axis (lat follows y, lon follows x), so the
+    # two extreme corners give the whole bounding box.
+    lat_min, lon_min = locatePosition.cartToGeo(
+        origin, config.END_DISTANCE, [min(xs) * 2, min(ys) * 2]
+    )
+    lat_max, lon_max = locatePosition.cartToGeo(
+        origin, config.END_DISTANCE, [max(xs) * 2, max(ys) * 2]
+    )
+    lat_min, lat_max = sorted((float(lat_min), float(lat_max)))
+    lon_min, lon_max = sorted((float(lon_min), float(lon_max)))
+
+    lat_pad = margin_m / 111320.0
+    lon_pad = margin_m / (111320.0 * max(math.cos(math.radians(lat_min)), 1e-6))
+    return lat_min - lat_pad, lat_max + lat_pad, lon_min - lon_pad, lon_max + lon_pad
+
+
+_sync_lock = threading.Lock()
+_sync_running = False
+_sync_pending = False
+
+
+def sync_terrain_for_fence(yaml_path=None):
+    """Make sure the terrain tiles covering the current fence are on disk.
+
+    Non-blocking: the download runs on a daemon thread, because tiles are
+    ~26 MB each and this is called from the command-dispatch loop, which must
+    not stall. Only the master computer runs the terrain gate, so other nodes
+    skip it. If a sync is already running, a follow-up is queued rather than
+    dropped -- the fence may have changed since that run started.
+    """
+    global _sync_running, _sync_pending
+    if not state.master_flag:
+        return
+    with _sync_lock:
+        if _sync_running:
+            _sync_pending = True
+            return
+        _sync_running = True
+    threading.Thread(
+        target=_sync_worker,
+        args=(yaml_path or config.RECTANGLES_PATH,),
+        name="terrain-sync",
+        daemon=True,
+    ).start()
+
+
+def _sync_worker(yaml_path):
+    global _sync_running, _sync_pending
+    while True:
+        try:
+            _sync_once(yaml_path)
+        except Exception as e:
+            print(f"[TERRAIN] Fence terrain sync failed: {e!r}")
+        with _sync_lock:
+            if _sync_pending:
+                _sync_pending = False
+                continue
+            _sync_running = False
+            return
+
+
+def _sync_once(yaml_path):
+    bounds = fence_bounds_latlon(yaml_path, config.TERRAIN_FENCE_MARGIN_M)
+    print(
+        "[TERRAIN] Fence area: "
+        f"lat {bounds[0]:.4f}..{bounds[1]:.4f}, lon {bounds[2]:.4f}..{bounds[3]:.4f}"
+    )
+    result = TerrainManager(config.TERRAIN_DIR).download_bbox(*bounds)
+
+    if result["downloaded"]:
+        # The gate remembers missing tiles as missing; make it look again.
+        try:
+            from medur_swarm import terrain_gate
+
+            terrain_gate.reset()
+        except Exception as e:
+            print(f"[TERRAIN] Could not reset terrain cache: {e!r}")
+
+    print(
+        f"[TERRAIN] Fence terrain ready -- downloaded {len(result['downloaded'])}, "
+        f"cached {len(result['cached'])}, failed {len(result['failed'])}"
+    )
+    if result["failed"]:
+        print(
+            "[TERRAIN] Missing tiles (terrain checks over them will warn): "
+            + ", ".join(result["failed"])
+        )
+
+
+if __name__ == "__main__":
+    terrain = TerrainManager(config.TERRAIN_DIR)
+    # print("Elevation:", terrain.get_elevation(26.956866716234416, 70.73133800961695), "meters")
+    terrain.download_range(26.956866716234416, 70.73133800961695, 100)
+    # terrain.download_range(12.989756, 80.164780, 5)

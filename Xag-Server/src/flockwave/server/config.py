@@ -96,6 +96,22 @@ EXTENSIONS = {
     "ssdp": {},
     "system_clock": {},
     "tcp": {},
+    "terrain": {
+        # SRTM .hgt tile cache. Terrain is handled by the server and the GCS
+        # only -- never point this into the swarm tree. Tiles missing from here
+        # are downloaded on demand. Unset -> Xag-Server/terrain.
+        "terrain_dir": r"C:\Users\vshar\Documents\swarm_env\terrain",
+        # Required clearance: terrain is flagged unless the aircraft is at least
+        # this many metres ABOVE it. 50 -> 49 m of clearance is flagged, 50 m is
+        # not. Set explicitly (it is also the built-in default) so the intended
+        # rule is stated rather than inherited.
+        #
+        # Measured against SRTM elevation and barometric AHL, so the TRUE
+        # clearance can be lower than the displayed 50 m -- unmapped obstacles,
+        # baro drift and altitude-hold error together account for up to ~45 m
+        # that this margin does not add on top of.
+        "safety_margin_m": 50,
+    },
     "udp": {},
     "virtual_uavs": {
         "arm_after_boot": True,

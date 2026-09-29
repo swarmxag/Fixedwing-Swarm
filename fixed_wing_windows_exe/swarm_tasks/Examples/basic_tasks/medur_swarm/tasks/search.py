@@ -603,6 +603,7 @@ def run_search_command(data):
                     state.grid_path_array[i] += 1
                     print("grid_path_array", state.grid_path_array)
             if state.master_flag:
+                _uav_loiter_radius_m
                 # Pursuit point: a fixed distance ahead of the bot along its
                 # own heading, that the real UAV closes on -- never a point
                 # that runs away from it, and never one that falls behind
@@ -617,7 +618,7 @@ def run_search_command(data):
                     state.origin, config.END_DISTANCE, [lat_v, lon_v]
                 )
                 tx, ty = compute_lookahead_target(
-                    b.x, b.y, b.theta, rx / 2, ry / 2, distance=720
+                    b.x, b.y, b.theta, rx / 2, ry / 2, distance=state._loiter_radius
                 )
                 # Collision avoidance: nudge the target away from every
                 # OTHER real UAV's live GPS position within range. This is

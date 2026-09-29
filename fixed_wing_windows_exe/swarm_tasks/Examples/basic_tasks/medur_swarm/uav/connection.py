@@ -144,6 +144,12 @@ def vehicle_connection():
         pass
         print("Vehicle 5 is lost")
 
+    loiter = []
+    for vehicle in state.vehicles:
+        loiter.append(abs(float(vehicle.parameters["WP_LOITER_RAD"])))
+    radius = max(loiter)
+    state._loiter_radius = radius
+
     # try:
     #     vehicle6 = connect(
     #         "udpin:{}:14556".format(state.ip),

@@ -41,7 +41,7 @@ def run_guided_circle_command(data):
     multiple_goals_latlon = generate_points(
         float(goal_latlon[-1][0]),
         float(goal_latlon[-1][1]),
-        8,
+        16,
         int(guided_circle_radius),
         int(guided_circle_direction),
     )
@@ -64,9 +64,7 @@ def run_guided_circle_command(data):
             for i, b in enumerate(state.s.swarm):
                 current_position = [b.x, b.y]
                 goal = multiple_goals[ind[i]]
-                advance_bot_with_uav_pacing(
-                    i, b, goal, label="guided_circle_formation"
-                )
+                advance_bot_with_uav_pacing(i, b, goal, label="guided_circle_formation")
                 dx = abs(goal[0] - current_position[0])
                 dy = abs(goal[1] - current_position[1])
                 state.circle_formation_table[i] = 1
@@ -98,9 +96,7 @@ def run_same_altitude_command(data):
     if not data.startswith(b"same"):
         return
     print("msg", data)
-    decoded_index = data.decode(
-        "utf-8"
-    )  # Assuming utf-8 encoding, adjust if needed
+    decoded_index = data.decode("utf-8")  # Assuming utf-8 encoding, adjust if needed
     data1, height = decoded_index.split(",")
     print(data1, height)
     state.same_alt_flag = True
@@ -117,13 +113,13 @@ def run_same_altitude_command(data):
             cmd.exec(b)
             if state.master_flag:
                 value = [b.x * 2, b.y * 2]
-                lat, lon = locatePosition.cartToGeo(state.origin, config.END_DISTANCE, value)
+                lat, lon = locatePosition.cartToGeo(
+                    state.origin, config.END_DISTANCE, value
+                )
                 if state.same_alt_flag:
                     point1 = LocationGlobalRelative(lat, lon, state.same_height)
                 else:
-                    point1 = LocationGlobalRelative(
-                        lat, lon, state.different_height[i]
-                    )
+                    point1 = LocationGlobalRelative(lat, lon, state.different_height[i])
                 state.vehicles[i].simple_goto(point1)
 
                 if state.same_height - 1.5 <= alt[i] <= state.same_height + 1.5:
@@ -146,9 +142,7 @@ def run_loiter_point_command(data):
     mechanism was never wired into this block)."""
     if not (data.startswith(b"loiter_point") or state.circle_formation_flag):
         return
-    decoded_index = data.decode(
-        "utf-8"
-    )  # Assuming utf-8 encoding, adjust if needed
+    decoded_index = data.decode("utf-8")  # Assuming utf-8 encoding, adjust if needed
     f, base_lat, base_lon, radius, circle_direction = decoded_index.split(",")
     print("f,loiter_radius ", f, base_lat, base_lon, radius, circle_direction)
 
@@ -158,7 +152,9 @@ def run_loiter_point_command(data):
         for vehicle in state.vehicles:
             lat = vehicle.location.global_relative_frame.lat
             lon = vehicle.location.global_relative_frame.lon
-            x, y = locatePosition.geoToCart(state.origin, config.END_DISTANCE, [lat, lon])
+            x, y = locatePosition.geoToCart(
+                state.origin, config.END_DISTANCE, [lat, lon]
+            )
             state.uav_home_pos.append((x / 2, y / 2))
         print("uav_home_pos", state.uav_home_pos)
         state.s = sim.Simulation(
@@ -170,7 +166,7 @@ def run_loiter_point_command(data):
     # Generate 8 points in a circular formation with the given radius
     # around the given point.
     multiple_goals_latlon = generate_points(
-        float(base_lat), float(base_lon), 8, int(radius), int(circle_direction)
+        float(base_lat), float(base_lon), 16, int(radius), int(circle_direction)
     )
     print("multiple_goals_latlon", multiple_goals_latlon)
     multiple_goals = []
@@ -196,9 +192,7 @@ def run_loiter_point_command(data):
                         state.origin, config.END_DISTANCE, [lat, lon]
                     )
                     plane_points = [x / 2, y / 2]
-                    advance_bot_with_uav_pacing(
-                        i, b, goal, label="loiter_point"
-                    )
+                    advance_bot_with_uav_pacing(i, b, goal, label="loiter_point")
                     dx = abs(goal[0] - current_position[0])
                     dy = abs(goal[1] - current_position[1])
                     if state.master_flag:
@@ -246,20 +240,14 @@ def run_loiter_point_command(data):
                                 float(base_lat),
                                 float(base_lon),
                             )
-                            if (
-                                state.different_height[i] - 5
-                            ) <= current_altitude <= (
+                            if (state.different_height[i] - 5) <= current_altitude <= (
                                 state.different_height[i] + 5
                             ) and distance < 150:
                                 state.uav_home_pos = []
                                 step = 100
                                 for vehicle in state.vehicles:
-                                    lat = (
-                                        vehicle.location.global_relative_frame.lat
-                                    )
-                                    lon = (
-                                        vehicle.location.global_relative_frame.lon
-                                    )
+                                    lat = vehicle.location.global_relative_frame.lat
+                                    lon = vehicle.location.global_relative_frame.lon
                                     x, y = locatePosition.geoToCart(
                                         state.origin, config.END_DISTANCE, [lat, lon]
                                     )
@@ -271,9 +259,7 @@ def run_loiter_point_command(data):
                                 )
                     if i < len(state.robots):
                         state.robots[i] = (x / 2, y / 2)
-                    msg = ",".join(
-                        [f"{robot[0]},{robot[1]}" for robot in state.robots]
-                    )
+                    msg = ",".join([f"{robot[0]},{robot[1]}" for robot in state.robots])
                     if dx < 50 and dy < 50:
                         cmd = cvg.goal_area_cvg(i, b, goal)
                         cmd += disp_field(b, neighbourhood_radius=100)

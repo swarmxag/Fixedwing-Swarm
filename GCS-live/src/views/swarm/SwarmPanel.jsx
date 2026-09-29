@@ -7,6 +7,8 @@ import {
   FormControl,
   InputLabel,
   Input,
+  FormControlLabel,
+  Switch,
 } from '@material-ui/core';
 import { getCurrentServerState } from '~/features/servers/selectors';
 import { showNotification } from '~/features/snackbar/slice';
@@ -39,6 +41,9 @@ import {
   getLoadMissionState,
 } from '~/features/uavs/details';
 import { addLayer, toggleLayerVisibility } from '~/features/map/layers';
+import { requestTerrainRange } from '~/utils/terrain';
+import { isUnsafeTerrainVisible } from '~/features/terrain-safety/selectors';
+import { setUnsafeTerrainVisible } from '~/features/terrain-safety/slice';
 import { getLayersInBottomFirstOrder } from '~/selectors/ordered';
 import { ConnectionState } from '~/model/enums';
 import { LayerType } from '~/model/layers';
@@ -96,6 +101,7 @@ const SwarmPanel = ({
   onOpen,
   loadMission,
   uavTraceLayer,
+  terrainVisible,
 }) => {
   useEffect(() => {
     if (connection !== ConnectionState.CONNECTED) {
@@ -143,6 +149,12 @@ const SwarmPanel = ({
       return;
     }
 
+    // Pre-fetch SRTM terrain tiles covering the drawn origin/geofence area
+    // so hovering the map afterwards reads elevation from the local cache
+    // instead of each point lazily triggering its own download. Fires
+    // independently of the fence-mission request below -- a slow or failed
+    // terrain download must never block or fail "Set Origin" itself.
+    requestTerrainRange(validateFence[0].points);
 
     try {
       const res = await messageHub.sendMessage({
@@ -584,6 +596,22 @@ const SwarmPanel = ({
             </Button>
           </FormControl>
         </Box>
+        {/* Shows the terrain above the safe altitude on the map, with the
+            altitude a drone needs to clear it (see TerrainUnsafeAreas). */}
+        <Box style={{ display: 'flex', gap: 20, alignItems: 'center' }}>
+          <FormControlLabel
+            label='Terrain'
+            control={
+              <Switch
+                color='primary'
+                checked={terrainVisible}
+                onChange={({ target: { checked } }) =>
+                  dispatch(setUnsafeTerrainVisible(checked))
+                }
+              />
+            }
+          />
+        </Box>
         {/* "Automate Goals": one drawn point -> one non-overlapping loiter
             circle per selected UAV, marching along the bearing below.
             Loiter radius/direction still come from the Swarm UAVs settings
@@ -866,6 +894,7 @@ export default connect(
       ...state.socket,
     },
     connection: getCurrentServerState(state).state,
+    terrainVisible: isUnsafeTerrainVisible(state),
     loadMission: getLoadMissionState(state),
     uavTraceLayer: getLayersInBottomFirstOrder(state).find(
       (layer) => layer.type === LayerType.UAV_TRACE

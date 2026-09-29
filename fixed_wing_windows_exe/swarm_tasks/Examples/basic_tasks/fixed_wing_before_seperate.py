@@ -837,6 +837,7 @@ def refresh_uav_loiter_radii():
     the per-tick control paths (_virtual_pacing_step, uav_curve_lookahead_m,
     waypoint_flyby_radius, the [bot-sync] print) never touch dronekit
     parameters again until the next command / topology change."""
+    global _loiter_radius_cache
     if not master_flag:
         _loiter_radius_cache.clear()
         return
@@ -853,6 +854,7 @@ def refresh_uav_loiter_radii():
 
 
 def _uav_loiter_radius_m(i):
+    global _loiter_radius_cache
     """Return the cached loiter radius for bot index i (see
     refresh_uav_loiter_radii). Falls back to the default until the first
     refresh populates the cache, or if this UAV's fetch failed."""

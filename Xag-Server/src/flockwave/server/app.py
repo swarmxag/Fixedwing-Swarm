@@ -1038,8 +1038,9 @@ class SkybrushServer(DaemonApp):
                 result = "No vehicle Connected"
                 return response
             await uav.driver._send_guided_mode_single(uav)
-            self.run_in_background(self.simple_go_to, res_latlon, uav)
-            self.run_in_background(self.fetch_target, uav)
+            # protected=True: per-UAV helpers, never worth killing the server for.
+            self.run_in_background(self.simple_go_to, res_latlon, uav, protected=True)
+            self.run_in_background(self.fetch_target, uav, protected=True)
             result = "success"
 
         if msg == "start_capture":
@@ -1274,6 +1275,25 @@ class SkybrushServer(DaemonApp):
                     if not is_server_running("medur_fixed_wing.exe"):
                         print("[fence] swarm script not running, launching...")
                         run_server_exe()
+
+                    # Step 2: build/cache the terrain elevation grid for the
+                    # Origin operating area (the outer fence polygon). Fired
+                    # in the background so it never delays this response --
+                    # same relationship the SRTM tile pre-fetch in Step 1 has
+                    # to the "Set Origin" request on the frontend side.
+                    from flockwave.server.ext.terrain import (
+                        generate_terrain_grid_for_origin,
+                    )
+
+                    outer_polygon = coords[label.index("outer")]
+                    self.run_in_background(
+                        generate_terrain_grid_for_origin,
+                        self,
+                        outer_polygon,
+                        generated_origin,
+                        protected=True,
+                    )
+
                     result = coords
             except Exception:
                 print("[fence] EXCEPTION while handling fence message:")
@@ -1353,9 +1373,33 @@ class SkybrushServer(DaemonApp):
             result = different_alt_socket(
                 parameters.get("alt"), parameters.get("alt_diff"), ids
             )
-            newalts = changeAlts(data)
+            # A fleet-wide "different" has ids == [], so `data` is EMPTY -- and
+            # writing that through would REPLACE the altitude table (seeded with
+            # UAV 1..15) with {}. check_height then raised KeyError on the next
+            # takeoff and, being an unprotected background task, took the whole
+            # server down with it. An empty selection means "no per-UAV entries
+            # to record", never "forget every altitude".
+            if data:
+                newalts = changeAlts(data)
+            else:
+                print(
+                    "[altitude] fleet-wide 'different' (ids == []): keeping the "
+                    "existing altitude table; the swarm computer applies the ladder"
+                )
 
         if msg == "same":  # TODO
+            # Terrain safety: "same" is ONE altitude shared by every UAV, so the
+            # server knows exactly what is being flown and can show it before the
+            # aircraft get there. A commanded descent counts immediately; a climb
+            # earns credit only once telemetry confirms it.
+            #
+            # The "different" ladder above is deliberately NOT hooked: the server
+            # derives its steps from the selection index, while the swarm computer
+            # flies them from pos_array, so the numbers here are not the ones being
+            # flown. Those UAVs are picked up from telemetry instead.
+            from .terrain_safety import on_altitude_commanded
+
+            on_altitude_commanded(self, parameters["same_alt"], uav_ids)
             result = same_alt_socket(parameters["same_alt"])
 
         if msg == "clear_csv":
@@ -1690,16 +1734,34 @@ class SkybrushServer(DaemonApp):
 
                         alts = getAlts()
                         uav = self.find_uav_by_id(id)
-                        alt = alts[int(uav.id)]
-                        cur = drone[int(uav.id)] - 1
+                        # Skip a UAV whose altitude / slot / waypoint is missing
+                        # instead of raising: one unknown id must not abort the
+                        # climb of every OTHER UAV in this batch.
+                        if uav is None:
+                            print(f"[check_height] skipping unknown UAV id {id!r}")
+                            continue
+                        key = int(uav.id)
+                        if key not in alts or key not in drone:
+                            print(
+                                f"[check_height] skipping UAV {key}: no entry in "
+                                f"{'alts' if key not in alts else 'drone'}"
+                            )
+                            continue
+                        alt = alts[key]
+                        cur = drone[key] - 1
+                        if not (0 <= cur < len(res)):
+                            print(
+                                f"[check_height] skipping UAV {key}: slot {cur} "
+                                f"outside the {len(res)} generated waypoints"
+                            )
+                            continue
                         print(cur)
                         coords = GPSCoordinate(
                             lat=res[cur][0], lon=res[cur][1], ahl=alt
                         )
-                        if uav:
-                            await uav.driver._send_fly_to_target_signal_single(
-                                uav, coords
-                            )
+                        await uav.driver._send_fly_to_target_signal_single(
+                            uav, coords
+                        )
                     await sleep(5)
                     for i, id in enumerate(ids):
                         uav = self.find_uav_by_id(id)
@@ -1770,14 +1832,39 @@ class SkybrushServer(DaemonApp):
 
             alt = parameters.pop("alt")
             update_Takeoff_Alt(alt)
+
+            # Terrain safety: the Takeoff command itself is the trigger. The
+            # commanded `alt` becomes the safety altitude right now, without
+            # waiting for the UAV to move or for telemetry to change. This
+            # only records state and broadcasts the new threshold for display
+            # -- it never gates the takeoff (terrain clearance is enforced on
+            # the swarm computer, see medur_swarm/terrain_gate.py).
+            from .terrain_safety import on_takeoff_commanded
+
+            on_takeoff_commanded(self, alt, uav_ids)
             point = parameters.pop("coords")
+            # A client may send the coordinates as strings (a marker restored
+            # from persisted GCS state does). The VTOL math below multiplies
+            # them by a float, and a str is a sequence, so that raises
+            # "can't multiply sequence by non-int" instead of coercing.
+            try:
+                point = [float(c) for c in point]
+            except (TypeError, ValueError):
+                log.error(f"X-UAV-TAKEOFF: unusable coords {point!r}")
+                raise
             log.warning(str(point))
             speed = parameters.pop("speed")
             from .VTOL.new_left import generate_XY_Positions
 
             res = generate_XY_Positions(10, 100, 0, point)
             log.warning(str(res))
-            self.run_in_background(self.check_height, uav_ids, alt - 1, speed, res)
+            # protected=True: a fault in this per-sortie helper is logged and
+            # swallowed instead of cancelling the application's main nursery.
+            # Without it a single bad lookup here terminates the whole server,
+            # which drops every UAV -- see the KeyError guarded above.
+            self.run_in_background(
+                self.check_height, uav_ids, alt - 1, speed, res, protected=True
+            )
             # self.run_in_background(self.send_guided_command,uav_ids,speed,res)
 
         # Sort the UAVs being targeted by drivers. If `transport` is a
@@ -1978,7 +2065,14 @@ class SkybrushServer(DaemonApp):
         Parameters:
             uav_ids: list of UAV IDs
         """
+        uav_ids = list(uav_ids)
         self.rate_limiters.request_to_send("UAV-INF", uav_ids)
+
+        # Terrain safety: telemetry changed for these UAVs (event-driven, no
+        # polling; returns at once unless something needs tracking).
+        from .terrain_safety import on_uav_status_updated
+
+        on_uav_status_updated(self, uav_ids)
 
     async def run(self) -> None:
         self.run_in_background(self.command_execution_manager.run)

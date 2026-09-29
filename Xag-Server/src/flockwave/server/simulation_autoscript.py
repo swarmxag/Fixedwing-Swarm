@@ -10,7 +10,7 @@ simulation_process = None
 #                       ArduPlane.exe, etc.
 SIM_LAUNCHER_DIR = os.environ.get(
     "SIM_LAUNCHER_DIR",
-    r"C:\Users\Dell\Downloads\simulator\simulator",
+    r"D:\Kamikaze-Fuze-GUI\simulator",
 )
 
 # Per-vehicle SITL binary + --model flag, keyed by the lowercase value the
@@ -56,7 +56,7 @@ def simulation_exe(
         "--spacing",
         str(spacing),
         "--param-file",
-        "C:/Users/Dell/Downloads/simulator/simulator/default_params/quadplane.parm",
+        "D:\Kamikaze-Fuze-GUI\simulator\default_params\quadplane.parm",
         "--home-lat",
         str(home_lat),
         "--home-lon",

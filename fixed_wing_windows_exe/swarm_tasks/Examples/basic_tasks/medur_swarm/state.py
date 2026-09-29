@@ -213,3 +213,4 @@ last_curve_guidance_log = {}  # bot index -> (line_index, is_curve, has_lookahea
 # 'guided_circle' with no preceding 'goal' in the same run raised
 # NameError there and raises AttributeError here -- same latent bug,
 # preserved rather than papered over.
+_loiter_radius = 0

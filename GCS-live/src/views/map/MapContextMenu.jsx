@@ -22,11 +22,13 @@ import Moon from '@material-ui/icons/NightsStay';
 import PositionHold from '@material-ui/icons/Flag';
 import ActionPowerSettingsNew from '@material-ui/icons/PowerSettingsNew';
 import PinDrop from '@material-ui/icons/PinDrop';
+import Timeline from '@material-ui/icons/Timeline';
 import Refresh from '@material-ui/icons/Refresh';
 import { openFlyToTargetDialogWithCoordinate } from '~/features/uav-control/actions';
 import { createSelector } from '@reduxjs/toolkit';
 
 import ContextMenu from '~/components/ContextMenu';
+import { FeatureType } from '~/model/features';
 import Bolt from '~/icons/Bolt';
 import { hasFeature } from '~/utils/configuration';
 import * as messaging from '~/utils/messaging';
@@ -41,7 +43,10 @@ import {
   getSelectedFeatureLabels,
   getSelectedFeatureTypes,
 } from '~/features/map-features/selectors';
-import { removeFeaturesByIds } from '~/features/map-features/slice';
+import {
+  removeFeaturesByIds,
+  updateFeaturePlanVisible,
+} from '~/features/map-features/slice';
 import {
   clearGeofencePolygonId,
   setGeofencePolygonId,
@@ -69,6 +74,7 @@ class MapContextMenu extends React.Component {
     editFeature: PropTypes.func,
     openUAVDetailsDialog: PropTypes.func,
     removeFeaturesByIds: PropTypes.func,
+    updateFeaturePlanVisible: PropTypes.func,
     setGeofencePolygonId: PropTypes.func,
     setInitialMissionId: PropTypes.func,
     setLandingMissionId: PropTypes.func,
@@ -114,6 +120,7 @@ class MapContextMenu extends React.Component {
           geofencePolygonId,
           initialMissionId,
           landingMissionId,
+          selectedFeaturePlanVisible,
         }) => {
           const result = [];
           const hasSelectedUAVs = selectedUAVIds && selectedUAVIds.length > 0;
@@ -309,6 +316,24 @@ class MapContextMenu extends React.Component {
           if (hasSelectedFeatures) {
             result.push(
               <Divider key='div6' />,
+              // Only a single point can anchor an "Automate Goals" layout
+              // (handlePoint sends selectedFeatureIds[0], and the swarm
+              // computer fans out from coords[0]), so offer the plan
+              // overlay for exactly that case.
+              <MenuItem
+                key='showPlan'
+                dense
+                disabled={
+                  !hasSingleSelectedFeature ||
+                  selectedFeatureTypes[0] !== FeatureType.POINTS
+                }
+                onClick={this._toggleSelectedFeaturePlan}
+              >
+                <ListItemIcon>
+                  <Timeline />
+                </ListItemIcon>
+                {selectedFeaturePlanVisible ? 'Hide plan' : 'Show plan'}
+              </MenuItem>,
               <MenuItem
                 key='setProperties'
                 dense
@@ -366,6 +391,19 @@ class MapContextMenu extends React.Component {
     const { selectedFeatureIds } = context;
 
     cutFeature(selectedFeatureIds[1], selectedFeatureIds[0]);
+  };
+
+  _toggleSelectedFeaturePlan = (_event, context) => {
+    const { updateFeaturePlanVisible } = this.props;
+    const { selectedFeatureIds, selectedFeaturePlanVisible } = context;
+    if (!updateFeaturePlanVisible || selectedFeatureIds.length !== 1) {
+      return;
+    }
+
+    updateFeaturePlanVisible({
+      id: selectedFeatureIds[0],
+      visible: !selectedFeaturePlanVisible,
+    });
   };
 
   _editSelectedFeature = (_event, context) => {
@@ -508,6 +546,17 @@ const hasMapFeatures = hasFeature('mapFeatures');
 const hasGeofence = hasFeature('geofence');
 const hasShowControl = hasFeature('showControl');
 
+// Whether the single selected feature currently has its "Automate Goals"
+// plan overlay turned on -- drives the Show/Hide plan label and the toggle.
+const getSelectedFeaturePlanVisible = createSelector(
+  getSelectedFeatureIds,
+  (state) => state.features.byId,
+  (selectedFeatureIds, featuresById) =>
+    selectedFeatureIds.length === 1
+      ? Boolean(featuresById[selectedFeatureIds[0]]?.showPlan)
+      : false
+);
+
 const getContextProvider = createSelector(
   getSelectedFeatureIds,
   getSelectedFeatureLabels,
@@ -516,6 +565,7 @@ const getContextProvider = createSelector(
   getGeofencePolygonId,
   getInitialMissionId,
   getLandingMissionId,
+  getSelectedFeaturePlanVisible,
   (
     selectedFeatureIds,
     selectedFeatureLabels,
@@ -524,6 +574,7 @@ const getContextProvider = createSelector(
     geofencePolygonId,
     initialMissionId,
     landingMissionId,
+    selectedFeaturePlanVisible,
   ) =>
     (context) => ({
       selectedFeatureIds,
@@ -533,6 +584,7 @@ const getContextProvider = createSelector(
       geofencePolygonId,
       initialMissionId,
       landingMissionId,
+      selectedFeaturePlanVisible,
       ...context,
     })
 );
@@ -549,6 +601,7 @@ const MapContextMenuContainer = connect(
     editFeature: hasMapFeatures ? showFeatureEditorDialog : null,
     openUAVDetailsDialog,
     removeFeaturesByIds: hasMapFeatures ? removeFeaturesByIds : null,
+    updateFeaturePlanVisible: hasMapFeatures ? updateFeaturePlanVisible : null,
     setGeofencePolygonId: hasGeofence ? setGeofencePolygonId : null,
     setInitialMissionId: hasGeofence ? setInitialMissionId : null,
     clearInitialMissionId: hasGeofence ? clearInitialMissionId : null,

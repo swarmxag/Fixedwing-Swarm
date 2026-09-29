@@ -50,6 +50,7 @@ import settingsReducer from '~/features/settings/slice';
 import sidebarReducer from '~/features/sidebar/slice';
 import showReducer from '~/features/show/slice';
 import snackbarReducer from '~/features/snackbar/slice';
+import terrainSafetyReducer from '~/features/terrain-safety/slice';
 import threeDReducer from '~/features/three-d/slice';
 import tourReducer from '~/features/tour/slice';
 import uavReducer from '~/features/uavs/slice';
@@ -116,6 +117,7 @@ const reducer = combineReducers({
   show: showReducer,
   sidebar: sidebarReducer,
   snackbar: snackbarReducer,
+  terrainSafety: terrainSafetyReducer,
   threeD: threeDReducer,
   tour: tourReducer,
   uavs: uavReducer,
