@@ -8,10 +8,11 @@ main.py imports this module early, in the same relative position the
 original script created these sockets/threads, to preserve that ordering.
 """
 
+import collections
 import json
 import os
-import queue
 import socket
+import sys
 import threading
 import time
 
@@ -22,12 +23,36 @@ from medur_swarm.communication import reliable
 from medur_swarm.uav import connection as uav_connection
 
 sock2 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-server_address2 = ("", 12008)  # receive from .....rx.py
+server_address2 = ("", int(os.environ.get("SWARM_CMD_PORT", 12008)))  # receive from .....rx.py
 sock2.bind(server_address2)
 
 sock3 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-server_address3 = ("", 12002)  # receive from .....rx.py
+server_address3 = ("", int(os.environ.get("SWARM_CTL_PORT", 12002)))  # receive from .....rx.py
 sock3.bind(server_address3)
+
+# ---- node identity ---------------------------------------------------------
+# SWARM_NODE_ID (the UAV number whose onboard computer this is, e.g. 1 for
+# 192.168.6.101) turns on decentralised mode: the node starts as a STANDBY and
+# only flies after the server promotes it with an authorised, epoch-fenced
+# "role" message. Without it (the original single-computer setup) the node is
+# always the master and accepts everything, exactly as before.
+NODE_ID = int(os.environ["SWARM_NODE_ID"]) if os.environ.get("SWARM_NODE_ID") else None
+LEGACY_MODE = NODE_ID is None
+_role = "master" if LEGACY_MODE else "standby"
+_promoting = False
+if not LEGACY_MODE:
+    state.master_flag = False  # a standby never opens MAVLink to the UAVs
+
+# Payloads a standby still accepts: they keep it ready to take over.
+_STANDBY_ALLOWED = (
+    b"origin",
+    b"geofence",
+    b"clear_csv",
+    b"pos_array",
+    b"home_pos",
+    b"uav_home_pos",
+    b"master-",
+)
 
 
 # A datagram bigger than the recv buffer is dropped (and raises on Windows);
@@ -37,7 +62,8 @@ _RECV_BUFSIZE = 65535
 
 def CHECK_network_connection():
     for i, iter_follower in enumerate(state.heartbeat_ip_timeout):
-        response = os.system("ping -c 1 " + config.HEARTBEAT_IP[i])
+        count_flag = "-n" if sys.platform.startswith("win") else "-c"
+        response = os.system("ping %s 1 %s" % (count_flag, config.HEARTBEAT_IP[i]))
         if response == 0:
             state.heartbeat_ip_timeout[i] = 30
             pass
@@ -50,12 +76,99 @@ def CHECK_network_connection():
     print(" heartbeat_ip_timeout", state.heartbeat_ip_timeout)
 
 
+def _become_master():
+    """The original `master-3` take-over sequence, unchanged, now shared by
+    the legacy master-N message and the authorised "role" message."""
+    global _role, _promoting
+    _promoting = True
+    try:
+        if state.master_flag:
+            _role = "master"
+            return
+        state.master_flag = True
+        CHECK_network_connection()
+        uav_connection.vehicle_connection()
+        uav_connection.fetch_location()
+        state.s = sim.Simulation(
+            state.uav_home_pos,
+            num_bots=len(state.vehicles),
+            env_name=state.file_name,
+        )
+        _role = "master"
+    except Exception as e:
+        state.master_flag = False
+        _role = "standby"
+        print("[role] promotion FAILED, staying standby:", repr(e))
+    finally:
+        _promoting = False
+
+
+def _become_standby():
+    global _role
+    state.master_flag = False
+    _role = "standby"
+
+
+def _handle_role(role, node, epoch):
+    """Called by reliable.receive for an epoch-fenced, deduplicated "role"
+    message. Promotion runs in a thread (vehicle connection can take long);
+    the sender follows the real outcome through the status in later ACKs."""
+    if not LEGACY_MODE and node != NODE_ID:
+        return False, "wrong_node"
+    if role == "master":
+        if _promoting:
+            return True, "promoting"
+        threading.Thread(target=_become_master, daemon=True).start()
+        return True, "promoting"
+    if role == "standby":
+        _become_standby()
+        return True, "standby"
+    return False, "bad_role"
+
+
+def _accept(payload, port_kind):
+    """Receiver policy: validate origin updates, and refuse mission commands
+    on a node that is not the master."""
+    if payload.startswith(b"origin,"):
+        try:
+            _, lat, lon = payload.decode("utf-8").split(",")[:3]
+            if not (-90 <= float(lat) <= 90 and -180 <= float(lon) <= 180):
+                raise ValueError
+        except (ValueError, UnicodeDecodeError):
+            return False, "invalid_origin"
+    if LEGACY_MODE or port_kind == "ctl" or _role == "master":
+        return True, ""
+    if payload.startswith(_STANDBY_ALLOWED):
+        return True, ""
+    return False, "not_master"
+
+
+def _status():
+    return {
+        "node": NODE_ID,
+        "legacy": LEGACY_MODE,
+        "role": _role,
+        "promoting": _promoting,
+        "master_flag": bool(state.master_flag),
+        "queued": len(_inbox),
+        "unconsumed": pending_command.seq > state.last_seq,
+        "last_seq": state.last_seq,
+        "uavs": len(state.vehicles),
+    }
+
+
+reliable.status_provider = _status
+reliable.role_handler = _handle_role
+reliable.accept_policy = _accept
+
+
 def vehicle_collision_moniter_receive():
     while 1:
         raw_index, address = sock3.recvfrom(_RECV_BUFSIZE)
-        raw_index = reliable.unwrap(raw_index, address, sock3)
-        if raw_index is None:
+        got = reliable.receive(raw_index, address, sock3, "ctl")
+        if got is None:
             continue
+        raw_index = got.payload
         print("msg!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!", raw_index)
         decoded_index = raw_index.decode("utf-8")
         print("decoded_index", decoded_index)
@@ -65,21 +178,10 @@ def vehicle_collision_moniter_receive():
             state.master_num = master_num
             print("m,master_num", m, master_num)
             msg = "Drone 3 master_num " + str(master_num) + " data received"
-            if int(master_num) == 3:
-                if state.master_flag:
-                    pass
-                else:
-                    state.master_flag = True
-                    CHECK_network_connection()
-                    uav_connection.vehicle_connection()
-                    uav_connection.fetch_location()
-                    state.s = sim.Simulation(
-                        state.uav_home_pos,
-                        num_bots=len(state.vehicles),
-                        env_name=state.file_name,
-                    )
+            if int(master_num) == (3 if LEGACY_MODE else NODE_ID):
+                _become_master()
             else:
-                state.master_flag = False
+                _become_standby()
 
             state.index = "data"
             data = "data"
@@ -139,9 +241,46 @@ class _CommandMailbox:
 pending_command = _CommandMailbox()
 
 
-_inbox = queue.Queue()
+class _Entry:
+    __slots__ = ("payload", "address", "sid", "seq", "key", "started_reported")
+
+    def __init__(self, payload, address, sid, seq):
+        self.payload, self.address, self.sid, self.seq = payload, address, sid, seq
+        self.key = _supersede_key(payload)
+        self.started_reported = False
+
+
+_inbox = collections.deque()
+_inbox_cv = threading.Condition()
 _promote_lock = threading.Lock()
-_stop_generation = 0  # bumped by every stop; lets the feeder drop a command it already dequeued
+_mailbox_entry = None  # the entry currently sitting in pending_command
+
+
+def _event(entry, status, why=""):
+    reliable.emit_event(sock2, entry.address, entry.sid, entry.seq, status, why)
+
+
+def _supersede_key(payload):
+    """Pending commands that carry the same key replace each other: only the
+    latest goal / auto-goal plan / radius for the same UAV set is worth
+    flying. Everything else (search, split, specific split, add/remove, ...)
+    has no key and keeps strict arrival order."""
+    try:
+        text = payload.decode("utf-8")
+        if text.startswith("goal_"):
+            ids = text.rsplit("_", 1)[1]
+            kind = "goal"
+        elif text.startswith("autogoal_"):
+            ids = text.rsplit("_", 3)[1]
+            kind = "autogoal"
+        elif text.startswith("autogoalrad_"):
+            ids = text.rsplit("_", 1)[1]
+            kind = "autogoalrad"
+        else:
+            return None
+        return (kind, tuple(sorted(json.loads(ids))))
+    except (ValueError, IndexError, TypeError, UnicodeDecodeError):
+        return None
 
 
 def _command_listener():
@@ -153,48 +292,74 @@ def _command_listener():
         except OSError as e:
             print("[commands] recv error:", repr(e))
             continue
-        data = reliable.unwrap(data, address, sock2)
-        if data is None:
+        got = reliable.receive(data, address, sock2, "cmd")
+        if got is None:
             continue
-        if data == b"stop":
-            # stop supersedes anything still waiting behind the running command.
-            global _stop_generation
-            _stop_generation += 1
-            dropped = 0
-            try:
-                while True:
-                    _inbox.get_nowait()
-                    dropped += 1
-            except queue.Empty:
-                pass
+        entry = _Entry(got.payload, got.address, got.sid, got.seq)
+        if entry.payload == b"stop":
+            # stop supersedes everything still waiting behind the running command.
+            with _inbox_cv:
+                dropped = list(_inbox)
+                _inbox.clear()
+            for old in dropped:
+                _event(old, "discarded", "stop")
             if dropped:
-                print("[commands] stop discarded", dropped, "queued command(s)")
-            _promote(data, address)
+                print("[commands] stop discarded", len(dropped), "queued command(s)")
+            _promote(entry)
         else:
-            _inbox.put((data, address))
+            with _inbox_cv:
+                if entry.key is not None:
+                    keep = collections.deque()
+                    for old in _inbox:
+                        if old.key == entry.key:
+                            _event(old, "superseded", "newer_" + entry.key[0])
+                        else:
+                            keep.append(old)
+                    _inbox.clear()
+                    _inbox.extend(keep)
+                _inbox.append(entry)
+                _inbox_cv.notify()
 
 
-def _promote(data, address):
+def _promote(entry):
+    global _mailbox_entry
     with _promote_lock:
-        pending_command.data = data
-        pending_command.address = address
+        if _mailbox_entry is not None and pending_command.seq > state.last_seq:
+            # Only a stop can overwrite an unread command; say so.
+            _event(_mailbox_entry, "superseded", "stop")
+        pending_command.data = entry.payload
+        pending_command.address = entry.address
         pending_command.seq += 1
+        _mailbox_entry = entry
 
 
 def _command_feeder():
     """Moves queued commands into the single-slot mailbox one at a time, only
     after the previous one was consumed (state.last_seq caught up). This keeps
     the mailbox protocol every mission loop relies on unchanged while no
-    longer letting a second datagram overwrite an unread first one."""
+    longer letting a second datagram overwrite an unread first one. Also
+    reports "started" once the dispatch loop has actually taken a command."""
     while 1:
-        data, address = _inbox.get()
-        generation = _stop_generation
+        with _inbox_cv:
+            while not _inbox:
+                _report_started()
+                _inbox_cv.wait(0.05)
+            entry = _inbox[0]
         while pending_command.seq > state.last_seq:
             time.sleep(0.005)
-        if generation != _stop_generation:
-            print("[commands] discarded by stop:", data[:40])
-            continue
-        _promote(data, address)
+        _report_started()
+        with _inbox_cv:
+            if not _inbox or _inbox[0] is not entry:
+                continue  # superseded or discarded while we waited
+            _inbox.popleft()
+        _promote(entry)
+
+
+def _report_started():
+    entry = _mailbox_entry
+    if entry is not None and not entry.started_reported and pending_command.seq <= state.last_seq:
+        entry.started_reported = True
+        _event(entry, "started")
 
 
 def start_listener_threads():

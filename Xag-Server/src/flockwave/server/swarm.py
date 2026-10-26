@@ -28,11 +28,14 @@ def fetch_file_content(file_path):
     return lines
 
 
-from .swarm_link import ReliableUdp
+from .swarm_link import ROUTER, RoutedSocket, _NullSocket
 
-master_udp = ReliableUdp()  # same sendto() API as a socket, but ACKed + retried
+# Every mission command goes to the ACTIVE MASTER only, ACKed and retried, and
+# is refused loudly when there is no master (see swarm_link.Router). The old
+# second sendto() argument is just a port kind now: 2 = command port, 1 = control.
+master_udp = RoutedSocket(ROUTER)
 
-adderss = {1: ("127.0.0.1", 12002), 2: ("127.0.0.1", 12008)}
+adderss = {1: "ctl", 2: "cmd"}
 
 master_num = 0
 origin = None  # set by process_fence() once a fence has been drawn; consumed
@@ -42,11 +45,11 @@ origin = None  # set by process_fence() once a fence has been drawn; consumed
 # server_address1 = ('192.168.6.151', 12008)
 # udp_socket2 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 # server_address2 = ('192.168.6.152', 12008)
-udp_socket3 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+udp_socket3 = master_udp  # legacy fan-out now routed to the active master
 server_address3 = ("192.168.6.153", 12008)
 # udp_socket4 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 # server_address4 = ('192.168.6.154', 12008)
-udp_socket5 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+udp_socket5 = _NullSocket()
 server_address5 = ("192.168.6.155", 12008)
 # udp_socket6 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 # server_address6 = ('192.168.6.156', 12008)
@@ -56,7 +59,7 @@ server_address5 = ("192.168.6.155", 12008)
 # server_address8 = ('192.168.6.158', 12008)
 # udp_socket9 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 # server_address9 = ('192.168.6.159', 12008)
-udp_socket10 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+udp_socket10 = _NullSocket()
 server_address10 = ("192.168.6.160", 12008)
 
 # share_data_udp_socket1 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -166,24 +169,13 @@ server_address_220 = ("127.0.0.1", 12008)
 
 
 def push_origin_and_geofence(origin1):
-    """Broadcast a fresh origin + geofence-refresh signal to all swarm computers,
-    same ports/pattern as clear_csv()/start_socket() above."""
-    data = "origin,{},{}".format(origin1[0], origin1[1])
-    udp_socket3.sendto(data.encode(), server_address3)
-    time.sleep(0.1)
-    udp_socket5.sendto(data.encode(), server_address5)
-    time.sleep(0.1)
-    udp_socket10.sendto(data.encode(), server_address10)
-    time.sleep(0.1)
-    udp_socket3.sendto(data.encode(), server_address_220)
-    time.sleep(0.1)
-
-    sync = b"geofence"
-    udp_socket3.sendto(sync, server_address3)
-    udp_socket5.sendto(sync, server_address5)
-    udp_socket10.sendto(sync, server_address10)
-    udp_socket3.sendto(sync, server_address_220)
-    return True
+    """Origin + geofence-refresh go to EVERY node (not just the master) so a
+    standby that is later promoted already has the right origin. Each node
+    must ACK; the origin is validated again on the receiving side. Returns
+    True only if every node accepted both messages."""
+    results = ROUTER.send_all("origin,{},{}".format(origin1[0], origin1[1]))
+    results.update({f"geofence:{k}": v for k, v in ROUTER.send_all("geofence").items()})
+    return all(v is True for v in results.values()) and bool(results)
 
 
 def get_origin():
@@ -264,36 +256,11 @@ def calculate_flight_time():
 
 
 def clear_csv():
+    """Explicit scope: every node. Idempotent (clearing twice is harmless),
+    ACKed per node; failures are reported to the GUI."""
     print("!!!CSV Cleared!!")
-    global udp_socket, udp_socket2, server_address1, server_address2
-    # udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    data = "clear_csv"
-    """
-    udp_socket.sendto(str(data).encode(), server_address1)
-    time.sleep(0.5)
-    udp_socket2.sendto(str(data).encode(), server_address2)
-    time.sleep(0.5)
-    """
-    udp_socket3.sendto(str(data).encode(), server_address3)
-    time.sleep(0.5)
-    """
-    udp_socket4.sendto(str(data).encode(), server_address4)
-    time.sleep(0.5)
-    """
-    udp_socket5.sendto(str(data).encode(), server_address5)
-    time.sleep(0.5)
-    """       
-    udp_socket6.sendto(str(data).encode(), server_address6)
-    time.sleep(0.5)       
-    udp_socket7.sendto(str(data).encode(), server_address7)     
-    time.sleep(0.5)
-    udp_socket8.sendto(str(data).encode(), server_address8)
-    time.sleep(0.5)
-    udp_socket9.sendto(str(data).encode(), server_address9)
-    time.sleep(0.5)
-    """
-    udp_socket10.sendto(str(data).encode(), server_address10)
-    return True
+    results = ROUTER.send_all("clear_csv")
+    return all(v is True for v in results.values()) and bool(results)
 
 
 def start_socket():
@@ -828,8 +795,6 @@ def different_alt_socket(initial_alt, alt_diff, ids=None):
     udp_socket2.sendto(str(g).encode(), server_address2)
     time.sleep(0.5)
     """
-    udp_socket3.sendto(str(g).encode(), server_address3)
-    time.sleep(0.5)
     """
     udp_socket4.sendto(str(g).encode(), server_address4)
     time.sleep(0.5)
@@ -1162,39 +1127,21 @@ def autogoal_radius_socket(radius, ids=None):
     return True
 
 
-def master(master_num):
+def master(master_num, confirm=False):
+    """Master selection.
 
+    Decentralised mode: an operator-confirmed, eligibility-checked, epoch-fenced
+    transition (swarm_link.Router.set_master). Without `confirm` nothing
+    changes -- the eligibility report is returned for the GUI to show.
+    Legacy single-computer mode keeps the original master-N + add flow."""
+    if not ROUTER.legacy:
+        if not confirm:
+            return {"confirmation_required": True, **ROUTER.eligibility(master_num)}
+        return ROUTER.set_master(master_num)
     data = "master" + "-" + str(master_num)
     print("data", data)
-    """
-    socket1.sendto(str(data).encode(), server_address11)
-    time.sleep(0.5)
-    socket2.sendto(str(data).encode(), server_address12)
-    time.sleep(0.5)
-    """
-    socket3.sendto(str(data).encode(), server_address13)
-    time.sleep(0.5)
-    """
-    socket4.sendto(str(data).encode(), server_address14)
-    time.sleep(0.5)
-    """
-    socket5.sendto(str(data).encode(), server_address15)
-    time.sleep(0.5)
-    """
-    socket6.sendto(str(data).encode(), server_address16)
-    time.sleep(0.5)
-
-    socket7.sendto(str(data).encode(), server_address17)
-
-    time.sleep(0.5)
-    socket8.sendto(str(data).encode(), server_address18)
-    time.sleep(0.5)
-    socket9.sendto(str(data).encode(), server_address19)
-    time.sleep(0.5)
-    """
-    socket10.sendto(str(data).encode(), server_address20)
-    result = mavlink_add(master_num)
-    return result
+    ok = master_udp.sendto(data.encode(), adderss.get(1))
+    return mavlink_add(master_num) and ok
 
 
 def mavlink_add(uav):

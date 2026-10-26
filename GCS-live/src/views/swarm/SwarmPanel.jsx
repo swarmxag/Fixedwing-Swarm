@@ -16,6 +16,7 @@ import { MessageSemantics } from '~/features/snackbar/types';
 import { connect } from 'react-redux';
 import { withTranslation } from 'react-i18next';
 import messageHub from '~/message-hub';
+import MasterSelector from './MasterSelector';
 import {
   getSelectedFeatureIds,
   getFeatureById,
@@ -455,6 +456,7 @@ const SwarmPanel = ({
 
   return (
     <Box style={{ margin: 10, gap: 20 }}>
+      <MasterSelector />
       <FormGroup style={{ display: 'flex', flexDirection: 'row', gap: 15 }}>
         <Box style={{ display: 'flex', gap: 20, alignItems: 'center' }}>
           {/*<FormControl fullWidth variant='standard'>*/}

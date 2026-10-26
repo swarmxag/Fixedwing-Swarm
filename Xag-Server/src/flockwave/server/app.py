@@ -1201,7 +1201,21 @@ class SkybrushServer(DaemonApp):
         # print(f"[GUI->SERVER] command={msg} parameters={parameters}")
 
         if msg == "master":
-            result = master(int(parameters.get("ids", "")[0]))
+            # Decentralised mode: without confirm=True this only returns the
+            # eligibility report; with it, runs the fenced master transition.
+            import trio
+
+            node = int(parameters.get("ids", "")[0])
+            confirm = bool(parameters.get("confirm", False))
+            result = await trio.to_thread.run_sync(lambda: master(node, confirm))
+
+        if msg == "swarm_status":
+            # Everything shown comes from the nodes themselves (probe), not
+            # from what the server last asked them to do.
+            import trio
+            from .swarm_link import ROUTER
+
+            result = await trio.to_thread.run_sync(ROUTER.status)
 
         if msg == "coverage":
             result = get_coverage_time()

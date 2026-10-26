@@ -46,7 +46,12 @@ _mod(
 medur.state, medur.config = state, sys.modules["medur_swarm.config"]
 _mod("swarm_tasks")
 _mod("swarm_tasks.simulation")
-_mod("swarm_tasks.simulation.simulation", Simulation=object)
+class _Sim:
+    def __init__(self, *args, **kwargs):
+        pass
+
+
+_mod("swarm_tasks.simulation.simulation", Simulation=_Sim)
 sys.modules["swarm_tasks.simulation"].simulation = sys.modules[
     "swarm_tasks.simulation.simulation"
 ]
