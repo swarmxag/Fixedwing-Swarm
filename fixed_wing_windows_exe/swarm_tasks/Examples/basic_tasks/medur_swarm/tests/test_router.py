@@ -62,7 +62,7 @@ def make_router(tmp):
     nodes = {str(i): {"ip": IPS[i], "cmd_port": PORTS[i][0], "ctl_port": PORTS[i][1]} for i in (1, 2)}
     nf = os.path.join(tmp, "nodes.json")
     json.dump({"nodes": nodes}, open(nf, "w"))
-    return link.Router(nodes_file=nf, state_file=os.path.join(tmp, "master.json")), nf
+    return link.Router(nodes_file=nf, state_file=os.path.join(tmp, "master.json"), auto_replicate=False), nf
 
 
 def wait_for(fn, timeout=3.0):
@@ -196,7 +196,7 @@ class RouterTests(unittest.TestCase):
     def test_invalid_node_table_refuses_to_route(self):
         with open(self.nodes_file, "w") as f:
             json.dump({"nodes": {"1": {"ip": "10.0.0.1"}, "2": {"ip": "10.0.0.1"}}}, f)
-        bad = link.Router(nodes_file=self.nodes_file, state_file=os.path.join(self.tmp, "m2.json"))
+        bad = link.Router(nodes_file=self.nodes_file, state_file=os.path.join(self.tmp, "m2.json"), auto_replicate=False)
         self.assertIn("duplicate ip", bad.load_error)
         self.assertFalse(bad.send("stop"))
 

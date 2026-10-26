@@ -921,6 +921,42 @@ def rtl_socket():
     return True
 
 
+def explicit_stop():
+    """The operator's Stop button. "stop" means two different things on the
+    swarm computer and BOTH are needed to actually stop commanding:
+
+      * control port (12002): sets state.index = b"stop", which breaks every
+        FOREGROUND mission loop (search / split / goal / home / formation...).
+      * command port (12008): main.py runs runner.clear_all_active_tasks(),
+        dropping every BACKGROUND per-UAV task and the stored auto-goal layout
+        that the task thread keeps driving after a foreground loop has ended.
+
+    stop_socket() below (control port only) is still what every command sends
+    as a precursor to a new full-swarm mission, so adding or removing one UAV
+    does not wipe the goals of the others.
+
+    Neither signal commands the aircraft to hold: UAVs keep their last guided
+    target and then fall back to the autopilot's own behaviour. Returns True
+    only if both signals were ACKed."""
+    ctl = master_udp.sendto(b"stop", adderss.get(1))
+    cmd = master_udp.sendto(b"stop", adderss.get(2))
+    return bool(ctl and cmd)
+
+
+def parse_rtl_height(parameters):
+    """(height_m, error) from a "home" request body. rtl_height is optional
+    (default 50 m, as in app_1.py) but must be a finite number in (0, 1000]
+    when given. The swarm side does not use it today (see home_socket)."""
+    raw = parameters.get("rtl_height", 50)
+    try:
+        height = float(raw)
+    except (TypeError, ValueError):
+        return None, "invalid_rtl_height"
+    if height != height or not (0 < height <= 1000):
+        return None, "invalid_rtl_height"
+    return height, None
+
+
 def stop_socket():
     print("STOP>>>>>>>>>>>>")
     global master_udp

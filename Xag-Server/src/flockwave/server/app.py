@@ -1209,6 +1209,14 @@ class SkybrushServer(DaemonApp):
             confirm = bool(parameters.get("confirm", False))
             result = await trio.to_thread.run_sync(lambda: master(node, confirm))
 
+        if msg == "recover_resume":
+            # Operator-confirmed: resume only the goal tasks the new master has
+            # re-verified against live telemetry. Never automatic.
+            import trio
+            from .swarm_link import ROUTER
+
+            result = await trio.to_thread.run_sync(ROUTER.resume_recovery)
+
         if msg == "swarm_status":
             # Everything shown comes from the nodes themselves (probe), not
             # from what the server last asked them to do.
@@ -1224,7 +1232,7 @@ class SkybrushServer(DaemonApp):
             result = start_socket()
 
         if msg == "stop":
-            result = stop_socket()
+            result = explicit_stop()
 
         if msg == "home_lock":
             result = home_lock()
@@ -1323,8 +1331,10 @@ class SkybrushServer(DaemonApp):
                 result = "error"
 
         if msg == "home":
-            rtl_height = parameters.pop()
-            result = home_socket()
+            # was `parameters.pop()` with no key, which always raised TypeError.
+            # rtl_height is validated but, as before, not used by home_socket().
+            rtl_height, home_error = parse_rtl_height(parameters)
+            result = home_error if home_error else home_socket()
 
         if msg == "share_data":
             result = share_data_func()

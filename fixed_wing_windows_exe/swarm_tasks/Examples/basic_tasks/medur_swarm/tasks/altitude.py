@@ -6,6 +6,7 @@ from swarm_tasks.modules.dispersion import disp_field
 from swarm_tasks.tasks import area_coverage as cvg
 
 from medur_swarm import state
+from medur_swarm.communication import lifecycle
 from medur_swarm.utils import parse_selected_uav_ids, selected_swarm_indexes
 from medur_swarm.uav.guidance import _drive_vehicle_towards
 
@@ -63,6 +64,7 @@ def apply_different_heights(decoded_index):
 def assign_altitude_tasks(selected_indexes):
     with state.active_goal_tasks_lock:
         for bot_index in selected_indexes:
+            lifecycle.claim(bot_index)
             state.active_goal_tasks[bot_index] = {
                 "type": "altitude",
             }

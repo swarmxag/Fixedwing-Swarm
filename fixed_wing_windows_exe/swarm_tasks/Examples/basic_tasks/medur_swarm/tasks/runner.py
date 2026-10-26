@@ -16,6 +16,7 @@ import time
 import locatePosition
 
 from medur_swarm import config, state
+from medur_swarm.communication import lifecycle
 from medur_swarm.utils import generate_points, read_specific_line
 from medur_swarm.uav.guidance import (
     _drive_vehicle_towards,
@@ -67,6 +68,7 @@ def clear_all_active_tasks():
     task. The caller (main.py) must abort the rest of that dispatch
     iteration immediately afterward, matching the original's unconditional
     `continue` right after this."""
+    lifecycle.note_cancel_all()
     with state.active_goal_tasks_lock:
         state.active_goal_tasks.clear()
     # Drop the stored "Automate Goals" layout too, so a later on-board
@@ -86,6 +88,7 @@ def assign_goal_tasks(
             # groundspeed-pacing clock over for this bot.
             state.goal_min_distance.pop(bot_index, None)
             state.bot_step_last_time.pop(bot_index, None)
+            lifecycle.claim(bot_index)
             state.active_goal_tasks[bot_index] = {
                 "type": "goal",
                 "goals": list(goal_xy),
@@ -141,6 +144,7 @@ def assign_autogoal_tasks(
             # since a mid-flight radius change re-runs this for every UAV.
             state.goal_min_distance.pop(bot_index, None)
             state.bot_step_last_time.pop(bot_index, None)
+            lifecycle.claim(bot_index)
             state.active_goal_tasks[bot_index] = {
                 "type": "goal",
                 "goals": [goal_xy],
@@ -178,6 +182,7 @@ def assign_mission_tasks(csv_paths_by_index, label):
             except Exception as e:
                 print(f"[{label}-task] failed to read {csv_path}: {e}")
                 continue
+            lifecycle.claim(bot_index)
             state.active_goal_tasks[bot_index] = {
                 "type": "mission",
                 "label": label,
@@ -190,6 +195,7 @@ def assign_mission_tasks(csv_paths_by_index, label):
 
 def remove_goal_task_index(removed_index):
     with state.active_goal_tasks_lock:
+        lifecycle.note_task_removed(removed_index)
         if removed_index in state.active_goal_tasks:
             del state.active_goal_tasks[removed_index]
         shifted_tasks = {}

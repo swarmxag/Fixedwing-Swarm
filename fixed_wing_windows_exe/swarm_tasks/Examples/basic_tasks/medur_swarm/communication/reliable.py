@@ -7,6 +7,8 @@ Every datagram the server sends is a JSON envelope with a sender session id
     {"k":"cmd", "sid":..,"seq":N,"epoch":E,"p":"<legacy payload>"}   a command
     {"k":"ping","sid":..,"seq":N,"epoch":E}                          status probe
     {"k":"role","sid":..,"seq":N,"epoch":E,"role":"master|standby","node":ID}
+    {"k":"snapshot", ...}                 master: return a state snapshot in the ACK's "data"
+    {"k":"replicate","snap":{...}, ...}   standby: durably store a master snapshot
 
 and is answered by exactly one reply to the sender's source address:
 
@@ -36,6 +38,8 @@ _epoch = 0  # fencing token: anything from an older epoch is refused
 # Hooks installed by communication/sockets.py.
 status_provider = lambda: {}  # () -> dict, reported in every ACK's "st"
 role_handler = None  # (role, node, epoch) -> (ok, why)
+snapshot_handler = None  # () -> (ok, why, data)
+replicate_handler = None  # (snapshot dict, epoch) -> (ok, why)
 accept_policy = None  # (payload: bytes, port_kind) -> (ok, why)
 
 Received = namedtuple("Received", "payload sid seq address")
@@ -67,8 +71,11 @@ def _status():
     return st
 
 
-def _ack(sock, address, sid, seq, ok, why=""):
-    _send(sock, address, {"k": "ack", "sid": sid, "seq": seq, "ok": ok, "why": why, "st": _status()})
+def _ack(sock, address, sid, seq, ok, why="", data=None):
+    msg = {"k": "ack", "sid": sid, "seq": seq, "ok": ok, "why": why, "st": _status()}
+    if data is not None:
+        msg["data"] = data
+    _send(sock, address, msg)
 
 
 def emit_event(sock, address, sid, seq, status, why=""):
@@ -91,7 +98,7 @@ def receive(data, address, sock, port_kind="cmd"):
     try:
         env = json.loads(data.decode("utf-8"))
         kind = env.get("k")
-        if kind not in ("cmd", "ping", "role"):
+        if kind not in ("cmd", "ping", "role", "snapshot", "replicate"):
             return Received(data, None, None, address)
         sid, seq, epoch = str(env["sid"]), int(env["seq"]), int(env.get("epoch", 0))
     except (ValueError, KeyError, TypeError, UnicodeDecodeError, AttributeError) as e:
@@ -100,6 +107,15 @@ def receive(data, address, sock, port_kind="cmd"):
 
     if kind == "ping":  # read-only, idempotent: never deduplicated or fenced
         _ack(sock, address, sid, seq, True, "pong")
+        return None
+
+    if kind == "snapshot":  # read-only too
+        ok, why, snap = (False, "no_snapshot_handler", None)
+        if snapshot_handler is not None:
+            ok, why, snap = snapshot_handler()
+        if ok and len(json.dumps(snap, separators=(",", ":"))) > 55000:
+            ok, why, snap = False, "snapshot_too_large", None
+        _ack(sock, address, sid, seq, ok, why, snap if ok else None)
         return None
 
     with _lock:
@@ -133,6 +149,13 @@ def receive(data, address, sock, port_kind="cmd"):
         return None
 
     set_epoch(epoch)  # the server is authoritative: adopt a newer epoch
+
+    if kind == "replicate":
+        ok, why = (False, "no_replicate_handler")
+        if replicate_handler is not None:
+            ok, why = replicate_handler(env.get("snap"), epoch)
+        _ack(sock, address, sid, seq, ok, why)
+        return None
 
     if kind == "role":
         ok, why = (False, "no_role_handler")

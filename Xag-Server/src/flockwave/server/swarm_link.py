@@ -156,8 +156,10 @@ class ReliableUdp:
         if ack is None:
             return self._fail(address, payload, "no_ack")
         if not ack.get("ok"):
+            _log_command(self.node, self._sid, ack["seq"], payload, "rejected")
+            _update_command(self.node, self._sid, ack["seq"], "rejected", ack.get("why") or "")
             return self._fail(address, payload, ack.get("why") or "rejected")
-        _log_command(self.node, self._sid, ack["seq"], payload, "queued")
+        _log_command(self.node, self._sid, ack["seq"], payload, "received")
         return True
 
     def call(self, kind, address, epoch=None, timeout=None, retries=None, **fields):
@@ -199,7 +201,9 @@ def _target_ids(payload):
 
 
 class Router:
-    def __init__(self, nodes_file=None, state_file=None):
+    def __init__(self, nodes_file=None, state_file=None, auto_replicate=True):
+        self._auto_replicate = auto_replicate
+        self._replicator = None
         folder = os.path.join(os.path.expanduser("~"), "Documents", "swarm_env")
         self._nodes_file = nodes_file or os.environ.get("SWARM_NODES_FILE") or os.path.join(folder, "swarm_nodes.json")
         self._state_file = state_file or os.path.join(folder, "swarm_master.json")
@@ -208,6 +212,9 @@ class Router:
         self.master = None
         self.epoch = 0
         self.pending_demotions = set()
+        self.master_missed = 0  # consecutive failed master heartbeats
+        self.master_last_seen = None
+        self.replication = None  # last snapshot relay result
         self.links = {}
         self.load_error = None
         self._load()
@@ -370,11 +377,83 @@ class Router:
             if ack is not None and ack.get("ok"):
                 self.pending_demotions.discard(old)
 
+    # -- heartbeat + state replication ------------------------------------
+    MASTER_LOST_AFTER = 3  # consecutive missed heartbeats
+
+    @property
+    def master_lost(self):
+        return self.master is not None and not self.legacy and self.master_missed >= self.MASTER_LOST_AFTER
+
+    def replicate_once(self):
+        """One heartbeat: ask the master for a snapshot (its answer IS the
+        heartbeat), relay it to every standby, which stores it durably.
+        Promotion is NOT automatic: a lost master only raises `master_lost`
+        for the operator."""
+        if self.legacy or self.master is None or self.load_error:
+            return None
+        master = self.master
+        ack = self.links[master].call("snapshot", self.address(master, "cmd"), timeout=0.4, retries=2)
+        if ack is None:
+            self.master_missed += 1
+            return None
+        self.master_missed = 0
+        self.master_last_seen = time.time()
+        if not ack.get("ok") or not ack.get("data"):
+            self.replication = {"ok": False, "why": ack.get("why"), "at": time.time()}
+            return self.replication
+        snap = ack["data"]
+        standbys = [n for n in self.nodes if n != master]
+        delivered = {}
+
+        def push(node):
+            r = self.links[node].call("replicate", self.address(node, "cmd"), epoch=self.epoch,
+                                      timeout=0.4, retries=2, snap=snap)
+            return node, (None if r is None else (True if r.get("ok") else r.get("why")))
+
+        if standbys:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=len(standbys)) as pool:
+                for node, res in pool.map(push, standbys):
+                    delivered[node] = res
+        self.replication = {
+            "ok": True, "version": snap.get("version"), "epoch": snap.get("epoch"),
+            "tasks": len(snap.get("tasks", {})), "delivered": delivered, "at": time.time(),
+        }
+        return self.replication
+
+    def ensure_replicator(self, interval=1.0):
+        if not self._auto_replicate or self._replicator is not None:
+            return
+
+        def loop():
+            while True:
+                try:
+                    self.replicate_once()
+                except Exception as e:  # the heartbeat must never die
+                    print("[swarm_link] replication error:", repr(e))
+                time.sleep(interval)
+
+        self._replicator = threading.Thread(target=loop, daemon=True)
+        self._replicator.start()
+
+    def resume_recovery(self):
+        """Operator-confirmed: ask the new master to resume the goal tasks it
+        has verified against live telemetry. Version-pinned so a newer
+        replica can never be resumed by mistake."""
+        if self.master is None:
+            return {"ok": False, "reason": "no_master_selected"}
+        st = self.probe(self.master) or {}
+        rec = st.get("recovery")
+        if not rec or rec.get("version") is None:
+            return {"ok": False, "reason": "nothing_to_recover"}
+        ok = self.send("recover_resume,%d" % rec["version"])
+        return {"ok": bool(ok), "version": rec["version"], "resumable": rec.get("resumable")}
+
     # -- operator view -----------------------------------------------------
     def status(self, probe=True):
         """What the GUI shows. Every node field comes from the node itself."""
         if probe:
             self.retry_demotions()
+            self.ensure_replicator()
         ids = sorted(self.nodes)
         if probe and ids:
             with concurrent.futures.ThreadPoolExecutor(max_workers=len(ids)) as pool:
@@ -391,6 +470,12 @@ class Router:
             "master": self.master,
             "epoch": self.epoch,
             "pending_demotions": sorted(self.pending_demotions),
+            "master_health": {
+                "lost": self.master_lost,
+                "missed": self.master_missed,
+                "last_seen": self.master_last_seen,
+            },
+            "replication": self.replication,
             "nodes": out,
             "commands": recent_commands(),
         }

@@ -22,7 +22,7 @@ import swarm_tasks
 
 from medur_swarm import config, state
 from medur_swarm.utils import read_origin
-from medur_swarm.communication import sockets
+from medur_swarm.communication import lifecycle, replica, sockets
 from medur_swarm.communication.dispatch import MissionPreempted
 from medur_swarm.uav import connection as uav_connection
 from medur_swarm.uav import management as uav_management
@@ -91,7 +91,7 @@ def _bring_up_simulation():
             runner.start_goal_task_thread()
             break
         else:
-            pass
+            time.sleep(0.05)  # idle standby: don't spin a CPU core
 
 
 def _dispatch_one(data):
@@ -105,6 +105,9 @@ def _dispatch_one(data):
         runner.clear_all_active_tasks()
         return True
     sync_swarm_with_telemetry()
+
+    if replica.run_resume_command(data):  # operator-confirmed recovery only
+        return True
 
     admin.apply_origin_update(data)
     admin.reload_geofence(data)
@@ -154,32 +157,42 @@ def run():
     # _next_data/_next_address carry a preempting command straight into the
     # next iteration (see the MissionPreempted except-clause below) so it's
     # dispatched immediately, with no idle wait for a fresh mailbox seq.
-    _next_data, _next_address = None, None
+    _next_data, _next_address, _next_seq = None, None, None
     state.last_seq = 0
     while 1:
+        seq = None
         if state.master_flag:
             state.num_bots = len(state.vehicles)
         else:
             state.num_bots = len(state.pos_array)
         try:
             if _next_data is not None:
-                data, address = _next_data, _next_address
-                _next_data, _next_address = None, None
+                data, address, seq = _next_data, _next_address, _next_seq
+                _next_data, _next_address, _next_seq = None, None, None
             else:
                 while sockets.pending_command.seq <= state.last_seq:
                     time.sleep(0.01)
                 data = sockets.pending_command.data
                 address = sockets.pending_command.address
                 state.last_seq = sockets.pending_command.seq
+                seq = state.last_seq
 
-            if _dispatch_one(data):
+            lifecycle.begin(seq, data)
+            skip_rest = _dispatch_one(data)
+            lifecycle.foreground_done(seq)
+            if skip_rest:
                 continue
         except MissionPreempted as preempt:
             # A mission loop noticed a newer command mid-flight (via
             # check_for_new_command) and unwound here instead of running to
             # completion. Dispatch the preempting command immediately on the
             # next iteration -- no idle wait for a fresh mailbox seq.
-            _next_data, _next_address = preempt.data, preempt.address
+            lifecycle.foreground_preempted(seq, preempt.data)
+            _next_data, _next_address, _next_seq = (
+                preempt.data,
+                preempt.address,
+                preempt.seq,
+            )
             state.last_seq = sockets.pending_command.seq
         except Exception as e:
             # Previously a bare `pass` here -- any exception inside a mission
@@ -189,6 +202,7 @@ def run():
             # the swarm just stopped for no reason. Log it so the real cause is
             # visible instead of only the flags being reset.
             print("[mission] aborted by exception:", repr(e))
+            lifecycle.foreground_failed(seq, e)
             traceback.print_exc()
             if state.search_flag:
                 state.search_flag = False

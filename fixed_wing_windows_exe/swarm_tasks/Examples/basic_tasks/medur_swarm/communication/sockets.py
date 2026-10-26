@@ -19,7 +19,7 @@ import time
 from swarm_tasks.simulation import simulation as sim
 
 from medur_swarm import config, state
-from medur_swarm.communication import reliable
+from medur_swarm.communication import lifecycle, reliable, replica
 from medur_swarm.uav import connection as uav_connection
 
 sock2 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -47,7 +47,6 @@ if not LEGACY_MODE:
 _STANDBY_ALLOWED = (
     b"origin",
     b"geofence",
-    b"clear_csv",
     b"pos_array",
     b"home_pos",
     b"uav_home_pos",
@@ -95,6 +94,7 @@ def _become_master():
             env_name=state.file_name,
         )
         _role = "master"
+        replica.prepare_after_promotion()  # report only: nothing is replayed
     except Exception as e:
         state.master_flag = False
         _role = "standby"
@@ -126,9 +126,17 @@ def _handle_role(role, node, epoch):
     return False, "bad_role"
 
 
+# Commands the server can still send but that NO swarm handler implements.
+# They used to be ACKed and then silently ignored; now they are refused so the
+# operator sees "unsupported_command" instead of a false success.
+_UNSUPPORTED = (b"clear_csv", b"remove_bot", b"share_data")
+
+
 def _accept(payload, port_kind):
-    """Receiver policy: validate origin updates, and refuse mission commands
-    on a node that is not the master."""
+    """Receiver policy: reject unsupported commands, validate origin updates,
+    and refuse mission commands on a node that is not the master."""
+    if payload.startswith(_UNSUPPORTED):
+        return False, "unsupported_command"
     if payload.startswith(b"origin,"):
         try:
             _, lat, lon = payload.decode("utf-8").split(",")[:3]
@@ -151,13 +159,32 @@ def _status():
         "promoting": _promoting,
         "master_flag": bool(state.master_flag),
         "queued": len(_inbox),
+        "commands": lifecycle.history(8),
         "unconsumed": pending_command.seq > state.last_seq,
+        **replica.status_summary(),
         "last_seq": state.last_seq,
         "uavs": len(state.vehicles),
+        "active_tasks": len(getattr(state, "active_goal_tasks", {})),
     }
 
 
+def _snapshot():
+    """Master -> server: the state a standby needs to take over."""
+    if _role != "master":
+        return False, "not_master", None
+    return True, "snapshot", replica.build_snapshot(NODE_ID, reliable.current_epoch())
+
+
+def _replicate(snap, epoch):
+    """Server -> standby: keep the master's snapshot durably."""
+    if _role == "master":
+        return False, "i_am_master"
+    return replica.store(snap, reliable.current_epoch())
+
+
 reliable.status_provider = _status
+reliable.snapshot_handler = _snapshot
+reliable.replicate_handler = _replicate
 reliable.role_handler = _handle_role
 reliable.accept_policy = _accept
 
@@ -330,6 +357,7 @@ def _promote(entry):
         pending_command.data = entry.payload
         pending_command.address = entry.address
         pending_command.seq += 1
+        lifecycle.register(pending_command.seq, entry)
         _mailbox_entry = entry
 
 
@@ -342,12 +370,12 @@ def _command_feeder():
     while 1:
         with _inbox_cv:
             while not _inbox:
-                _report_started()
+                lifecycle.reconcile()
                 _inbox_cv.wait(0.05)
             entry = _inbox[0]
         while pending_command.seq > state.last_seq:
             time.sleep(0.005)
-        _report_started()
+            lifecycle.reconcile()
         with _inbox_cv:
             if not _inbox or _inbox[0] is not entry:
                 continue  # superseded or discarded while we waited
@@ -355,11 +383,25 @@ def _command_feeder():
         _promote(entry)
 
 
-def _report_started():
-    entry = _mailbox_entry
-    if entry is not None and not entry.started_reported and pending_command.seq <= state.last_seq:
-        entry.started_reported = True
-        _event(entry, "started")
+def _start_lifecycle():
+    """Wire execution-status events to the sender, open the durable journal
+    and mark whatever was in flight before a restart as interrupted."""
+    lifecycle.set_emitter(
+        lambda meta, status, why: reliable.emit_event(
+            sock2, meta.address, meta.sid, meta.seq, status, why
+        )
+    )
+    folder = os.environ.get("SWARM_STATE_DIR") or os.path.join(
+        os.path.expanduser("~"), "Documents", "swarm_env"
+    )
+    name = "legacy" if LEGACY_MODE else "node%s" % NODE_ID
+    replica.configure(os.path.join(folder, "%s_replica.json" % name))
+    lifecycle.open_journal(os.path.join(folder, "%s_journal.jsonl" % name))
+    lifecycle.recover_journal(
+        emit_to=lambda addr, sid, seq, status, why: reliable.emit_event(
+            sock2, addr, sid, seq, status, why
+        )
+    )
 
 
 def start_listener_threads():
@@ -370,6 +412,7 @@ def start_listener_threads():
     before vehicle_connection()/fetch_location() are ever called -- those
     names are only looked up when a "master" message actually arrives, by
     which point the whole program has finished importing)."""
+    _start_lifecycle()
     collision_thread = threading.Thread(target=vehicle_collision_moniter_receive)
     collision_thread.daemon = True
     collision_thread.start()

@@ -6,6 +6,7 @@ whole swarm) still preempts the running foreground mission via
 MissionPreempted."""
 
 from medur_swarm import state
+from medur_swarm.communication import lifecycle
 from medur_swarm.communication.sockets import pending_command
 
 
@@ -16,9 +17,10 @@ class MissionPreempted(Exception):
     command so the outer dispatch loop can process it immediately
     instead of waiting for the interrupted mission to finish."""
 
-    def __init__(self, data, address):
+    def __init__(self, data, address, seq=None):
         self.data = data
         self.address = address
+        self.seq = seq
 
 
 def check_for_new_command(started_seq):
@@ -48,18 +50,27 @@ def check_for_new_command(started_seq):
     )
 
     if pending_command.seq > started_seq:
-        if pending_command.seq > state.handled_concurrent_command_seq and (
-            handle_concurrent_goal_command(pending_command.data)
-            or handle_concurrent_autogoal_command(pending_command.data)
-            or handle_concurrent_search_command(pending_command.data)
-            or handle_concurrent_split_command(pending_command.data)
-            or handle_concurrent_different_command(pending_command.data)
-            or handle_concurrent_remove_command(pending_command.data)
-            or handle_concurrent_add_command(pending_command.data)
-        ):
-            state.handled_concurrent_command_seq = pending_command.seq
-            state.last_seq = pending_command.seq
+        concurrent_seq = pending_command.seq
+        if concurrent_seq > state.handled_concurrent_command_seq:
+            with lifecycle.claiming(concurrent_seq):
+                handled = (
+                    handle_concurrent_goal_command(pending_command.data)
+                    or handle_concurrent_autogoal_command(pending_command.data)
+                    or handle_concurrent_search_command(pending_command.data)
+                    or handle_concurrent_split_command(pending_command.data)
+                    or handle_concurrent_different_command(pending_command.data)
+                    or handle_concurrent_remove_command(pending_command.data)
+                    or handle_concurrent_add_command(pending_command.data)
+                )
+        else:
+            handled = False
+        if handled:
+            state.handled_concurrent_command_seq = concurrent_seq
+            state.last_seq = concurrent_seq
+            lifecycle.concurrent_handled(concurrent_seq)
             return None
         if pending_command.seq <= state.handled_concurrent_command_seq:
             return None
-        raise MissionPreempted(pending_command.data, pending_command.address)
+        raise MissionPreempted(
+            pending_command.data, pending_command.address, pending_command.seq
+        )

@@ -118,6 +118,35 @@ const MasterSelector = () => {
     );
   }
 
+  const masterNode = status.nodes.find((n) => n.id === status.master);
+  const recovery = masterNode?.status?.recovery;
+
+  const resumeRecovery = async () => {
+    if (
+      !window.confirm(
+        `Resume ${recovery.resumable} goal task(s) from the failed master's last state? ` +
+          'Only tasks re-verified against live UAV telemetry are resumed; search/split work and ' +
+          `${recovery.unknown_commands} command(s) with unknown outcome must be re-issued by you.`
+      )
+    ) {
+      return;
+    }
+    try {
+      const res = await send('recover_resume');
+      const out = res?.body?.message;
+      dispatch(
+        out?.ok
+          ? showNotification({
+              message: `Recovery resume sent (replica v${out.version})`,
+              semantics: MessageSemantics.SUCCESS,
+            })
+          : showError(`Recovery not sent: ${out?.reason || 'unknown'}`)
+      );
+    } catch (e) {
+      dispatch(showError(`Recovery failed: ${e?.message}`));
+    }
+  };
+
   const check = pending?.check;
   const reasons = (check?.reasons || []).map((r) => REASONS[r] || r);
 
@@ -131,6 +160,26 @@ const MasterSelector = () => {
           ? ` — waiting to demote UAV ${status.pending_demotions.join(', ')}`
           : ''}
       </Typography>
+      {status.master_health?.lost && (
+        <Typography color='error' style={{ fontWeight: 600 }}>
+          Master UAV {status.master} is NOT responding ({status.master_health.missed}{' '}
+          missed heartbeats). Nothing was promoted automatically — pick a new
+          master below if it has really failed.
+        </Typography>
+      )}
+      {recovery && (
+        <Typography variant='body2' style={{ marginTop: 4 }}>
+          Recovered replica v{recovery.version}: {recovery.resumable} goal
+          task(s) verified,
+          {' '}{recovery.needs_operator} need you to re-issue,
+          {' '}{recovery.unknown_commands} command(s) with unknown outcome.{' '}
+          {recovery.resumable > 0 && (
+            <Button size='small' variant='outlined' onClick={resumeRecovery}>
+              Resume verified goals
+            </Button>
+          )}
+        </Typography>
+      )}
       <Box style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 6 }}>
         {status.nodes.map((n) => {
           const st = n.status || {};
