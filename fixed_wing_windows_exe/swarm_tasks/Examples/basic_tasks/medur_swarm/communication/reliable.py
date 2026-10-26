@@ -18,7 +18,7 @@ through unchanged (legacy / third-party senders keep working, unacked).
 import json
 import threading
 
-_MAGIC = b'{"k":"cmd"'
+_MAGIC = b"{"  # legacy commands are plain text and never start with a brace
 _DEDUP_SESSIONS = 16
 
 _lock = threading.Lock()
@@ -47,10 +47,12 @@ def _reply(sock, address, sid, seq, ok, why=""):
 def unwrap(data, address, sock):
     """Return the legacy payload bytes to dispatch, or None if the datagram
     was consumed here (duplicate, stale epoch or malformed envelope)."""
-    if not data.startswith(_MAGIC):
+    if not data.lstrip().startswith(_MAGIC):
         return data
     try:
         env = json.loads(data.decode("utf-8"))
+        if env.get("k") != "cmd":
+            return data
         sid, seq, epoch = str(env["sid"]), int(env["seq"]), int(env.get("epoch", 0))
         payload = env["p"].encode("utf-8")
     except (ValueError, KeyError, TypeError, UnicodeDecodeError) as e:
