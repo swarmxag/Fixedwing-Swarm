@@ -57,6 +57,7 @@ from .registries import (
 )
 from .version import __version__ as server_version
 from .swarm import *
+from .swarm_link import collect_failures
 from flockwave.server.ext.mavlink.automission import AutoMissionManager
 from flockwave.server.ext.mavlink.enums import MAVCommand
 from typing import List
@@ -1019,6 +1020,7 @@ class SkybrushServer(DaemonApp):
         response = self.message_hub.create_response_or_notification(
             body={}, in_response_to=message
         )
+        delivery_failures = collect_failures()
         parameters = dict(message.body)
         msg = parameters["message"].lower()
         ids = parameters.pop("ids", ())
@@ -1174,6 +1176,11 @@ class SkybrushServer(DaemonApp):
 
         response.body["message"] = result
         response.body["method"] = msg
+        if delivery_failures:
+            # The swarm computer never ACKed (or refused) at least one command
+            # this request sent -- say so instead of reporting success.
+            response.body["delivery"] = {"ok": False, "failures": delivery_failures}
+            print("[swarm_link] request %r not fully delivered: %s" % (msg, delivery_failures))
 
         return response
 
@@ -1184,6 +1191,7 @@ class SkybrushServer(DaemonApp):
         response = self.message_hub.create_response_or_notification(
             body={}, in_response_to=message
         )
+        delivery_failures = collect_failures()
         from .socket.globalVariable import get_coverage_time, get_log_file_path
 
         # Process the body
@@ -1707,6 +1715,11 @@ class SkybrushServer(DaemonApp):
 
         response.body["message"] = result
         response.body["method"] = msg
+        if delivery_failures:
+            # The swarm computer never ACKed (or refused) at least one command
+            # this request sent -- say so instead of reporting success.
+            response.body["delivery"] = {"ok": False, "failures": delivery_failures}
+            print("[swarm_link] request %r not fully delivered: %s" % (msg, delivery_failures))
 
         return response
 

@@ -44,6 +44,17 @@ const { dispatch, getState } = store;
  */
 const messageHub = new MessageHub();
 
+messageHub.onDeliveryFailure = (body) => {
+  const reasons = (body.delivery.failures || [])
+    .map((f) => `${f.address}: ${f.reason}`)
+    .join(', ');
+  dispatch(
+    showError(
+      `Command '${body.method || ''}' NOT delivered to the swarm computer (${reasons}). Resend it.`
+    )
+  );
+};
+
 /* eslint-disable object-shorthand */
 messageHub.registerNotificationHandlers({
   'BCN-INF': (message) =>

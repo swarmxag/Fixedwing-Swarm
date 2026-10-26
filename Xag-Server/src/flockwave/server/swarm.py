@@ -28,7 +28,9 @@ def fetch_file_content(file_path):
     return lines
 
 
-master_udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+from .swarm_link import ReliableUdp
+
+master_udp = ReliableUdp()  # same sendto() API as a socket, but ACKed + retried
 
 adderss = {1: ("127.0.0.1", 12002), 2: ("127.0.0.1", 12008)}
 

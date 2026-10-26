@@ -10,12 +10,15 @@ original script created these sockets/threads, to preserve that ordering.
 
 import json
 import os
+import queue
 import socket
 import threading
+import time
 
 from swarm_tasks.simulation import simulation as sim
 
 from medur_swarm import config, state
+from medur_swarm.communication import reliable
 from medur_swarm.uav import connection as uav_connection
 
 sock2 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -25,6 +28,11 @@ sock2.bind(server_address2)
 sock3 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 server_address3 = ("", 12002)  # receive from .....rx.py
 sock3.bind(server_address3)
+
+
+# A datagram bigger than the recv buffer is dropped (and raises on Windows);
+# search/split payloads carry JSON coverage + ids, so use the UDP maximum.
+_RECV_BUFSIZE = 65535
 
 
 def CHECK_network_connection():
@@ -44,7 +52,10 @@ def CHECK_network_connection():
 
 def vehicle_collision_moniter_receive():
     while 1:
-        raw_index, address = sock3.recvfrom(1024)
+        raw_index, address = sock3.recvfrom(_RECV_BUFSIZE)
+        raw_index = reliable.unwrap(raw_index, address, sock3)
+        if raw_index is None:
+            continue
         print("msg!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!", raw_index)
         decoded_index = raw_index.decode("utf-8")
         print("decoded_index", decoded_index)
@@ -128,12 +139,62 @@ class _CommandMailbox:
 pending_command = _CommandMailbox()
 
 
+_inbox = queue.Queue()
+_promote_lock = threading.Lock()
+_stop_generation = 0  # bumped by every stop; lets the feeder drop a command it already dequeued
+
+
 def _command_listener():
+    """Receive + ACK on the socket thread, then only enqueue. Never blocks on
+    the mission loop, so a retransmit is always ACKed promptly."""
     while 1:
-        data, address = sock2.recvfrom(1050)
+        try:
+            data, address = sock2.recvfrom(_RECV_BUFSIZE)
+        except OSError as e:
+            print("[commands] recv error:", repr(e))
+            continue
+        data = reliable.unwrap(data, address, sock2)
+        if data is None:
+            continue
+        if data == b"stop":
+            # stop supersedes anything still waiting behind the running command.
+            global _stop_generation
+            _stop_generation += 1
+            dropped = 0
+            try:
+                while True:
+                    _inbox.get_nowait()
+                    dropped += 1
+            except queue.Empty:
+                pass
+            if dropped:
+                print("[commands] stop discarded", dropped, "queued command(s)")
+            _promote(data, address)
+        else:
+            _inbox.put((data, address))
+
+
+def _promote(data, address):
+    with _promote_lock:
         pending_command.data = data
         pending_command.address = address
         pending_command.seq += 1
+
+
+def _command_feeder():
+    """Moves queued commands into the single-slot mailbox one at a time, only
+    after the previous one was consumed (state.last_seq caught up). This keeps
+    the mailbox protocol every mission loop relies on unchanged while no
+    longer letting a second datagram overwrite an unread first one."""
+    while 1:
+        data, address = _inbox.get()
+        generation = _stop_generation
+        while pending_command.seq > state.last_seq:
+            time.sleep(0.005)
+        if generation != _stop_generation:
+            print("[commands] discarded by stop:", data[:40])
+            continue
+        _promote(data, address)
 
 
 def start_listener_threads():
@@ -151,3 +212,7 @@ def start_listener_threads():
     command_listener_thread = threading.Thread(target=_command_listener)
     command_listener_thread.daemon = True
     command_listener_thread.start()
+
+    command_feeder_thread = threading.Thread(target=_command_feeder)
+    command_feeder_thread.daemon = True
+    command_feeder_thread.start()

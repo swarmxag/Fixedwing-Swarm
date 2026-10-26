@@ -1157,6 +1157,16 @@ export default class MessageHub {
       if (pendingResponse) {
         pendingResponse.resolve(message);
       }
+
+      // The server reports commands the swarm computer never acknowledged.
+      if (
+        message.body &&
+        message.body.delivery &&
+        message.body.delivery.ok === false &&
+        typeof this.onDeliveryFailure === 'function'
+      ) {
+        this.onDeliveryFailure(message.body);
+      }
     } else {
       // This message is simply a notification, so let's check whether there
       // is an associated notification handler and call that
