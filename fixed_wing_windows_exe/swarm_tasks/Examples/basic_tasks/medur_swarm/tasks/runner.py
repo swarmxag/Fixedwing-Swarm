@@ -630,7 +630,7 @@ def _drive_guided_circle_task(i, b, task, completed):
     # all, so the bot lapped the ring at full speed regardless of whether
     # the real aircraft (which can't match a tight ring's turn rate) was
     # anywhere close to keeping up, and the gap between them only grew.
-    advance_bot_with_uav_pacing(i, b, goal_position, label="guided_circle")
+    advance_bot_with_uav_pacing(i, b, goal_position, label="guided_circle", leash=False)
     dx = abs(goal_position[0] - b.x)
     dy = abs(goal_position[1] - b.y)
     if dx <= 5 and dy <= 5:
@@ -639,7 +639,14 @@ def _drive_guided_circle_task(i, b, task, completed):
             if i in state.active_goal_tasks:
                 state.active_goal_tasks[i]["circle_index"] = circle_index
 
-    _drive_vehicle_towards(i, b, pursuit_target_with_avoidance(i, b))
+    # Loiter phase: command the GOAL POINT itself (the ring centre), never the
+    # transit look-ahead. ArduPilot Plane in GUIDED orbits a position target at
+    # its own LIVE WP_LOITER_RAD, so the surveillance circle is centred on the
+    # goal and follows a mid-flight radius change by itself. The look-ahead is
+    # for transit only: here it sits ahead of a bot lapping the ring, so the
+    # aircraft would orbit that point instead of the goal. The bot keeps lapping
+    # circle_points above purely for the plot overlay.
+    _drive_vehicle_towards(i, b, center)
 
 
 def _drive_mission_task(i, b, task, completed):
@@ -680,10 +687,9 @@ def _drive_mission_task(i, b, task, completed):
     # Pacing toward next_goal instead keeps the bot -- and therefore the
     # pursuit target -- moving, without touching line_index itself; that
     # still only advances once the lead cap below allows it.
-    already_at_goal = (
-        abs(goal_position[0] - b.x) <= sim_radius
-        and abs(goal_position[1] - b.y) <= sim_radius
-    )
+    # Same box as the uav_reached_waypoint call below (tighter on curve
+    # points): a wider one parks the bot short of a curve.
+    already_at_goal = bot_at_waypoint(b, goal_position, sim_radius, is_curve)
     pacing_target = (
         next_goal if (already_at_goal and next_goal is not None) else goal_position
     )

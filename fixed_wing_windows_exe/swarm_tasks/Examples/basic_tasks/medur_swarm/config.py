@@ -29,7 +29,18 @@ PORT_DICT = {
     8: 14558,
     9: 14559,
     10: 14560,
+    11: 14561,
+    12: 14562,
+    13: 14563,
+    14: 14564,
+    15: 14565,
 }
+
+# Parallel connection (uav/connection.py). None -> one worker per endpoint.
+CONNECT_MAX_WORKERS = None
+# Whole-cycle cap = longest heartbeat timeout + this. Covers dronekit's
+# unbounded "wait until board has booted" step after the first heartbeat.
+CONNECT_DEADLINE_GRACE_S = 60
 
 HEARTBEAT_IP = [
     "192.168.0.151",
@@ -42,11 +53,16 @@ HEARTBEAT_IP = [
     "192.168.0.158",
     "192.168.0.159",
     "192.168.0.160",
+    "192.168.0.161",
+    "192.168.0.162",
+    "192.168.0.163",
+    "192.168.0.164",
+    "192.168.0.165",
 ]
 
 # --- Altitude staggering ---------------------------------------------------
 
-HOME_HEIGHT = [50, 60, 70, 80, 90, 100, 110, 120, 130, 140]
+HOME_HEIGHT = [50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 170, 180, 190]
 
 # --- Coordinate conversion --------------------------------------------------
 
@@ -56,6 +72,11 @@ RADIUS_OF_EARTH = 6378100.0  # metres
 # --- Per-tick sleep, keyed by current fleet size ---------------------------
 
 SLEEP_TIMES = {
+    15: 0.1,
+    14: 0.1,
+    13: 0.1,
+    12: 0.1,
+    11: 0.1,
     10: 0.1,
     9: 0.1,
     8: 0.11,
@@ -105,6 +126,36 @@ UAV_FOLLOW_RAMP_M = 100.0
 # bot cover exactly what the aircraft covers, so the lead between them stays
 # constant by construction -- no runaway lead to brake for, and no overrun.
 GROUNDSPEED_PACING = True
+
+# --- Bot <-> UAV leash (uav/guidance.py _leash_factor) ----------------------
+#
+# Groundspeed pacing alone never lets the bot react to WHERE its UAV is, so
+# once the UAV fell behind (a turn, a slow climb, a late handoff) the bot kept
+# going at full speed and the gap only grew (observed: lead -1.3 km). The leash
+# scales the bot's step so it holds UAV_LOOKAHEAD_M ahead of its UAV: it slows
+# for a lagging UAV and pulls ahead of one catching up.
+LEASH_PACING = True
+# Waypoint distance ahead of the BOT, metres; also the gap the leash holds.
+# None -> each UAV's live WP_LOITER_RAD.
+UAV_LOOKAHEAD_M = None
+# Gap error (m) over which the factor goes from 1.0 to its clamp.
+LEASH_RAMP_M = 300.0
+LEASH_MIN_FACTOR = 0.15  # never 0: a frozen bot freezes the waypoint
+LEASH_MAX_FACTOR = 1.5
+
+# --- Bot <-> bot avoidance (uav/guidance.py smooth_bot_avoidance) -----------
+#
+# Replaces disp_field(neighbourhood_radius=100) in advance_bot_with_uav_pacing,
+# whose radial 150/r push cancelled the goal pull head-on and parked two bots
+# against each other. This one also slides each bot sideways past the other.
+# False -> the old disp_field behaviour.
+BOT_SMOOTH_AVOIDANCE = True
+# Sim units (half-scale): 50 -> avoidance starts 100 m apart.
+BOT_AVOID_RADIUS = 50.0
+# Push straight away at contact; the goal pull is ~15 for comparison.
+BOT_AVOID_GAIN = 20.0
+# Sideways slide at contact -- what actually gets the bots past each other.
+BOT_AVOID_TANGENT_GAIN = 25.0
 # Upper clamp on the measured dt, so one stalled tick (GUI redraw, mission
 # preempt, a blocking telemetry read) advances the bot by at most this much
 # time's worth of travel instead of teleporting it forward.

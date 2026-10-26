@@ -1759,9 +1759,7 @@ class SkybrushServer(DaemonApp):
                         coords = GPSCoordinate(
                             lat=res[cur][0], lon=res[cur][1], ahl=alt
                         )
-                        await uav.driver._send_fly_to_target_signal_single(
-                            uav, coords
-                        )
+                        await uav.driver._send_fly_to_target_signal_single(uav, coords)
                     await sleep(5)
                     for i, id in enumerate(ids):
                         uav = self.find_uav_by_id(id)
@@ -1856,7 +1854,7 @@ class SkybrushServer(DaemonApp):
             speed = parameters.pop("speed")
             from .VTOL.new_left import generate_XY_Positions
 
-            res = generate_XY_Positions(10, 100, 0, point)
+            res = generate_XY_Positions(15, 100, 0, point)
             log.warning(str(res))
             # protected=True: a fault in this per-sortie helper is logged and
             # swallowed instead of cancelling the application's main nursery.

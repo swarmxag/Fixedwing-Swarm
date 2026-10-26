@@ -31,11 +31,12 @@ class Cmd:
             if dir_ != None:
                 print("Vector suplied explicitly; Ignoring dir_...\n")
             self.vec = np.array([vec[0], vec[1]]) * speed
-            self.dir = np.arctan(float(vec[1]) / (float(vec[0]) + 0.00001))
-
-            if vec[0] < 0:
-                self.dir += np.pi
-                # Needed because arctan codomain is [-pi/2,pi/2]
+            # arctan2 picks the quadrant itself. The old arctan(y / (x + 1e-5))
+            # plus "+pi if x < 0" pointed the wrong way for -1e-5 < x < 0: the
+            # offset made the denominator positive while the x < 0 test still
+            # added pi -- a bot flying ~due north/south flipped 180 deg every
+            # tick and stalled in place.
+            self.dir = np.arctan2(float(vec[1]), float(vec[0]))
 
             self.speed = np.linalg.norm(self.vec)
         else:

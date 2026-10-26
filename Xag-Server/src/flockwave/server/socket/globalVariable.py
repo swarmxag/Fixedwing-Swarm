@@ -47,21 +47,21 @@ vtol_takeoff_height = {
     15: 75,
 }
 alts: dict[int, int] = {
-    1: 50,
-    2: 60,
-    3: 70,
-    4: 80,
-    5: 90,
-    6: 100,
-    7: 110,
-    8: 120,
-    9: 130,
-    10: 140,
-    11: 150,
-    12: 160,
-    13: 170,
-    14: 180,
-    15: 190,
+    1: 100,
+    2: 110,
+    3: 120,
+    4: 130,
+    5: 140,
+    6: 150,
+    7: 160,
+    8: 170,
+    9: 180,
+    10: 190,
+    11: 200,
+    12: 210,
+    13: 220,
+    14: 230,
+    15: 240,
 }
 
 drone = {
@@ -150,8 +150,15 @@ def getClock():
 
 
 def changeAlts(paramalts):
+    # MERGE, never replace: a GCS that sends a 10-entry table (or a selection)
+    # must not wipe UAVs 11..15, which check_height would then skip as having
+    # "no entry in alts". Keys are normalised to int to match check_height.
     global alts
-    alts = paramalts
+    for key, value in dict(paramalts or {}).items():
+        try:
+            alts[int(key)] = value
+        except (TypeError, ValueError):
+            print(f"[changeAlts] ignoring unusable UAV id {key!r}")
     return alts
 
 

@@ -12,6 +12,7 @@ import time
 from dronekit import LocationGlobalRelative
 
 import locatePosition
+from swarm_tasks.controllers.command import Cmd
 from swarm_tasks.modules.dispersion import disp_field
 from swarm_tasks.tasks import area_coverage as cvg
 
@@ -70,6 +71,20 @@ def compute_lookahead_target(x, y, theta, rx, ry, distance, min_lead=None):
     target_along = max(distance, along + min_lead)
 
     return lookahead_point(x, y, theta, target_along)
+
+
+def lookahead_distance_m(i):
+    """How far ahead of the BOT the UAV's waypoint sits, in metres:
+    config.UAV_LOOKAHEAD_M, or this UAV's live WP_LOITER_RAD when unset. Also
+    the gap the leash (see _leash_factor) holds the bot ahead of its UAV."""
+    return config.UAV_LOOKAHEAD_M or _uav_loiter_radius_m(i)
+
+
+def lookahead_distance_sim(i):
+    """lookahead_distance_m in sim units (half-scale). Was passed the metres
+    value state._loiter_radius directly, which put the waypoint twice as far
+    ahead as intended -- and at the fleet-max radius read once at connect."""
+    return lookahead_distance_m(i) / 2.0
 
 
 def real_uav_avoidance_vector(i):
@@ -139,7 +154,7 @@ def pursuit_target_with_avoidance(i, b, distance=700):
         print("[pursuit-target] telemetry unavailable for vehicle", i, e)
         return None
     tx, ty = compute_lookahead_target(
-        b.x, b.y, b.theta, rx / 2, ry / 2, distance=state._loiter_radius
+        b.x, b.y, b.theta, rx / 2, ry / 2, distance=lookahead_distance_sim(i)
     )
     # avoid_x, avoid_y = real_uav_avoidance_vector(i)
     return (tx, ty)
@@ -267,7 +282,92 @@ def _groundspeed_step_size(i, b, cmd):
     return (groundspeed * dt / 2.0) / magnitude
 
 
-def advance_bot_with_uav_pacing(i, b, goal, label=""):
+def smooth_bot_avoidance(i, b, goal):
+    """Bot-to-bot avoidance that steers bots AROUND each other.
+
+    disp_field (radial 150/r) pushes straight apart, while the goal pull is a
+    constant ~15. Head-on, or with one bot in the other's path, the two cancel
+    at ~10 sim units and both bots park against each other; the groundspeed
+    step then moves a full step along whatever noise is left, so they jitter
+    in place instead of passing.
+
+    Here each neighbour inside BOT_AVOID_RADIUS adds
+        weight * (BOT_AVOID_GAIN * away + BOT_AVOID_TANGENT_GAIN * sideways)
+    with weight = 1 - d/R: zero at the edge and bounded at contact, so there
+    is no 1/r blow-up to oscillate against. "sideways" is perpendicular to
+    this bot's own goal direction, AWAY from the side the neighbour is on, so
+    the bot slides past instead of being pushed back. With the neighbour dead
+    ahead, the lower index steers right and the higher one left: head-on,
+    both bots then pass on the same hand instead of mirroring each other.
+
+    Returns an (x, y) vector in the same units as the Cmd fields it is added to.
+    """
+    gx, gy = goal[0] - b.x, goal[1] - b.y
+    g_norm = math.hypot(gx, gy)
+    if g_norm > 1e-9:
+        gx, gy = gx / g_norm, gy / g_norm
+    else:
+        gx, gy = math.cos(b.theta), math.sin(b.theta)
+    radius = config.BOT_AVOID_RADIUS
+    vx = vy = 0.0
+    for j, other in enumerate(state.s.swarm):
+        if j == i:
+            continue
+        rx, ry = other.x - b.x, other.y - b.y
+        d = math.hypot(rx, ry)
+        if d >= radius:
+            continue
+        if d < 1e-9:
+            # Exactly overlapping: no direction to push along, use the heading.
+            rx, ry, d = -math.cos(b.theta), -math.sin(b.theta), 1e-9
+        weight = 1.0 - d / radius
+        away_x, away_y = -rx / max(d, 1e-9), -ry / max(d, 1e-9)
+        # cross > 0: neighbour on this bot's LEFT (relative to its goal
+        # direction) -> slide right, and vice versa.
+        cross = gx * ry - gy * rx
+        if abs(cross) < 1e-6 * max(d, 1.0):
+            steer_right = i < j  # dead ahead: deterministic tie-break
+        else:
+            steer_right = cross > 0
+        if steer_right:
+            side_x, side_y = gy, -gx
+        else:
+            side_x, side_y = -gy, gx
+        vx += weight * (config.BOT_AVOID_GAIN * away_x + config.BOT_AVOID_TANGENT_GAIN * side_x)
+        vy += weight * (config.BOT_AVOID_GAIN * away_y + config.BOT_AVOID_TANGENT_GAIN * side_y)
+    return vx, vy
+
+
+def _leash_factor(i, dis, signed_lead):
+    """Multiplier on the bot's groundspeed step that keeps the bot
+    lookahead_distance_m(i) AHEAD of its real UAV -- the bot and the drone
+    move according to each other instead of the bot running on alone.
+
+    gap is the bot's lead over the UAV in metres: +dis while the UAV is behind
+    the bot (signed_lead <= 0), -dis once it has passed it. Using dis for the
+    magnitude (not the along-heading projection) keeps a UAV sitting off to the
+    side mid-turn counted as distance still to close.
+
+        gap > lookahead  -> bot too far ahead: slow down (to LEASH_MIN_FACTOR,
+                            never 0 -- a frozen bot freezes the waypoint and
+                            the fixed-wing loiters on it)
+        gap = lookahead  -> 1.0: bot moves at the UAV's own speed
+        gap < lookahead  -> UAV catching up / passed: speed up (to
+                            LEASH_MAX_FACTOR) to restore the lead
+
+    1.0 (no correction) without telemetry to measure it.
+    """
+    if not config.LEASH_PACING or signed_lead is None:
+        return 1.0
+    if dis is None or not math.isfinite(dis):
+        return 1.0
+    gap = dis if signed_lead <= 0 else -dis
+    error = gap - lookahead_distance_m(i)
+    factor = 1.0 - error / config.LEASH_RAMP_M
+    return max(config.LEASH_MIN_FACTOR, min(config.LEASH_MAX_FACTOR, factor))
+
+
+def advance_bot_with_uav_pacing(i, b, goal, label="", leash=True):
     """Advance the virtual leader at full pace, with a bounded lead.
 
     A large UAV--bot separation can be lateral (for example, while a
@@ -301,7 +401,10 @@ def advance_bot_with_uav_pacing(i, b, goal, label=""):
     # Built BEFORE step_size because groundspeed pacing scales against this
     # command's own magnitude (see _groundspeed_step_size).
     cmd = cvg.goal_area_cvg(i, b, goal)
-    cmd += disp_field(b, neighbourhood_radius=100)
+    if config.BOT_SMOOTH_AVOIDANCE:
+        cmd += Cmd(list(smooth_bot_avoidance(i, b, goal)))
+    else:
+        cmd += disp_field(b, neighbourhood_radius=100)
 
     # Bot advances at the real aircraft's ground speed, so the two stay
     # locked together regardless of how fast this loop happens to tick.
@@ -309,6 +412,13 @@ def advance_bot_with_uav_pacing(i, b, goal, label=""):
     step_size = _groundspeed_step_size(i, b, cmd)
     if step_size is None:
         step_size = config.UAV_MAX_VIRTUAL_STEP
+
+    # Leash: scale that pace by where the UAV actually is relative to the bot,
+    # so the bot waits for a lagging UAV and pulls ahead of one catching up.
+    # leash=False for the loiter ring, where the bot only draws the overlay
+    # and the UAV orbits the goal centre instead of following the bot.
+    leash_factor = _leash_factor(i, dis, signed_lead) if leash else 1.0
+    step_size *= leash_factor
 
     # --- UAV<->bot DISTANCE BRAKE, still disabled ---------------------
     # This slowed the bot down as a function of UAV<->bot separation, which
@@ -350,6 +460,7 @@ def advance_bot_with_uav_pacing(i, b, goal, label=""):
         print(
             f"[bot-sync] label={label} bot={i} "
             f"dis={dis:.1f}m lead={lead_text} "
+            f"leash={leash_factor:.2f} "
             f"step={step_size:.2f} cmd_speed={cmd.speed:.3f} "
             f"moved={moved_m:.2f}m goal_dist={goal_distance_m:.2f}m "
             f"pos=({b.x:.2f},{b.y:.2f}) goal=({goal[0]:.2f},{goal[1]:.2f})"
@@ -513,6 +624,19 @@ def log_curve_guidance(i, line_index, is_curve, curve_guidance):
         )
 
 
+def bot_at_waypoint(b, goal, sim_radius, is_curve=False):
+    """The bot-side "has arrived" box, identical to uav_reached_waypoint's.
+
+    Callers use this to decide when to start pacing toward the NEXT point. It
+    must be the same box the reach test uses: with a wider one (search used
+    15 against the curve test's 3), the bot turns for the next curve sample
+    while still outside the current point's box, cuts the corner, never
+    "reaches" it, and parks on the next sample -- the index never advances.
+    """
+    radius = config.UAV_CURVE_POINT_SWITCH_RADIUS if is_curve else sim_radius
+    return abs(goal[0] - b.x) <= radius and abs(goal[1] - b.y) <= radius
+
+
 def uav_reached_waypoint(
     i, b, goal, sim_radius=15.0, next_goal=None, is_curve=False, is_final=False
 ):
@@ -525,15 +649,7 @@ def uav_reached_waypoint(
     correct hand-off condition for all in-route points; real-UAV confirmation
     is needed only before declaring the final mission point complete.
     """
-    if is_curve:
-        bot_reached = (
-            abs(goal[0] - b.x) <= config.UAV_CURVE_POINT_SWITCH_RADIUS
-            and abs(goal[1] - b.y) <= config.UAV_CURVE_POINT_SWITCH_RADIUS
-        )
-    else:
-        bot_reached = (
-            abs(goal[0] - b.x) <= sim_radius and abs(goal[1] - b.y) <= sim_radius
-        )
+    bot_reached = bot_at_waypoint(b, goal, sim_radius, is_curve)
     if not is_final:
         return bot_reached, None
 

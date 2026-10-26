@@ -342,5 +342,5 @@ def _sync_once(yaml_path):
 if __name__ == "__main__":
     terrain = TerrainManager(config.TERRAIN_DIR)
     # print("Elevation:", terrain.get_elevation(26.956866716234416, 70.73133800961695), "meters")
-    terrain.download_range(26.956866716234416, 70.73133800961695, 100)
+    terrain.download_range(27.448812, 87.896140, 100)
     # terrain.download_range(12.989756, 80.164780, 5)

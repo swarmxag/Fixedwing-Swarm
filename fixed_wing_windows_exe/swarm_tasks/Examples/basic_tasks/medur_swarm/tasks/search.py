@@ -25,6 +25,8 @@ from medur_swarm.utils import (
 )
 from medur_swarm.uav.guidance import (
     advance_bot_with_uav_pacing,
+    bot_at_waypoint,
+    lookahead_distance_sim,
     real_uav_avoidance_vector,
     signed_uav_lead,
     uav_reached_waypoint,
@@ -535,7 +537,10 @@ def run_search_command(data):
             # without touching grid_path_array[i] itself; that still only
             # advances once uav_reached_waypoint/the lead cap below allow
             # it.
-            already_at_goal = abs(goal[0] - b.x) <= 15 and abs(goal[1] - b.y) <= 15
+            # Same box as uav_reached_waypoint below (3 on curve points, not
+            # 15): a wider one turned the bot for the next curve sample before
+            # it reached this one, so it parked short of the curve forever.
+            already_at_goal = bot_at_waypoint(b, goal, 15, is_curve)
             pacing_target = (
                 next_goal if (already_at_goal and next_goal is not None) else goal
             )
@@ -603,7 +608,6 @@ def run_search_command(data):
                     state.grid_path_array[i] += 1
                     print("grid_path_array", state.grid_path_array)
             if state.master_flag:
-                _uav_loiter_radius_m
                 # Pursuit point: a fixed distance ahead of the bot along its
                 # own heading, that the real UAV closes on -- never a point
                 # that runs away from it, and never one that falls behind
@@ -618,7 +622,12 @@ def run_search_command(data):
                     state.origin, config.END_DISTANCE, [lat_v, lon_v]
                 )
                 tx, ty = compute_lookahead_target(
-                    b.x, b.y, b.theta, rx / 2, ry / 2, distance=state._loiter_radius
+                    b.x,
+                    b.y,
+                    b.theta,
+                    rx / 2,
+                    ry / 2,
+                    distance=lookahead_distance_sim(i),
                 )
                 # Collision avoidance: nudge the target away from every
                 # OTHER real UAV's live GPS position within range. This is

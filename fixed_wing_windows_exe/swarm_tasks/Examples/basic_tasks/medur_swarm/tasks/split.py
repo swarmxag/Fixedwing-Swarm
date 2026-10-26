@@ -27,6 +27,8 @@ from medur_swarm.utils import (
 )
 from medur_swarm.uav.guidance import (
     advance_bot_with_uav_pacing,
+    bot_at_waypoint,
+    lookahead_distance_sim,
     real_uav_avoidance_vector,
     signed_uav_lead,
     uav_reached_waypoint,
@@ -546,7 +548,9 @@ def _run_split_movement(selected_uav_ids):
             # keeps the bot -- and therefore the pursuit target -- moving,
             # without touching grid_path_array[i] itself; that still only
             # advances once the lead cap below allows it.
-            already_at_goal = abs(goal[0] - b.x) <= 5 and abs(goal[1] - b.y) <= 5
+            # Same box as the uav_reached_waypoint call above (3 on curve
+            # points): a wider one parks the bot short of a curve.
+            already_at_goal = bot_at_waypoint(b, goal, 5, is_curve)
             pacing_target = (
                 next_goal if (already_at_goal and next_goal is not None) else goal
             )
@@ -607,7 +611,7 @@ def _run_split_movement(selected_uav_ids):
                     state.origin, config.END_DISTANCE, [lat_v, lon_v]
                 )
                 tx, ty = compute_lookahead_target(
-                    b.x, b.y, b.theta, rx / 2, ry / 2, distance=state._loiter_radius
+                    b.x, b.y, b.theta, rx / 2, ry / 2, distance=lookahead_distance_sim(i)
                 )
                 # Collision avoidance: nudge the target away from every
                 # OTHER real UAV's live GPS position within range. Computed

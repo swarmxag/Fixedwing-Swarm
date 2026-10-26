@@ -24,8 +24,8 @@ master_num = 0
 master_flag = True
 file_name = None  # no site preset -- operator draws a fence when enabling swarm
 
-heartbeat_ip_timeout = [30] * 10
-slave_heal_ip = ["192.168.0.153"] * 10
+heartbeat_ip_timeout = [30] * 15
+slave_heal_ip = ["192.168.0.153"] * 15
 
 # --- Origin / coordinate frame ----------------------------------------------
 
@@ -36,7 +36,7 @@ origin = None  # set at startup from rectangles.yaml if present, else on fence d
 num_bots = 10
 vehicles = []
 pos_array = []
-robots = [(0, 0)] * 10
+robots = [(0, 0)] * 15
 
 # sys_id -> stable vehicle/topology state
 uav_registry = {}
@@ -58,7 +58,23 @@ uav_home_pos = []
 
 same_height = 100
 same_alt_flag = False
-different_height = [200, 210, 220, 230, 240, 310, 300, 310, 300, 310]
+different_height = [
+    200,
+    210,
+    220,
+    230,
+    240,
+    310,
+    300,
+    310,
+    300,
+    310,
+    320,
+    330,
+    340,
+    350,
+    360,
+]
 
 # --- Simulation / GUI --------------------------------------------------------
 
