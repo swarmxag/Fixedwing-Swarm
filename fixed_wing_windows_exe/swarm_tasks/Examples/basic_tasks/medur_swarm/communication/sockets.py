@@ -60,7 +60,10 @@ _RECV_BUFSIZE = 65535
 
 
 def CHECK_network_connection():
-    for i, iter_follower in enumerate(state.heartbeat_ip_timeout):
+    # Never index past the configured heartbeat IPs: a config.py with fewer
+    # addresses than timeout slots used to abort the whole promotion here.
+    checked = min(len(state.heartbeat_ip_timeout), len(config.HEARTBEAT_IP))
+    for i in range(checked):
         count_flag = "-n" if sys.platform.startswith("win") else "-c"
         response = os.system("ping %s 1 %s" % (count_flag, config.HEARTBEAT_IP[i]))
         if response == 0:
@@ -98,7 +101,15 @@ def _become_master():
     except Exception as e:
         state.master_flag = False
         _role = "standby"
-        print("[role] promotion FAILED, staying standby:", repr(e))
+        import traceback
+
+        traceback.print_exc()
+        print(
+            "[role] promotion FAILED, staying standby:", repr(e),
+            "| vehicles connected:", len(state.vehicles),
+            "| uav_home_pos:", len(state.uav_home_pos),
+            "| origin:", state.origin,
+        )
     finally:
         _promoting = False
 

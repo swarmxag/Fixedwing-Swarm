@@ -1109,7 +1109,9 @@ def goal_socket(goal_num, direction, radius, ids=None):
     return True
 
 
-def autogoal_socket(goal_num, direction, radius, ids=None, bearing=90, safety_margin=50):
+def autogoal_socket(
+    goal_num, direction, radius, ids=None, bearing=90, safety_margin=50
+):
     """'Automate Goals' -- one operator point fans out into one
     non-overlapping loiter circle per selected UAV on the swarm computer
     (see medur_swarm/goal_point_generator.generate_loiter_goal_points).

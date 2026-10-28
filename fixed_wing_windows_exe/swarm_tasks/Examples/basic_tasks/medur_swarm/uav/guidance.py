@@ -333,8 +333,12 @@ def smooth_bot_avoidance(i, b, goal):
             side_x, side_y = gy, -gx
         else:
             side_x, side_y = -gy, gx
-        vx += weight * (config.BOT_AVOID_GAIN * away_x + config.BOT_AVOID_TANGENT_GAIN * side_x)
-        vy += weight * (config.BOT_AVOID_GAIN * away_y + config.BOT_AVOID_TANGENT_GAIN * side_y)
+        vx += weight * (
+            config.BOT_AVOID_GAIN * away_x + config.BOT_AVOID_TANGENT_GAIN * side_x
+        )
+        vy += weight * (
+            config.BOT_AVOID_GAIN * away_y + config.BOT_AVOID_TANGENT_GAIN * side_y
+        )
     return vx, vy
 
 

@@ -17,21 +17,7 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 PKG = os.path.dirname(HERE)
 REPO = os.path.abspath(os.path.join(PKG, *[".."] * 5))
-LINK = os.path.join(REPO, "Xag-Server", "src", "flockwave", "server", "swarm_link.py")
-
-spec = importlib.util.spec_from_file_location("swarm_link_r", LINK)
-link = importlib.util.module_from_spec(spec)
-sys.modules["swarm_link_r"] = link
-spec.loader.exec_module(link)
-
-PORTS = {1: (12008, 12002), 2: (12018, 12012)}
-IPS = {1: "127.0.0.1", 2: "127.0.0.2"}
-
-
-class Node:
-    def __init__(self, node_id, busy=0.0):
-        self.id, self.busy = node_id, busy
-        self.out = tempfile.mktemp(suffix=".log")
+LINK = os.path.join(REPO, "(suffix=".log")
         open(self.out, "wb").close()
         self.proc = None
 
@@ -54,7 +40,21 @@ class Node:
 
     def got(self, wait=0.4):
         time.sleep(wait)
-        with open(self.out, "rb") as f:
+        with open(self.out, "rb") as Xag-Server", "src", "flockwave", "server", "swarm_link.py")
+
+spec = importlib.util.spec_from_file_location("swarm_link_r", LINK)
+link = importlib.util.module_from_spec(spec)
+sys.modules["swarm_link_r"] = link
+spec.loader.exec_module(link)
+
+PORTS = {1: (12008, 12002), 2: (12018, 12012)}
+IPS = {1: "127.0.0.1", 2: "127.0.0.2"}
+
+
+class Node:
+    def __init__(self, node_id, busy=0.0):
+        self.id, self.busy = node_id, busy
+        self.out = tempfile.mktempf:
             return [l for l in f.read().split(b"\n") if l]
 
 

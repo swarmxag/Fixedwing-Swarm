@@ -1180,7 +1180,10 @@ class SkybrushServer(DaemonApp):
             # The swarm computer never ACKed (or refused) at least one command
             # this request sent -- say so instead of reporting success.
             response.body["delivery"] = {"ok": False, "failures": delivery_failures}
-            print("[swarm_link] request %r not fully delivered: %s" % (msg, delivery_failures))
+            print(
+                "[swarm_link] request %r not fully delivered: %s"
+                % (msg, delivery_failures)
+            )
 
         return response
 
@@ -1743,7 +1746,10 @@ class SkybrushServer(DaemonApp):
             # The swarm computer never ACKed (or refused) at least one command
             # this request sent -- say so instead of reporting success.
             response.body["delivery"] = {"ok": False, "failures": delivery_failures}
-            print("[swarm_link] request %r not fully delivered: %s" % (msg, delivery_failures))
+            print(
+                "[swarm_link] request %r not fully delivered: %s"
+                % (msg, delivery_failures)
+            )
 
         return response
 

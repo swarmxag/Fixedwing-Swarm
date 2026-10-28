@@ -9,6 +9,7 @@ these unconditionally -- every function re-checks `data` itself and is a
 no-op when it doesn't match.
 """
 
+import base64
 import csv
 import os
 import shutil
@@ -32,11 +33,28 @@ def apply_origin_update(data):
     print("Origin updated dynamically:", state.origin)
 
 
+def _store_received_fence(encoded, path):
+    """`geofence,<base64 yaml>`: the server sends the rectangles.yaml it just
+    wrote, because this computer cannot read the server's disk. Checked before
+    it replaces the current file, written atomically."""
+    raw = base64.b64decode(encoded, validate=True)
+    world = yaml.safe_load(raw)
+    float(world["size"]["x"]), float(world["size"]["y"])
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "wb") as f:
+        f.write(raw)
+    os.replace(tmp, path)
+    print(f"Fence file received and stored at {path} ({len(raw)} bytes)")
+
+
 def reload_geofence(data):
-    if data != b"geofence":
+    if data != b"geofence" and not data.startswith(b"geofence,"):
         return
     try:
         rectangles_path = config.RECTANGLES_PATH
+        if data.startswith(b"geofence,"):
+            _store_received_fence(data[len(b"geofence,"):], rectangles_path)
         with open(rectangles_path) as f:
             world_data = yaml.safe_load(f)
         new_size = (world_data["size"]["x"], world_data["size"]["y"])
