@@ -11,6 +11,22 @@ import messageHub from '~/message-hub';
 import { handleUnsafeTerrainMessage } from './handlers';
 
 /**
+ * The "Calculate" button: asks the server to use `alt` (metres above home) as
+ * the safety altitude of every UAV and recalculate the unsafe terrain. Nothing
+ * is sent to the UAVs; the new areas arrive as the usual broadcast.
+ *
+ * @param {number} alt  altitude from the Takeoff input
+ * @returns {Promise<object>} the response body (`status` "ok", "pending" or "error")
+ */
+export async function requestTerrainCalculation(alt) {
+  const response = await messageHub.sendMessage(
+    { type: 'X-TERRAIN-CALC-REQ', alt },
+    { timeout: 10 }
+  );
+  return response?.body ?? { status: 'error', error: 'No response' };
+}
+
+/**
  * @param {Function} dispatch  the Redux dispatch function
  * @returns {Promise<void>}
  */

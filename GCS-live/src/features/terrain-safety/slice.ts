@@ -10,7 +10,7 @@ import { type ReadonlyDeep } from 'type-fest';
 import { type UnsafeTerrain } from './areas';
 
 type TerrainSafetySliceState = ReadonlyDeep<{
-  /** Whether the unsafe areas and their legend are shown on the map (off until the operator turns it on in the Swarm panel) */
+  /** Whether the red unsafe areas are drawn on the map (a user preference) */
   visible: boolean;
 
   /**
@@ -21,7 +21,7 @@ type TerrainSafetySliceState = ReadonlyDeep<{
 }>;
 
 const initialState: TerrainSafetySliceState = {
-  visible: false,
+  visible: true,
   unsafeTerrain: undefined,
 };
 

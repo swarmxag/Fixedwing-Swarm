@@ -6,6 +6,7 @@ import locatePosition
 from dronekit import connect, LocationGlobalRelative
 
 from medur_swarm import config, state
+from medur_swarm.uav import link_monitor, topology
 from medur_swarm.uav.connection import connection_string_for_sysid
 from medur_swarm.uav.telemetry import _resync_bot_position
 
@@ -64,21 +65,34 @@ def normalize_active_uav_order():
 
 def add_uav_to_swarm(sys_id):
     try:
+        sys_id = int(sys_id)
+        connection_str = connection_string_for_sysid(sys_id)
+        print("[add-link] connection", sys_id, connection_str)
+        if link_monitor.reconnecting(sys_id):
+            print("[add-link] UAV", sys_id, "is already being reconnected automatically")
+            return False
+        # connect() can take 30 s+ (heartbeat wait + parameter download).
+        # Holding the topology/task locks through it froze every other UAV's
+        # guidance for that long, so connect first and lock only the update.
+        with state.swarm_topology_lock:
+            old = (
+                state.vehicles[state.pos_array.index(sys_id)]
+                if sys_id in state.pos_array
+                else None
+            )
+        if old is not None:
+            try:
+                old.close()  # frees its UDP port for the new link
+            except Exception:
+                pass
+        vehicle = connect(connection_str, baud=115200, heartbeat_timeout=30,source_system=253)
+        link_monitor.attach(vehicle)
         # The topology and active task indexes must stay in the same frame.
         # active_goal_tasks_lock is initialized before commands can arrive.
         with state.swarm_topology_lock, state.active_goal_tasks_lock:
-            sys_id = int(sys_id)
-            connection_str = connection_string_for_sysid(sys_id)
-            print("[add-link] connection", sys_id, connection_str)
             if sys_id in state.pos_array:
                 idx = state.pos_array.index(sys_id)
-                try:
-                    state.vehicles[idx].close()
-                except Exception:
-                    pass
-                state.vehicles[idx] = connect(
-                    connection_str, baud=115200, heartbeat_timeout=30
-                )
+                state.vehicles[idx] = vehicle
                 state.uav_registry.setdefault(sys_id, {})["vehicle"] = state.vehicles[idx]
                 state.uav_registry[sys_id]["active"] = True
                 state.uav_registry[sys_id]["index"] = idx
@@ -91,7 +105,6 @@ def add_uav_to_swarm(sys_id):
                 _resync_bot_position(idx, force=True)
                 print("[add-link] reconnected active UAV", sys_id, "index", idx)
                 return True
-            vehicle = connect(connection_str, baud=115200, heartbeat_timeout=30)
             lat = vehicle.location.global_relative_frame.lat
             lon = vehicle.location.global_relative_frame.lon
             x, y = locatePosition.geoToCart(state.origin, config.END_DISTANCE, [lat, lon])
@@ -112,6 +125,8 @@ def add_uav_to_swarm(sys_id):
             else:
                 state.different_height.append(300)
             state.pop_flag_arr.append(1)
+            # Empty (idle) per-UAV state for the new slot, same locked step
+            topology.apply_addition(insert_index)
             rebuild_uav_home_positions()
             state.uav_registry[sys_id] = {
                 "sys_id": sys_id,
@@ -177,6 +192,8 @@ def remove_uav_from_swarm(remove_bot_num):
                 state.different_height.pop(pop_bot_index)
             if pop_bot_index < len(state.pop_flag_arr):
                 state.pop_flag_arr.pop(pop_bot_index)
+            # Every other per-UAV structure, in the same locked step
+            topology.apply_removal(pop_bot_index)
             state.num_bots = len(state.pos_array)
             state.uav_home_pos = []
             for vehicle in state.vehicles:

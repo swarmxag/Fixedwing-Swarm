@@ -21,6 +21,7 @@ from swarm_tasks.simulation import simulation as sim
 from medur_swarm import config, state
 from medur_swarm.communication import lifecycle, reliable, replica
 from medur_swarm.uav import connection as uav_connection
+from medur_swarm.uav import link_monitor
 
 sock2 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 server_address2 = ("", int(os.environ.get("SWARM_CMD_PORT", 12008)))  # receive from .....rx.py
@@ -129,6 +130,11 @@ def _handle_role(role, node, epoch):
     if role == "master":
         if _promoting:
             return True, "promoting"
+        if not LEGACY_MODE and not state.fence_ready:
+            # Taking over connects the UAVs and converts their positions with
+            # the origin: never do that with a fence file left from an earlier
+            # run. The operator gives the geofence (Set Origin) first.
+            return False, "no_geofence"
         threading.Thread(target=_become_master, daemon=True).start()
         return True, "promoting"
     if role == "standby":
@@ -176,6 +182,8 @@ def _status():
         "last_seq": state.last_seq,
         "uavs": len(state.vehicles),
         "active_tasks": len(getattr(state, "active_goal_tasks", {})),
+        "fence_ready": bool(state.fence_ready),
+        "links": link_monitor.link_states(),  # {sys_id: "lost 14s"}; empty = all ok
     }
 
 
@@ -295,7 +303,28 @@ _mailbox_entry = None  # the entry currently sitting in pending_command
 
 
 def _event(entry, status, why=""):
+    lifecycle.log(entry.payload, entry.sid, status, why)
     reliable.emit_event(sock2, entry.address, entry.sid, entry.seq, status, why)
+
+
+def _apply_now_if_starting(entry):
+    """Until main.py's command loop runs (a master still waiting for its UAVs,
+    or a standby waiting to be promoted) nothing in the queue is processed, so
+    origin/geofence would wait behind the whole bring-up -- which needs the
+    CURRENT origin. Apply those two at once instead. Returns True if done."""
+    if state.dispatch_running:
+        return False
+    from medur_swarm.tasks import admin
+
+    try:
+        applied = admin.apply_before_dispatch(entry.payload)
+    except Exception as e:
+        print("[startup] could not apply", entry.payload[:40], repr(e))
+        _event(entry, "failed", repr(e)[:120])
+        return True
+    if applied:
+        _event(entry, "completed", "applied_before_start")
+    return applied
 
 
 def _supersede_key(payload):
@@ -334,6 +363,10 @@ def _command_listener():
         if got is None:
             continue
         entry = _Entry(got.payload, got.address, got.sid, got.seq)
+        # The ACK already told the sender; this is the swarm-side indication.
+        lifecycle.log(entry.payload, entry.sid, "received")
+        if _apply_now_if_starting(entry):
+            continue
         if entry.payload == b"stop":
             # stop supersedes everything still waiting behind the running command.
             with _inbox_cv:

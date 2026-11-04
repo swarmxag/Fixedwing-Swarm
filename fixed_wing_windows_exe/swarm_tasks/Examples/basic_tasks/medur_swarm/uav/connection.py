@@ -6,62 +6,19 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, wait
 
-import netifaces
-import wmi
 from dronekit import connect
 
 import locatePosition
 
 from medur_swarm import config, state
+from medur_swarm.uav import link_monitor
+from medur_swarm.uav.network import NetworkIP
 
-
-def get_wifi_ip(iface_map):
-    interfaces = netifaces.interfaces()
-    # print(interfaces)
-    for iface in netifaces.interfaces():
-        try:
-            # print(iface,iface_map[iface])
-            # if iface in iface_map:
-            adapter = iface_map[iface]
-            # print(adapter)
-            addrs = netifaces.ifaddresses(iface)
-            # print(addrs)
-            ipv4_info = addrs.get(netifaces.AF_INET, [])
-            for addr in ipv4_info:
-                ip = addr.get("addr")
-                if (
-                    ip
-                    and (
-                        adapter == "Ethernet"
-                        or adapter == "Wi-Fi"
-                        or iface == "eth0"
-                        or iface == "ensp20"
-                        or iface == "wlan0"
-                    )
-                    and ip.startswith("192.168.")
-                ):
-                    return "192.168.6.117"
-        except Exception as e:
-            print(f"Error on interface {iface}: {e}")
-    return None
-
-
-def get_interface_mapping():
-    c = wmi.WMI()
-    # print(c.Win32_NetworkAdapter()[1])
-    mappings = {}
-    for nic in c.Win32_NetworkAdapter():
-        # print(nic)
-        if nic.GUID:
-            mappings[nic.GUID.upper()] = nic.NetConnectionID or nic.Name
-            # return get_wifi_ip(mappings)
-    return "127.0.0.1"
-
-
-# Computed once, at import time, exactly like the original script's
-# module-level `ip = get_interface_mapping()` -- never reassigned again.
-state.ip = get_interface_mapping()
-print("ip", state.ip)
+print("ip", NetworkIP.get_ip())
+# MAVLink is received on every interface: binding to the one address above
+# went deaf when that interface (e.g. the Ethernet cable) dropped or its
+# address changed.
+state.ip = "0.0.0.0"
 
 # Guards against two connection cycles overlapping (startup and a master
 # handover in sockets.py both call vehicle_connection()).
@@ -90,7 +47,7 @@ def _connect_one(slot, sys_id, port, heartbeat_timeout):
     print(f"[connect] slot={slot} sys_id={sys_id} {endpoint} attempt started")
     started = time.monotonic()
     try:
-        vehicle = connect(endpoint, baud=115200, heartbeat_timeout=heartbeat_timeout)
+        vehicle = connect(endpoint, baud=115200, heartbeat_timeout=heartbeat_timeout,source_system=253)
     except Exception as e:
         return slot, sys_id, endpoint, None, e, time.monotonic() - started
     return slot, sys_id, endpoint, vehicle, None, time.monotonic() - started
@@ -210,6 +167,7 @@ def _run_connection_cycle():
             f"{elapsed:.1f}s"
         )
         print("Drone{}".format(sys_id))
+        link_monitor.attach(vehicle)
         state.num_bots += 1
         state.vehicles.append(vehicle)
         state.pos_array.append(target)
@@ -228,6 +186,7 @@ def _run_connection_cycle():
     state._loiter_radius = radius
 
     print(len(state.vehicles))
+    link_monitor.start()
 
 
 def fetch_location():

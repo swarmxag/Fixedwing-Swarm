@@ -5,11 +5,13 @@ plain 'split' which auto-groups a UAV list around center points
 flight engine, which split.py owns (run_split_or_specific_split_command)."""
 
 import json
+import traceback
 
 from mission_paths import uav_path_csv
 from groupsplitspecific import SpecificSplitMission
 
-from medur_swarm import state
+from medur_swarm import boundary, state
+from medur_swarm.communication import lifecycle
 from medur_swarm.utils import selected_swarm_indexes
 from medur_swarm.tasks.runner import assign_mission_tasks
 
@@ -37,6 +39,7 @@ def start_specific_split_mission(decoded_index):
         )
         return False
     selected_uav_ids = assigned_uav_ids
+    plan_backup = boundary.snapshot()  # the generator below overwrites path files
     split = SpecificSplitMission(
         origin=state.origin,
         center_lat_lons=center_lat_lon_array,
@@ -55,6 +58,7 @@ def start_specific_split_mission(decoded_index):
     for bot_index in selected_indexes:
         uav_id = state.pos_array[bot_index]
         csv_paths_by_index[bot_index] = uav_path_csv(uav_id)
+    boundary.check_csv_paths(csv_paths_by_index.values(), "split", restore=plan_backup)
     assign_mission_tasks(csv_paths_by_index, "split")
     print(
         "[concurrent split] accepted during running mission",
@@ -103,6 +107,10 @@ def parse_and_start_foreground(decoded_index):
                 "not a subset of connected pos_array",
                 set(state.pos_array),
             )
+            lifecycle.fail_current(
+                "UAVs not connected: %s"
+                % sorted(set(assigned_uav_ids) - set(state.pos_array))
+            )
             return None
         else:
             selected_uav_ids = assigned_uav_ids
@@ -122,4 +130,6 @@ def parse_and_start_foreground(decoded_index):
             return selected_uav_ids
     except Exception as e:
         print("Exception", e)
+        traceback.print_exc()
+        lifecycle.fail_current(repr(e))
         return None

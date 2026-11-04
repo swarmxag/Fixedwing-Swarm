@@ -10,6 +10,7 @@ import locatePosition
 from swarm_tasks.simulation import simulation as sim
 
 from medur_swarm import config, state
+from medur_swarm.communication.dispatch import apply_pending_topology_command
 from medur_swarm.uav.guidance import (
     _drive_vehicle_towards,
     advance_bot_with_uav_pacing,
@@ -64,6 +65,10 @@ def run_group_split_command(data):
             )
         while 1:
             time.sleep(0.1)
+            # A UAV added/removed meanwhile: group_split_flag_array and
+            # group_split_goal_pos are realigned by uav/topology.py, so every
+            # other UAV keeps its goal and an added one has none.
+            apply_pending_topology_command()
             if state.group_split_flag:
                 state.group_split_flag = False
                 break

@@ -132,6 +132,17 @@ const LayerSourcePresentation = ({ apiKeys, tileLoadFunction, type }) => {
         />
       );
 
+    case Source.MAPBOX.SATELLITE_STREETS:
+      // Satellite imagery with street names/labels on top (Mapbox style tiles).
+      return (
+        <source.XYZ
+          attributions={attributions}
+          tileSize={256}
+          tileLoadFunction={tileLoadFunction}
+          url={`https://api.mapbox.com/styles/v1/mapbox/satellite-streets-v12/tiles/256/{z}/{x}/{y}?access_token=${apiKeys.MAPBOX}`}
+        />
+      );
+
     case Source.MAPBOX.VECTOR:
       // TODO(ntamas): this could be updated to mapbox-streets-v8 once we get
       // a proper styling function for it
@@ -290,6 +301,7 @@ function getCachedTileLoader(serverUrl, type) {
     switch (type) {
       case Source.MAPBOX.STATIC:
       case Source.MAPBOX.SATELLITE:
+      case Source.MAPBOX.SATELLITE_STREETS:
       case Source.MAPBOX.VECTOR:
         api_key = newUrl.searchParams.get('access_token');
         break;

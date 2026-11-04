@@ -52,6 +52,31 @@ def set_emitter(fn):
     _emit = fn
 
 
+def command_name(payload):
+    """Short name of a legacy payload for the console, e.g. b"goal_[..]_[1]"
+    -> "goal"; search/split payloads carry kilobytes of JSON."""
+    text = (payload or b"")[:48].decode("utf-8", "replace")
+    for i, ch in enumerate(text):
+        if ch in "_,{[ ":
+            return text[:i] or text
+    return text
+
+
+def log(payload, sid, status, why=""):
+    """One console line per command status change, so every command the
+    swarm receives (and what became of it) is visible here as well as on
+    the GCS."""
+    print(
+        "[cmd] %-8s %-12s%s%s"
+        % (
+            command_name(payload),
+            status.upper(),
+            " (%s)" % why if why else "",
+            "" if sid is not None else " [legacy, no GCS report]",
+        )
+    )
+
+
 def register(seq, meta):
     with _lock:
         _meta[seq] = meta
@@ -132,6 +157,7 @@ def _set(seq, status, why=""):
         _write(rec)
         _history.append(rec)
         del _history[:-100]
+    log(meta.payload, meta.sid, status, why)
     _emit(meta, status, why)
 
 
@@ -185,6 +211,14 @@ def foreground_failed(seq, exc):
         _set(seq, "failed", repr(exc)[:120])
 
 
+def fail_current(why):
+    """A foreground handler gave up without running anything (bad payload,
+    refused selection). Failed is terminal, so the main loop's
+    foreground_done() afterwards cannot turn it into "completed"."""
+    if current_seq is not None:
+        _set(current_seq, "failed", str(why)[:120])
+
+
 class claiming:
     """Context for a handler that may assign background tasks on behalf of a
     command that is being handled concurrently (not via the main loop)."""
@@ -205,6 +239,12 @@ class claiming:
 def concurrent_handled(seq):
     _set(seq, "started")
     foreground_done(seq)
+
+
+def concurrent_refused(seq, why):
+    """A concurrent command was checked and refused (e.g. outside the fence):
+    it never ran and did not interrupt the running mission."""
+    _set(seq, "failed", why[:120])
 
 
 # ---- background task ownership --------------------------------------------
@@ -234,6 +274,21 @@ def claim(bot_index):
         else:
             _running[prev] = ("preempted", "tasks_replaced_by_newer_command")
     state.task_owner[bot_index] = seq
+
+
+def report_task_error(why):
+    """A background task tick raised. Tell every command that owns an active
+    task, WITHOUT changing its status: the runner keeps the tasks and retries
+    on the next tick, so the command may still complete. "error" is not a
+    lifecycle state, only a notice to the sender."""
+    with state.active_goal_tasks_lock:
+        seqs = {state.task_owner.get(i) for i in state.active_goal_tasks}
+    for seq in seqs:
+        with _lock:
+            meta = _meta.get(seq)
+        if meta is not None:
+            log(meta.payload, meta.sid, "error", why)
+            _emit(meta, "error", why)
 
 
 def note_cancel_all():

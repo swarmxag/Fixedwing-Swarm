@@ -15,6 +15,7 @@ from contextlib import ExitStack
 from logging import Logger
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+import numpy as np
 import trio
 
 from flockwave.server import terrain_areas, terrain_safety, terrain_unsafe
@@ -36,6 +37,7 @@ class TerrainManager:
     def __init__(self, terrain_dir="terrain"):
         self.terrain_dir = Path(terrain_dir)
         self.terrain_dir.mkdir(parents=True, exist_ok=True)
+        self._tiles: Dict[Tuple[int, int], Any] = {}
 
     def get_tile_name(self, lat, lon):
         lat = math.floor(lat)
@@ -100,12 +102,142 @@ class TerrainManager:
 
             return None
 
-    def get_elevation(self, latitude, longitude):
-        # Determine required tile
-        tile = self.get_tile_name(latitude, longitude)
+    def _tile_array(self, lat, lon):
+        """Read-only memory-mapped view of the 3601x3601 big-endian int16 tile
+        covering integer (lat, lon), opened once and reused for every lookup
+        (instead of re-opening the .hgt file per sample). None if the tile is
+        not on disk (or is not a complete 1-arc-second tile)."""
+        key = (lat, lon)
+        arr = self._tiles.get(key)
+        if arr is not None:
+            return arr
+        hgt_file = self.terrain_dir / f"{self.get_tile_name(lat, lon)}.hgt"
+        try:
+            if hgt_file.stat().st_size != 3601 * 3601 * 2:
+                return None
+            arr = np.memmap(hgt_file, dtype=">i2", mode="r", shape=(3601, 3601))
+        except (OSError, ValueError):
+            return None
+        self._tiles[key] = arr
+        return arr
 
+    def get_cached_elevation(self, latitude, longitude):
+        """Elevation from a tile that is ALREADY on disk; never downloads, so it is
+        safe on the telemetry path. None if the tile is missing or the cell is a void
+        (a missing value, not an elevation of 0). Nearest pixel, no max-sampling and
+        no error buffer: this is the raw SRTM height used for UAV homes."""
+        lat, lon = math.floor(latitude), math.floor(longitude)
+        arr = self._tile_array(lat, lon)
+        if arr is None:
+            return None
+        row = max(0, min(3600, round((1.0 - (latitude - lat)) * 3600)))
+        col = max(0, min(3600, round((longitude - lon) * 3600)))
+        elevation = int(arr[row, col])
+        return None if elevation == -32768 else float(elevation)
+
+    # -- conservative per-cell sampling (Step 2 grid) ------------------------------------
+    #
+    # Pixels are addressed by GLOBAL integer arc-seconds: `ay` = latitude * 3600,
+    # `bx` = longitude * 3600. Pixel (ay, bx) is the SRTM sample at exactly that
+    # position and covers +-0.5 arc-second around it. Tile L (latitudes L..L+1)
+    # owns the latitudes L*3600 < ay <= (L+1)*3600 (its row 0 is its northern
+    # edge) and tile N owns N*3600 <= bx < (N+1)*3600; the duplicated edge row /
+    # column of the neighbouring tile is used only when the owner is missing.
+
+    def _pixel(self, ay: int, bx: int) -> Optional[float]:
+        """Elevation of the global pixel (ay, bx); None for a void or a missing tile."""
+        tile_lat, tile_lon = (ay - 1) // 3600, bx // 3600
+        candidates = [(tile_lat, tile_lon)]
+        if ay % 3600 == 0:
+            candidates.append(
+                (tile_lat + 1, tile_lon)
+            )  # the same row as row 3600 of the tile above
+        if bx % 3600 == 0:
+            candidates.append(
+                (tile_lat, tile_lon - 1)
+            )  # the same column as column 3600 of the tile west
+        for tl, tn in candidates:
+            arr = self._tile_array(tl, tn)
+            if arr is not None:
+                value = int(arr[(tl + 1) * 3600 - ay, bx - tn * 3600])
+                return None if value == -32768 else float(value)
+        return None
+
+    def _block_max(self, ay0: int, ay1: int, bx0: int, bx1: int) -> Optional[float]:
+        """Highest valid pixel with ay0 <= ay <= ay1 and bx0 <= bx <= bx1, across
+        tile edges; None if every pixel is void or missing."""
+        best: Optional[float] = None
+        for tl in range((ay0 - 1) // 3600, (ay1 - 1) // 3600 + 1):
+            top = (tl + 1) * 3600
+            r0, r1 = top - min(ay1, top), top - max(ay0, tl * 3600 + 1)
+            for tn in range(bx0 // 3600, bx1 // 3600 + 1):
+                arr = self._tile_array(tl, tn)
+                if arr is None:
+                    continue
+                c0, c1 = (
+                    max(bx0, tn * 3600) - tn * 3600,
+                    min(bx1, tn * 3600 + 3599) - tn * 3600,
+                )
+                block = np.asarray(arr[r0 : r1 + 1, c0 : c1 + 1])
+                valid = block[block != -32768]
+                if valid.size:
+                    value = float(valid.max())
+                    best = value if best is None else max(best, value)
+        return best
+
+    def get_cell_elevation(self, latitude, longitude, half_dlat, half_dlon, spacing_m):
+        """CONSERVATIVE elevation of the grid cell centred on (latitude, longitude)
+        whose footprint is +-half_dlat / +-half_dlon degrees.
+
+        * spacing < SRTM_PIXEL_M: bilinear interpolation of the 4 surrounding
+          pixels, never less than the nearest pixel;
+        * spacing >= SRTM_PIXEL_M: the maximum of every pixel whose area overlaps
+          the footprint, so a peak narrower than the cell is never lost.
+
+        Without a complete tile on disk this falls back to `get_elevation` (a
+        single nearest-pixel sample, which may download the tile)."""
+        if self._tile_array(math.floor(latitude), math.floor(longitude)) is None:
+            return self.get_elevation(latitude, longitude)
+
+        ya, xb = latitude * 3600.0, longitude * 3600.0
+        if spacing_m >= SRTM_PIXEL_M:
+            # pixel k covers [k - 0.5, k + 0.5]: overlaps [lo, hi] iff lo - 0.5 < k < hi + 0.5
+            ay0 = math.floor(ya - half_dlat * 3600.0 - 0.5) + 1
+            ay1 = math.ceil(ya + half_dlat * 3600.0 + 0.5) - 1
+            bx0 = math.floor(xb - half_dlon * 3600.0 - 0.5) + 1
+            bx1 = math.ceil(xb + half_dlon * 3600.0 + 0.5) - 1
+            return self._block_max(ay0, ay1, bx0, bx1)
+
+        nearest = self._pixel(round(ya), round(xb))
+        ay, bx = math.floor(ya), math.floor(xb)
+        fy, fx = ya - ay, xb - bx
+        corners = (
+            (self._pixel(ay, bx), (1 - fy) * (1 - fx)),
+            (self._pixel(ay, bx + 1), (1 - fy) * fx),
+            (self._pixel(ay + 1, bx), fy * (1 - fx)),
+            (self._pixel(ay + 1, bx + 1), fy * fx),
+        )
+        values = [v for v, _ in corners if v is not None]
+        if len(values) < 4:
+            # a void among the four: no interpolation, the highest valid neighbour
+            candidates = values + ([nearest] if nearest is not None else [])
+            return max(candidates) if candidates else None
+        bilinear = sum(v * w for v, w in corners)  # type: ignore[operator]
+        return max(bilinear, nearest) if nearest is not None else bilinear
+
+    def get_elevation(self, latitude, longitude):
         lat = math.floor(latitude)
         lon = math.floor(longitude)
+
+        # Fast path: tile already memory-mapped. Same row/col maths and void
+        # handling as the file-seek path below, so results are identical.
+        # Nearest pixel (round); int() used to pick the north-west one.
+        arr = self._tile_array(lat, lon)
+        if arr is not None:
+            row = max(0, min(3600, round((1.0 - (latitude - lat)) * 3600)))
+            col = max(0, min(3600, round((longitude - lon) * 3600)))
+            elevation = int(arr[row, col])
+            return None if elevation == -32768 else float(elevation)
 
         # Download if required
         hgt_file = self.download_tile(lat, lon)
@@ -120,9 +252,9 @@ class TerrainManager:
         lat_fraction = latitude - lat
         lon_fraction = longitude - lon
 
-        # Convert coordinates to pixel
-        row = int((1.0 - lat_fraction) * 3600)
-        col = int(lon_fraction * 3600)
+        # Convert coordinates to the NEAREST pixel
+        row = round((1.0 - lat_fraction) * 3600)
+        col = round(lon_fraction * 3600)
 
         # Clamp
         row = max(0, min(3600, row))
@@ -155,20 +287,51 @@ class TerrainManager:
 _terrain_manager: Optional[TerrainManager] = None
 _in_flight_tile_events: Dict[str, trio.Event] = {}
 
-# Tiles whose download failed (ocean square with no SRTM file, no network)
-# -> time.monotonic() of the failure. A hover lookup does not retry such a
-# tile until the cooldown ends, otherwise every mouse move over it would
-# start another doomed download.
-_failed_tile_times: Dict[str, float] = {}
-_FAILED_TILE_RETRY_S = 300.0
-
 # Step 2: terrain elevation grid over the Origin operating area.
-TERRAIN_GRID_SPACING_M = 20  # metres between grid samples
+TERRAIN_GRID_SPACING_M = (
+    20  # legacy fixed spacing; still the default for direct builder/test calls
+)
+
+# Adaptive spacing. The grid spacing is chosen per Origin from the size of its
+# bounding box so the sample count stays bounded:
+#   1. start from the first row of this table whose limit is >= the longer side
+#      of the area (small areas stay detailed: 30 m x 30 m -> 5 m);
+#   2. if rows*cols still exceeds the point budget, raise the spacing (in
+#      SPACING_STEP_M steps) until it fits. Beyond the table the spacing comes
+#      straight from the budget: ~sqrt(width*height/budget).
+# The budget (not the table) is the hard limit. Override with the
+# `terrain_grid_max_points` configuration key.
+MAX_TERRAIN_GRID_POINTS = 100_000
+SPACING_STEP_M = 5
+# (longest side of the area in metres, starting spacing in metres)
+SPACING_TABLE = (
+    (50, 5),
+    (100, 10),
+    (1_000, 20),
+    (5_000, 30),
+    (10_000, 50),
+    (25_000, 100),
+    (50_000, 150),
+)
+# Above this spacing, a peak narrower than the cell can fall between samples;
+# logged as a warning (SRTM itself is ~30 m, so <= 30 m loses nothing).
+COARSE_SPACING_WARN_M = 200
+
+# Approximate size of one SRTM 1-arc-second pixel. Below this grid spacing a cell
+# is bilinearly interpolated; from it on, a cell is the max of every pixel it
+# overlaps (see TerrainManager.get_cell_elevation).
+SRTM_PIXEL_M = 30
+
+# Metres added to every cell elevation before it is compared with the safety
+# threshold: SRTM vertical error, trees, small buildings. Extension setting
+# `terrain_error_buffer_m`. Applied at scan time, never stored in the grid.
+DEFAULT_TERRAIN_ERROR_BUFFER_M = 15.0
 
 # Bump whenever the grid layout or how it is sampled changes: it is part of
 # the Origin fingerprint AND checked on load, so caches written by an older
 # layout are rejected and regenerated instead of being misread.
-TERRAIN_GRID_VERSION = 1
+# 2: conservative per-cell sampling (max over the footprint / bilinear).
+TERRAIN_GRID_VERSION = 2
 
 # Persistent (on-disk) copy of the grid for the *current* Origin. Kept apart
 # from the raw SRTM tile cache (`TerrainManager.terrain_dir`): the tiles are
@@ -203,18 +366,16 @@ def _get_terrain_manager(terrain_dir_setting: Optional[str] = None) -> TerrainMa
     global _terrain_manager
     if _terrain_manager is None:
         if terrain_dir_setting:
-            target_path = Path(terrain_dir_setting).expanduser()
+            target_path = Path(terrain_dir_setting)
         else:
-            # Terrain is owned by the server and the GCS -- the swarm computer is
-            # not involved -- so the tile cache is server-side. The location
-            # belongs in the extension's `terrain_dir` setting (see config.py),
-            # not in library code; this fallback only covers a missing setting.
-            #
-            # Resolved from THIS FILE, not the process working directory, so the
-            # server finds the same cache however it was launched. (It previously
-            # fell back to a CWD-relative "terrain", which silently produced a
-            # different cache per launch directory.)
-            target_path = Path(__file__).resolve().parents[4] / "terrain"
+            # Default: point to medur_swarm/terrain directory in workspace if available
+            possible_path = Path(
+                r"C:\Users\Joel\Desktop\Fixedwing-Swarm\fixed_wing_windows_exe\swarm_tasks\Examples\basic_tasks\medur_swarm\terrain"
+            )
+            if possible_path.exists():
+                target_path = possible_path
+            else:
+                target_path = Path("terrain")
 
         _terrain_manager = TerrainManager(str(target_path))
         if log:
@@ -240,7 +401,9 @@ async def _ensure_tile_ready(mgr: TerrainManager, lat: float, lon: float) -> boo
 
     if tile_name in _in_flight_tile_events:
         if log:
-            log.info(f"[TERRAIN] Waiting for in-progress download of SRTM tile {tile_name}...")
+            log.info(
+                f"[TERRAIN] Waiting for in-progress download of SRTM tile {tile_name}..."
+            )
         await _in_flight_tile_events[tile_name].wait()
         return hgt_file.exists()
 
@@ -296,6 +459,40 @@ def _grid_shape(
     return dlat, dlon, rows, cols
 
 
+def select_grid_spacing(
+    min_lat: float,
+    max_lat: float,
+    min_lon: float,
+    max_lon: float,
+    max_points: Optional[int] = None,
+) -> Tuple[float, int, int]:
+    """(spacing_m, rows, cols) for the bounding box: the finest spacing from
+    SPACING_TABLE that keeps rows*cols within `max_points`. Deterministic for a
+    given box, so it can be part of the Origin fingerprint."""
+    if max_points is None:
+        max_points = int(
+            (configuration.get("terrain_grid_max_points") if configuration else None)
+            or MAX_TERRAIN_GRID_POINTS
+        )
+    center_lat = (min_lat + max_lat) / 2.0
+    height_m = (max_lat - min_lat) * 111320.0
+    width_m = (max_lon - min_lon) * 111320.0 * math.cos(math.radians(center_lat))
+
+    longest = max(width_m, height_m)
+    spacing = next(
+        (s for limit, s in SPACING_TABLE if longest <= limit * 1.01), None
+    )  # 1% tolerance for degree rounding
+    if spacing is None:
+        spacing = math.sqrt(max(width_m * height_m, 1.0) / max_points)
+    spacing = max(SPACING_STEP_M, math.ceil(spacing / SPACING_STEP_M) * SPACING_STEP_M)
+
+    _, _, rows, cols = _grid_shape(min_lat, max_lat, min_lon, max_lon, spacing)
+    while rows * cols > max_points:
+        spacing += SPACING_STEP_M
+        _, _, rows, cols = _grid_shape(min_lat, max_lat, min_lon, max_lon, spacing)
+    return float(spacing), rows, cols
+
+
 def _cell_lat(max_lat, dlat, row):
     """Latitude of grid row `row` (north row first). Works on ints and on numpy
     index arrays alike; the ONE place cell latitude is defined -- grid
@@ -320,7 +517,10 @@ def _normalized_polygon(polygon_latlon: list) -> List[List[float]]:
     Raises TypeError/ValueError/IndexError on malformed points."""
     d = _FINGERPRINT_COORD_DECIMALS
     # `+ 0.0` turns a rounded -0.0 into 0.0 so both serialise identically.
-    return [[round(float(p[0]), d) + 0.0, round(float(p[1]), d) + 0.0] for p in polygon_latlon]
+    return [
+        [round(float(p[0]), d) + 0.0, round(float(p[1]), d) + 0.0]
+        for p in polygon_latlon
+    ]
 
 
 def compute_origin_fingerprint(polygon_latlon: list, spacing_m: float) -> str:
@@ -343,7 +543,11 @@ def compute_origin_fingerprint(polygon_latlon: list, spacing_m: float) -> str:
 def _terrain_grid_cache_path(mgr: TerrainManager) -> Path:
     """<terrain_grid_dir or sibling 'terrain_grid' of the SRTM dir>/terrain_grid_cache.json"""
     override = configuration.get("terrain_grid_dir") if configuration else None
-    base = Path(override) if override else mgr.terrain_dir.parent / TERRAIN_GRID_CACHE_DIRNAME
+    base = (
+        Path(override)
+        if override
+        else mgr.terrain_dir.parent / TERRAIN_GRID_CACHE_DIRNAME
+    )
     return base / TERRAIN_GRID_CACHE_FILENAME
 
 
@@ -393,7 +597,9 @@ def _validate_grid_doc(
     bounds = doc.get("bounds")
     if not isinstance(bounds, dict):
         raise ValueError("bounds missing")
-    exp_bounds = dict(zip(("min_lat", "max_lat", "min_lon", "max_lon"), _polygon_bbox(polygon)))
+    exp_bounds = dict(
+        zip(("min_lat", "max_lat", "min_lon", "max_lon"), _polygon_bbox(polygon))
+    )
     for key, expected in exp_bounds.items():
         if bounds.get(key) != expected:
             raise ValueError(f"bounds.{key} does not match the Origin polygon")
@@ -414,7 +620,11 @@ def _validate_grid_doc(
             if v is None:
                 num_missing += 1
                 continue
-            if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+            if (
+                isinstance(v, bool)
+                or not isinstance(v, (int, float))
+                or not math.isfinite(v)
+            ):
                 raise ValueError(f"grid row {r} holds a non-numeric elevation {v!r}")
             num_valid += 1
             min_elev = v if min_elev is None else min(min_elev, v)
@@ -477,8 +687,13 @@ def _load_terrain_grid_sync(
             doc = json.load(f)
         if not isinstance(doc, dict):
             raise ValueError("top level is not an object")
-    except (OSError, ValueError) as e:  # JSONDecodeError and UnicodeDecodeError are ValueErrors
-        _grid_log(f"[TERRAIN GRID] persistent cache is unreadable/corrupt ({e})", "warning")
+    except (
+        OSError,
+        ValueError,
+    ) as e:  # JSONDecodeError and UnicodeDecodeError are ValueErrors
+        _grid_log(
+            f"[TERRAIN GRID] persistent cache is unreadable/corrupt ({e})", "warning"
+        )
         _grid_log("[TERRAIN GRID] cached grid will NOT be used", "warning")
         return None
 
@@ -504,14 +719,18 @@ def _load_terrain_grid_sync(
         _grid_log("[TERRAIN GRID] cached grid will NOT be used", "warning")
         return None
     saved_spacing = doc.get("spacing_m")
-    if not isinstance(saved_spacing, (int, float)) or float(saved_spacing) != float(spacing_m):
+    if not isinstance(saved_spacing, (int, float)) or float(saved_spacing) != float(
+        spacing_m
+    ):
         _grid_log(
             f"[TERRAIN GRID] cache spacing {saved_spacing!r} != {spacing_m}", "warning"
         )
         _grid_log("[TERRAIN GRID] cached grid will NOT be used", "warning")
         return None
     if doc.get("polygon") != polygon:
-        _grid_log("[TERRAIN GRID] cache polygon differs from the Origin polygon", "warning")
+        _grid_log(
+            "[TERRAIN GRID] cache polygon differs from the Origin polygon", "warning"
+        )
         _grid_log("[TERRAIN GRID] cached grid will NOT be used", "warning")
         return None
 
@@ -528,18 +747,24 @@ def _load_terrain_grid_sync(
 
 
 def _build_terrain_grid_sync(
-    mgr: TerrainManager, polygon_latlon: list, spacing_m: float
+    mgr: TerrainManager, polygon_latlon: list, spacing_m: float, progress_cb=None
 ) -> Dict[str, Any]:
     """Samples elevation on a regular grid covering the bounding box of
     `polygon_latlon` (the Origin operating area / outer fence polygon, as
-    [lat, lon] pairs) at `spacing_m` metre spacing, using the existing
-    TerrainManager.get_elevation() -- no separate SRTM reader.
+    [lat, lon] pairs) at `spacing_m` metre spacing. Every cell holds the
+    CONSERVATIVE elevation of its whole footprint
+    (TerrainManager.get_cell_elevation), not a single point sample.
 
-    Blocking (opens/reads the cached .hgt file once per sample), so callers
-    run it via trio.to_thread.run_sync rather than awaiting it directly.
+    Blocking, so callers run it via trio.to_thread.run_sync rather than
+    awaiting it directly. `progress_cb(fraction)` (optional) is called from
+    this thread roughly every 5 % of the rows.
     """
+    t_shape = time.perf_counter()
     min_lat, max_lat, min_lon, max_lon = _polygon_bbox(polygon_latlon)
     dlat, dlon, rows, cols = _grid_shape(min_lat, max_lat, min_lon, max_lon, spacing_m)
+    shape_s = time.perf_counter() - t_shape
+    t_lookup = time.perf_counter()
+    report_every = max(1, rows // 20)
 
     grid: List[List[Optional[float]]] = []
     num_valid = 0
@@ -549,11 +774,16 @@ def _build_terrain_grid_sync(
     max_elev_location: Optional[Dict[str, float]] = None
 
     for r in range(rows):
-        lat = _cell_lat(max_lat, dlat, r)  # north row first, matches the example grid layout
+        lat = _cell_lat(
+            max_lat, dlat, r
+        )  # north row first, matches the example grid layout
         row_values: List[Optional[float]] = []
         for c in range(cols):
             lon = _cell_lon(min_lon, dlon, c)
-            elevation = mgr.get_elevation(lat, lon)  # None already covers SRTM void (-32768)
+            # None already covers SRTM void (-32768)
+            elevation = mgr.get_cell_elevation(
+                lat, lon, dlat / 2.0, dlon / 2.0, spacing_m
+            )
             row_values.append(elevation)
             if elevation is None:
                 num_missing += 1
@@ -565,8 +795,11 @@ def _build_terrain_grid_sync(
                 max_elev = elevation
                 max_elev_location = {"lat": lat, "lon": lon}
         grid.append(row_values)
+        if progress_cb is not None and (r + 1) % report_every == 0:
+            progress_cb((r + 1) / rows)
 
     return {
+        "timings": {"grid_s": shape_s, "lookup_s": time.perf_counter() - t_lookup},
         "generated_at": time.time(),
         "spacing_m": spacing_m,
         "bounds": {
@@ -618,6 +851,57 @@ def get_grid_elevation(grid: Dict[str, Any], lat: float, lon: float) -> Optional
     return None
 
 
+def _raw_terrain_elevation(
+    grid: Optional[Dict[str, Any]], lat: float, lon: float
+) -> Optional[float]:
+    """The RAW terrain height at a point (m AMSL): the nearest SRTM pixel of a
+    tile already on disk, else `grid`'s nearest cell. Used for the home /
+    reference elevation, which must NOT be max-sampled: a home that is too high
+    would make the drone look higher above the terrain than it is. Never
+    downloads; None means unavailable (never 0)."""
+    mgr = _terrain_manager
+    value = mgr.get_cached_elevation(lat, lon) if mgr is not None else None
+    if value is None and grid is not None:
+        value = get_grid_elevation(
+            grid, lat, lon
+        )  # conservative (max) cell: only a fallback
+    return value
+
+
+def _home_terrain_elevation(lat: float, lon: float) -> Optional[float]:
+    """Terrain at a UAV's HOME (m AMSL), independent of the planning Origin; see
+    `_raw_terrain_elevation`."""
+    return _raw_terrain_elevation(_terrain_grid_cache, lat, lon)
+
+
+def _terrain_error_buffer_m() -> float:
+    """Extension setting `terrain_error_buffer_m` (metres >= 0), else the default."""
+    value = configuration.get("terrain_error_buffer_m") if configuration else None
+    if (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and value >= 0
+    ):
+        return float(value)
+    return DEFAULT_TERRAIN_ERROR_BUFFER_M
+
+
+def _log_home_snapshot(context: str) -> None:
+    """Logs every saved UAV home (position + terrain) -- used around Set Origin to
+    show that the planning Origin change left the home reference untouched."""
+    homes = terrain_safety.tracker.saved_homes()
+    if not homes:
+        _grid_log(f"[HOME] {context}: no saved UAV home")
+        return
+    for uav_id, (home, terrain) in homes.items():
+        shown = "unavailable" if terrain is None else f"{terrain:.1f} m"
+        _grid_log(
+            f"[HOME] {context}: UAV {uav_id} home lat={home[0]:.7f} lon={home[1]:.7f} "
+            f"homeTerrainAMSL={shown}"
+        )
+
+
 def _activate_terrain_safety(grid: Dict[str, Any], origin_latlon) -> None:
     """Step 3: start the safety threshold for the Origin whose grid was just
     published. The reference terrain elevation is the terrain at the Origin
@@ -639,11 +923,11 @@ def _activate_terrain_safety(grid: Dict[str, Any], origin_latlon) -> None:
     tracker = terrain_safety.tracker
     if tracker.set_origin(
         grid["origin_fingerprint"],
-        get_grid_elevation(grid, ref_lat, ref_lon),
+        _raw_terrain_elevation(grid, ref_lat, ref_lon),
         (ref_lat, ref_lon),
         configured,  # validated by the tracker (missing/invalid/negative -> default)
-        # the terrain at a UAV's HOME is read from this grid (no SRTM access)
-        lambda lat, lon: get_grid_elevation(grid, lat, lon),
+        # the terrain at a UAV's HOME: raw SRTM pixel, this grid only as a fallback
+        lambda lat, lon: _raw_terrain_elevation(grid, lat, lon),
     ):
         _grid_log(
             f"[TERRAIN SAFETY] Origin corner terrain {tracker.reference_terrain_elevation} m "
@@ -679,8 +963,12 @@ def _observe_registered_uavs(app_instance) -> None:
 # per-Origin state: dropped when a new Origin is set, rebuilt lazily.
 
 _unsafe_index: Optional[terrain_unsafe.TerrainScanIndex] = None
-_unsafe_index_grid: Optional[Dict[str, Any]] = None  # the grid `_unsafe_index` was built from
-_unsafe_cache: Optional[Tuple[Tuple[str, float], Dict[str, Any]]] = None  # (fingerprint, threshold) -> result
+_unsafe_index_grid: Optional[Dict[str, Any]] = (
+    None  # the grid `_unsafe_index` was built from
+)
+_unsafe_cache: Optional[Tuple[Tuple[str, float], Dict[str, Any]]] = (
+    None  # (fingerprint, threshold) -> result
+)
 _unsafe_broadcast_key: Optional[Tuple[str, float]] = None  # what clients were last told
 _unsafe_lock = trio.Lock()  # one scan/broadcast at a time; the last threshold wins
 
@@ -689,17 +977,25 @@ _unsafe_lock = trio.Lock()  # one scan/broadcast at a time; the last threshold w
 _areas_cache: Optional[Tuple[Tuple[str, float], Dict[str, Any]]] = None
 _areas_broadcast_key: Optional[Tuple[str, float]] = None
 
+# The threshold follows the live UAV altitude, so it changes with every climb
+# step and each change rescans/regroups. Those are still computed and
+# broadcast; only the log lines are limited to when the outcome changes.
+_unsafe_logged: Optional[Tuple[Any, ...]] = None
+_areas_logged: Optional[Tuple[Any, ...]] = None
+
 
 def _reset_unsafe_terrain() -> None:
     """Drops everything derived from the previous Origin (Step 4A and 4B)."""
     global _unsafe_index, _unsafe_index_grid, _unsafe_cache, _unsafe_broadcast_key
-    global _areas_cache, _areas_broadcast_key
+    global _areas_cache, _areas_broadcast_key, _unsafe_logged, _areas_logged
     _unsafe_index = _unsafe_index_grid = _unsafe_cache = _unsafe_broadcast_key = None
     _areas_cache = _areas_broadcast_key = None
+    _unsafe_logged = _areas_logged = None
 
 
 def _build_unsafe_index_sync(grid: Dict[str, Any]) -> terrain_unsafe.TerrainScanIndex:
-    """Scan index for `grid`, laid out with the Step 2 `_cell_lat`/`_cell_lon`."""
+    """Scan index for `grid`, laid out with the Step 2 `_cell_lat`/`_cell_lon`,
+    with the configured terrain error buffer added to every cell."""
     b = grid["bounds"]
     dlat, dlon, _, _ = _grid_shape(
         b["min_lat"], b["max_lat"], b["min_lon"], b["max_lon"], grid["spacing_m"]
@@ -708,6 +1004,7 @@ def _build_unsafe_index_sync(grid: Dict[str, Any]) -> terrain_unsafe.TerrainScan
         grid,
         lambda row: _cell_lat(b["max_lat"], dlat, row),
         lambda col: _cell_lon(b["min_lon"], dlon, col),
+        error_buffer_m=_terrain_error_buffer_m(),
     )
 
 
@@ -726,7 +1023,11 @@ def _unsafe_scan_target(app_instance):
         else None
     )
     effective = tracker.effective_payload(connected)
-    if grid is None or effective is None or grid.get("origin_fingerprint") != fingerprint:
+    if (
+        grid is None
+        or effective is None
+        or grid.get("origin_fingerprint") != fingerprint
+    ):
         return fingerprint, None, None, None
     # The threshold plus the three numbers it is made of (normally implied by the
     # threshold; kept in the key so two different calculations that happen to give
@@ -734,7 +1035,11 @@ def _unsafe_scan_target(app_instance):
     key = (
         fingerprint,
         effective["safetyThresholdAMSL"],
-        (effective["referenceTerrainElevation"], effective["safetyAltitude"], effective["safetyMargin"]),
+        (
+            effective["referenceTerrainElevation"],
+            effective["safetyAltitude"],
+            effective["safetyMargin"],
+        ),
     )
     return fingerprint, grid, effective, key
 
@@ -757,10 +1062,15 @@ def _threshold_inputs(effective) -> Dict[str, Any]:
 
 def _superseded(grid, fingerprint) -> bool:
     """A newer Origin arrived while a worker thread was busy."""
-    return _terrain_grid_cache is not grid or terrain_safety.tracker.origin_fingerprint != fingerprint
+    return (
+        _terrain_grid_cache is not grid
+        or terrain_safety.tracker.origin_fingerprint != fingerprint
+    )
 
 
-async def _ensure_unsafe_index(grid, fingerprint) -> Optional[terrain_unsafe.TerrainScanIndex]:
+async def _ensure_unsafe_index(
+    grid, fingerprint
+) -> Optional[terrain_unsafe.TerrainScanIndex]:
     """The scan index of `grid` (built once per Origin, in a worker thread), or
     None if the Origin changed meanwhile. Call with `_unsafe_lock` held."""
     global _unsafe_index, _unsafe_index_grid
@@ -781,38 +1091,49 @@ async def _ensure_unsafe_index(grid, fingerprint) -> Optional[terrain_unsafe.Ter
     return index
 
 
-async def _current_unsafe_result(app_instance) -> Tuple[Optional[Tuple[str, float]], Dict[str, Any]]:
+async def _current_unsafe_result(
+    app_instance,
+) -> Tuple[Optional[Tuple[str, float]], Dict[str, Any]]:
     """(key, result) of the unsafe terrain for the current Origin at the current
     Step 3 threshold; key is None when unavailable. Rescans only when the
     (Origin, threshold) pair differs from the last scan. Call with
     `_unsafe_lock` held."""
-    global _unsafe_cache
+    global _unsafe_cache, _unsafe_logged
 
     fingerprint, grid, effective, key = _unsafe_scan_target(app_instance)
     if key is None:
         return None, terrain_unsafe.unavailable_response(fingerprint)
     threshold = effective["safetyThresholdAMSL"]
     if _unsafe_cache is not None and _unsafe_cache[0] == key:
-        _unsafe_cache[1].update(_threshold_inputs(effective))  # e.g. which UAV/source drives it now
+        _unsafe_cache[1].update(
+            _threshold_inputs(effective)
+        )  # e.g. which UAV/source drives it now
         return key, _unsafe_cache[1]
 
     index = await _ensure_unsafe_index(grid, fingerprint)
     if index is None:
-        return None, terrain_unsafe.unavailable_response(terrain_safety.tracker.origin_fingerprint)
+        return None, terrain_unsafe.unavailable_response(
+            terrain_safety.tracker.origin_fingerprint
+        )
 
     started = time.perf_counter()
     result = await trio.to_thread.run_sync(index.scan, threshold, fingerprint)
     if _superseded(grid, fingerprint):
-        return None, terrain_unsafe.unavailable_response(terrain_safety.tracker.origin_fingerprint)
+        return None, terrain_unsafe.unavailable_response(
+            terrain_safety.tracker.origin_fingerprint
+        )
     result.update(_threshold_inputs(effective))
     _unsafe_cache = (key, result)
 
     highest = result["highestPoint"]
-    _grid_log(
-        f"[TERRAIN UNSAFE] threshold {threshold} m: {result['count']} unsafe cell(s)"
-        + (f", highest {highest['elevation']} m" if highest else "")
-        + f" (scan {(time.perf_counter() - started) * 1000:.0f} ms, 0 SRTM reads)"
-    )
+    outcome = (fingerprint, result["count"], highest["elevation"] if highest else None)
+    if outcome != _unsafe_logged:
+        _unsafe_logged = outcome
+        _grid_log(
+            f"[TERRAIN UNSAFE] threshold {threshold:.1f} m: {result['count']} unsafe cell(s)"
+            + (f", highest {highest['elevation']} m" if highest else "")
+            + f" (scan {(time.perf_counter() - started) * 1000:.0f} ms, 0 SRTM reads)"
+        )
     return key, result
 
 
@@ -821,7 +1142,11 @@ def _broadcast_unsafe_points() -> bool:
     threshold change (extension setting `broadcast_unsafe_points`, default off).
     On a real 717x845 grid that message is 30+ MB, so it is off now that Step 4B
     provides the compact version; X-TERRAIN-UNSAFE-REQ still returns it on demand."""
-    return bool(configuration.get("broadcast_unsafe_points", False)) if configuration else False
+    return (
+        bool(configuration.get("broadcast_unsafe_points", False))
+        if configuration
+        else False
+    )
 
 
 async def _refresh_unsafe_terrain(app_instance) -> None:
@@ -836,7 +1161,9 @@ async def _refresh_unsafe_terrain(app_instance) -> None:
         key, result = await _current_unsafe_result(app_instance)
         if key is None or key == _unsafe_broadcast_key:
             return
-        first_for_origin = _unsafe_broadcast_key is None or _unsafe_broadcast_key[0] != key[0]
+        first_for_origin = (
+            _unsafe_broadcast_key is None or _unsafe_broadcast_key[0] != key[0]
+        )
 
         body = dict(result)
         body["type"] = terrain_unsafe.EVENT_TYPE
@@ -868,51 +1195,77 @@ terrain_safety.add_threshold_listener(_refresh_unsafe_terrain)
 def _area_tolerance_m() -> float:
     """Outward simplification tolerance in metres (extension setting
     `unsafe_area_simplify_tolerance_m`; 0 = exact cell outlines)."""
-    value = configuration.get("unsafe_area_simplify_tolerance_m") if configuration else None
-    return float(value) if isinstance(value, (int, float)) and value >= 0 else terrain_areas.SIMPLIFY_TOLERANCE_M
+    value = (
+        configuration.get("unsafe_area_simplify_tolerance_m") if configuration else None
+    )
+    return (
+        float(value)
+        if isinstance(value, (int, float)) and value >= 0
+        else terrain_areas.SIMPLIFY_TOLERANCE_M
+    )
 
 
-async def _current_unsafe_areas(app_instance) -> Tuple[Optional[Tuple[str, float]], Dict[str, Any]]:
+async def _current_unsafe_areas(
+    app_instance,
+) -> Tuple[Optional[Tuple[str, float]], Dict[str, Any]]:
     """(key, result) of the unsafe areas for the current Origin at the current
     Step 3 threshold; key is None when unavailable. Regrouped only when the
     (Origin, threshold) pair changed; runs on the scan index Step 4A uses. Call
     with `_unsafe_lock` held."""
-    global _areas_cache
+    global _areas_cache, _areas_logged
 
     fingerprint, grid, effective, key = _unsafe_scan_target(app_instance)
     if key is None:
         return None, terrain_areas.unavailable_response(fingerprint)
     threshold = effective["safetyThresholdAMSL"]
     if _areas_cache is not None and _areas_cache[0] == key:
-        _areas_cache[1].update(_threshold_inputs(effective))  # e.g. which UAV/source drives it now
+        _areas_cache[1].update(
+            _threshold_inputs(effective)
+        )  # e.g. which UAV/source drives it now
         return key, _areas_cache[1]
 
     index = await _ensure_unsafe_index(grid, fingerprint)
     if index is None:
-        return None, terrain_areas.unavailable_response(terrain_safety.tracker.origin_fingerprint)
+        return None, terrain_areas.unavailable_response(
+            terrain_safety.tracker.origin_fingerprint
+        )
+
+    # The drone's own altitude AMSL: cells above it are RED, cells between it and the
+    # threshold (= droneAMSL - margin) are YELLOW -- classified per cell, see terrain_areas.
+    drone_amsl = effective["referenceTerrainElevation"] + effective["safetyAltitude"]
 
     started = time.perf_counter()
     result = await trio.to_thread.run_sync(
-        terrain_areas.build_unsafe_areas, index, threshold, fingerprint, _area_tolerance_m()
+        terrain_areas.build_unsafe_areas,
+        index,
+        threshold,
+        fingerprint,
+        _area_tolerance_m(),
+        drone_amsl,
     )
     if _superseded(grid, fingerprint):
-        return None, terrain_areas.unavailable_response(terrain_safety.tracker.origin_fingerprint)
+        return None, terrain_areas.unavailable_response(
+            terrain_safety.tracker.origin_fingerprint
+        )
     result.update(_threshold_inputs(effective))
-    # Per-area RED/YELLOW colouring, computed once here from the same threshold inputs the
-    # message already carries -- the frontend only ever reads `area["severity"]` back.
-    terrain_areas.attach_area_severity(
-        result["areas"],
-        effective["referenceTerrainElevation"],
-        effective["safetyAltitude"],
-        effective["safetyMargin"],
-    )
     _areas_cache = (key, result)
 
-    _grid_log(
-        f"[TERRAIN AREAS] threshold {threshold} m: {result['unsafeCellCount']} unsafe cell(s) "
-        f"-> {result['areaCount']} area(s), {result['vertexCount']} vertices "
-        f"(grouped in {(time.perf_counter() - started) * 1000:.0f} ms, 0 SRTM reads)"
+    outcome = (
+        fingerprint,
+        result["unsafeCellCount"],
+        result["redCellCount"],
+        result["yellowCellCount"],
+        result["areaCount"],
     )
+    if outcome != _areas_logged:
+        _areas_logged = outcome
+        _grid_log(
+            f"[TERRAIN AREAS] threshold {threshold:.1f} m, drone {drone_amsl:.1f} m AMSL, "
+            f"buffer {index.error_buffer_m} m: {result['unsafeCellCount']} unsafe cell(s) "
+            f"({result['redCellCount']} red, {result['yellowCellCount']} yellow) "
+            f"-> {result['areaCount']} area(s), {result['vertexCount']} vertices "
+            f"(grouped in {(time.perf_counter() - started) * 1000:.0f} ms, 0 SRTM reads)"
+        )
     return key, result
 
 
@@ -928,7 +1281,9 @@ async def _refresh_unsafe_areas(app_instance) -> None:
         key, result = await _current_unsafe_areas(app_instance)
         if key is None or key == _areas_broadcast_key:
             return
-        first_for_origin = _areas_broadcast_key is None or _areas_broadcast_key[0] != key[0]
+        first_for_origin = (
+            _areas_broadcast_key is None or _areas_broadcast_key[0] != key[0]
+        )
 
         body = dict(result)
         body["type"] = terrain_areas.EVENT_TYPE
@@ -946,14 +1301,32 @@ async def _refresh_unsafe_areas(app_instance) -> None:
             else:
                 text = f"No terrain above the {result['thresholdAMSL']:.1f} m AMSL safety threshold."
             app_instance.request_to_send_SYS_MSG_message(
-                text, severity=Severity.WARNING if result["areaCount"] else Severity.INFO
+                text,
+                severity=Severity.WARNING if result["areaCount"] else Severity.INFO,
             )
 
 
 terrain_safety.add_threshold_listener(_refresh_unsafe_areas)
 
 
-async def generate_terrain_grid_for_origin(app_instance, polygon_latlon: list, origin_latlon=None) -> None:
+def _log_grid_timings(result, source, num_tiles, timings, t_total) -> None:
+    b = result["bounds"]
+    center = (b["min_lat"] + b["max_lat"]) / 2.0
+    height = (b["max_lat"] - b["min_lat"]) * 111320.0
+    width = (b["max_lon"] - b["min_lon"]) * 111320.0 * math.cos(math.radians(center))
+    f = lambda k: f"{timings[k]:.2f} s" if k in timings else "n/a"
+    _grid_log(
+        f"[TERRAIN GRID] Area: {width:.0f} x {height:.0f} m | Spacing: {result['spacing_m']:g} m | "
+        f"Rows: {result['rows']} | Columns: {result['cols']} | Samples: {result['stats']['num_samples']} | "
+        f"SRTM tiles: {num_tiles} | Tile download: {f('tiles_s')} | Grid generation: {f('grid_s')} | "
+        f"Elevation lookup: {f('lookup_s')} | Terrain safety scan: {f('safety_s')} | "
+        f"Cache save: {f('save_s')} | Total: {time.perf_counter() - t_total:.2f} s (source: {source})"
+    )
+
+
+async def generate_terrain_grid_for_origin(
+    app_instance, polygon_latlon: list, origin_latlon=None
+) -> None:
     """Builds and caches the terrain elevation grid for the Origin operating
     area after "Set Origin" succeeds, then broadcasts an X-TERRAIN-GRID-RESP
     notification with a summary (not the raw grid) once ready.
@@ -982,6 +1355,14 @@ async def generate_terrain_grid_for_origin(app_instance, polygon_latlon: list, o
     # PREVIOUS Origin. Drop it right away: from here until this Origin's grid
     # is ready, get_cached_terrain_grid() returns None, never the old grid.
     _terrain_grid_cache = None
+    # The PLANNING origin is replaced here; the UAVs' saved homes (position + terrain,
+    # established by Takeoff) are deliberately not part of it.
+    homes_before = terrain_safety.tracker.saved_homes()
+    _grid_log(
+        f"[TERRAIN] Set Origin: planning origin -> {origin_latlon} "
+        f"({len(polygon_latlon) if isinstance(polygon_latlon, list) else 0} boundary point(s))"
+    )
+    _log_home_snapshot("saved home before Set Origin")
     terrain_safety.tracker.clear_origin()  # never keep the previous Origin's reference elevation
     _reset_unsafe_terrain()  # ... nor its unsafe-terrain result or scan index
 
@@ -993,13 +1374,32 @@ async def generate_terrain_grid_for_origin(app_instance, polygon_latlon: list, o
 
     try:
         polygon = _normalized_polygon(polygon_latlon)
-        fingerprint = compute_origin_fingerprint(polygon_latlon, TERRAIN_GRID_SPACING_M)
+        spacing_m, sel_rows, sel_cols = select_grid_spacing(*_polygon_bbox(polygon))
+        fingerprint = compute_origin_fingerprint(polygon_latlon, spacing_m)
     except (TypeError, ValueError, IndexError):
         _latest_origin_fingerprint = None
         if log:
             log.warning("[TERRAIN GRID] skipped -- malformed Origin polygon")
         return
     _latest_origin_fingerprint = fingerprint
+    t_total = time.perf_counter()
+    timings: Dict[str, float] = {}
+
+    async def progress(pct: int, text: str) -> None:
+        _grid_log(f"[TERRAIN GRID] Terrain preparation: {pct}% - {text}")
+        if app_instance is not None:
+            await app_instance.message_hub.broadcast_message(
+                app_instance.message_hub.create_notification(
+                    {
+                        "type": "X-TERRAIN-GRID-RESP",
+                        "status": "progress",
+                        "progress": pct,
+                        "message": text,
+                    }
+                )
+            )
+
+    await progress(0, "Terrain preparation...")
 
     mgr = _get_terrain_manager(
         configuration.get("terrain_dir") if configuration else None
@@ -1013,7 +1413,7 @@ async def generate_terrain_grid_for_origin(app_instance, polygon_latlon: list, o
             return
 
         result = await trio.to_thread.run_sync(
-            _load_terrain_grid_sync, cache_path, fingerprint, polygon, TERRAIN_GRID_SPACING_M
+            _load_terrain_grid_sync, cache_path, fingerprint, polygon, spacing_m
         )
         source = "persistent_cache"
 
@@ -1023,23 +1423,48 @@ async def generate_terrain_grid_for_origin(app_instance, polygon_latlon: list, o
             source = "generated"
             _grid_log(
                 f"[TERRAIN GRID] generating new grid for Origin area "
-                f"({len(polygon_latlon)} boundary point(s), spacing={TERRAIN_GRID_SPACING_M}m)..."
+                f"({len(polygon_latlon)} boundary point(s), spacing={spacing_m}m, "
+                f"{sel_rows}x{sel_cols}={sel_rows * sel_cols} samples)..."
             )
+            if spacing_m > COARSE_SPACING_WARN_M:
+                _grid_log(
+                    f"[TERRAIN GRID] coarse {spacing_m:.0f} m spacing for this large area: "
+                    f"terrain narrower than one cell may be missed",
+                    "warning",
+                )
 
             # SRTM tiles are a separate, older cache: reuse the ones on disk,
             # download only the missing ones (normally already fetched by
             # X-TERRAIN-RANGE-REQ, so this is usually a no-op).
             min_lat, max_lat, min_lon, max_lon = _polygon_bbox(polygon)
             tiles_ok = True
-            for tile_lat, tile_lon in _tiles_for_bbox(min_lat, max_lat, min_lon, max_lon):
+            tile_list = _tiles_for_bbox(min_lat, max_lat, min_lon, max_lon)
+            await progress(20, "Downloading terrain tiles...")
+            t0 = time.perf_counter()
+            for tile_lat, tile_lon in tile_list:
                 if not await _ensure_tile_ready(mgr, tile_lat, tile_lon):
                     tiles_ok = False
+            timings["tiles_s"] = time.perf_counter() - t0
+            await progress(40, "Generating terrain grid...")
+
+            token = trio.lowlevel.current_trio_token()
+            last_pct = [40]
+
+            def on_rows(fraction: float) -> None:
+                # called from the worker thread; 40% -> 85% while reading elevations
+                pct = 40 + int(fraction * 45)
+                if pct >= last_pct[0] + 5:
+                    last_pct[0] = pct
+                    trio.from_thread.run(
+                        progress, pct, "Reading elevations...", trio_token=token
+                    )
 
             # Sampled from the normalized polygon -- the exact input the
             # fingerprint covers -- so one fingerprint always means one grid.
             result = await trio.to_thread.run_sync(
-                _build_terrain_grid_sync, mgr, polygon, TERRAIN_GRID_SPACING_M
+                _build_terrain_grid_sync, mgr, polygon, spacing_m, on_rows
             )
+            timings.update(result["timings"])
             result["origin_fingerprint"] = fingerprint
             result["polygon"] = polygon
             _grid_log("[TERRAIN GRID] grid generated")
@@ -1054,7 +1479,11 @@ async def generate_terrain_grid_for_origin(app_instance, polygon_latlon: list, o
                 )
             else:
                 try:
-                    await trio.to_thread.run_sync(_save_terrain_grid_sync, cache_path, result)
+                    t0 = time.perf_counter()
+                    await trio.to_thread.run_sync(
+                        _save_terrain_grid_sync, cache_path, result
+                    )
+                    timings["save_s"] = time.perf_counter() - t0
                     _grid_log(f"[TERRAIN GRID] cache saved: {cache_path}")
                 except (OSError, TypeError, ValueError) as e:
                     _grid_log(
@@ -1066,9 +1495,22 @@ async def generate_terrain_grid_for_origin(app_instance, polygon_latlon: list, o
         # Publish only if no newer "Set Origin" arrived while we were busy.
         if fingerprint == _latest_origin_fingerprint:
             _terrain_grid_cache = result
+            await progress(90, "Checking terrain safety...")
             _activate_terrain_safety(result, origin_latlon)
+            if terrain_safety.tracker.saved_homes() == homes_before:
+                _grid_log("[HOME] Set Origin finished: saved home reference unchanged")
+            else:
+                # only a pre-takeoff UAV that was moved, or one first seen meanwhile
+                _grid_log(
+                    "[HOME] saved home reference differs after Set Origin (pre-takeoff "
+                    "telemetry, not Set Origin itself)",
+                    "warning",
+                )
+            _log_home_snapshot("saved home after Set Origin")
         else:
-            _grid_log("[TERRAIN GRID] superseded by a newer Origin -- grid not published")
+            _grid_log(
+                "[TERRAIN GRID] superseded by a newer Origin -- grid not published"
+            )
             return
 
     stats = result["stats"]
@@ -1132,7 +1574,15 @@ async def generate_terrain_grid_for_origin(app_instance, polygon_latlon: list, o
         return
     _observe_registered_uavs(app_instance)
     payloads = tracker.snapshot()
-    await terrain_safety.publish_payloads(app_instance, payloads)
+    t0 = time.perf_counter()
+    await terrain_safety.publish_payloads(
+        app_instance, payloads
+    )  # runs the unsafe-terrain scan
+    timings["safety_s"] = time.perf_counter() - t0
+    _log_grid_timings(
+        result, source, len(_tiles_for_bbox(*_polygon_bbox(polygon))), timings, t_total
+    )
+    await progress(100, "Terrain ready")
     first = payloads[0]
     app_instance.request_to_send_SYS_MSG_message(
         f"Terrain safety threshold {first['safetyThresholdAMSL']:.1f} m AMSL "
@@ -1166,6 +1616,48 @@ async def handle_X_TERRAIN_SAFETY_REQ(
     }
 
 
+TERRAIN_CALC_REQUEST_TYPE = "X-TERRAIN-CALC-REQ"
+TERRAIN_CALC_RESPONSE_TYPE = "X-TERRAIN-CALC-RESP"
+
+
+async def handle_X_TERRAIN_CALC_REQ(
+    message: FlockwaveMessage, sender: Client, hub: MessageHub
+):
+    """Socket.IO handler for X-TERRAIN-CALC-REQ (the GCS "Calculate" button):
+    ``alt`` becomes the safety altitude of EVERY UAV, exactly as the Takeoff
+    command used to make it -- but nothing is sent to any UAV. The new
+    threshold and unsafe areas are then broadcast as usual. The Takeoff
+    command itself no longer changes terrain safety.
+
+    Before an Origin is set the altitude is remembered and used as soon as
+    the terrain grid is ready (``status`` "pending")."""
+    alt = (message.body or {}).get("alt")
+    if (
+        isinstance(alt, bool)
+        or not isinstance(alt, (int, float))
+        or not math.isfinite(alt)
+        or alt <= 0
+    ):
+        return {
+            "type": TERRAIN_CALC_RESPONSE_TYPE,
+            "status": "error",
+            "error": "Altitude must be a positive number",
+        }
+    if app is None:
+        return {
+            "type": TERRAIN_CALC_RESPONSE_TYPE,
+            "status": "error",
+            "error": "Server not ready",
+        }
+
+    terrain_safety.on_takeoff_commanded(app, float(alt), [])  # [] = every UAV
+    return {
+        "type": TERRAIN_CALC_RESPONSE_TYPE,
+        "status": "ok" if terrain_safety.tracker.active else "pending",
+        "alt": float(alt),
+    }
+
+
 async def handle_X_TERRAIN_UNSAFE_REQ(
     message: FlockwaveMessage, sender: Client, hub: MessageHub
 ):
@@ -1192,15 +1684,19 @@ async def handle_X_TERRAIN_UNSAFE_AREA_REQ(
     return {"type": terrain_areas.EVENT_TYPE, **result}
 
 
-async def handle_X_TERRAIN_REQ(message: FlockwaveMessage, sender: Client, hub: MessageHub):
+async def handle_X_TERRAIN_REQ(
+    message: FlockwaveMessage, sender: Client, hub: MessageHub
+):
     """Socket.IO handler for X-TERRAIN-REQ incoming messages -- the mouse
     hover lookup.
 
-    A tile that is not on disk yet is downloaded on the spot, so the readout
-    works everywhere on the map, not just inside a pre-fetched area. The
-    response is held until the tile arrives (the GCS shows "Elev: ---"
-    meanwhile); concurrent lookups of the same tile share one download, and
-    a tile that failed to download is not retried for _FAILED_TILE_RETRY_S.
+    Read-only: only ever reads a tile that's already on disk. It never
+    downloads a missing one -- that used to happen here too (lazily, the
+    first time a point in an undownloaded tile was hovered), but that
+    meant hovering ANYWHERE on the map could trigger a download. Only
+    "Set Origin" (X-TERRAIN-RANGE-REQ, handled below) is allowed to
+    download tiles now; hovering outside a pre-fetched area just reports
+    "not available" instead of fetching it on the spot.
     """
     body = message.body or {}
     lat = body.get("lat")
@@ -1229,22 +1725,11 @@ async def handle_X_TERRAIN_REQ(message: FlockwaveMessage, sender: Client, hub: M
 
     tile_name = mgr.get_tile_name(lat, lon)
     hgt_file = mgr.terrain_dir / f"{tile_name}.hgt"
-
-    elevation = None
-    failed_at = _failed_tile_times.get(tile_name)
-    recently_failed = (
-        failed_at is not None
-        and time.monotonic() - failed_at < _FAILED_TILE_RETRY_S
-    )
-    if hgt_file.exists() or not recently_failed:
-        if await _ensure_tile_ready(mgr, lat, lon):
-            _failed_tile_times.pop(tile_name, None)
-            elevation = mgr.get_elevation(lat, lon)
-        else:
-            _failed_tile_times[tile_name] = time.monotonic()
+    elevation = mgr.get_elevation(lat, lon) if hgt_file.exists() else None
     if log:
         log.debug(
-            f"[TERRAIN REQ] {lat:.4f}, {lon:.4f} -> {elevation} m (tile {tile_name})"
+            f"[TERRAIN REQ] {lat:.4f}, {lon:.4f} -> {elevation} m "
+            f"(tile {tile_name} {'cached' if hgt_file.exists() else 'not downloaded'})"
         )
 
     return {
@@ -1369,6 +1854,8 @@ async def run(app_instance, config, logger):
     log = logger
 
     _get_terrain_manager(configuration.get("terrain_dir") if configuration else None)
+    # UAV homes read their elevation here, not from whichever planning grid is active
+    terrain_safety.tracker.set_home_terrain_lookup(_home_terrain_elevation)
 
     with ExitStack() as stack:
         stack.enter_context(overridden(globals(), app=app_instance, log=logger))
@@ -1377,6 +1864,7 @@ async def run(app_instance, config, logger):
                 "X-TERRAIN-REQ": handle_X_TERRAIN_REQ,
                 "X-TERRAIN-RANGE-REQ": handle_X_TERRAIN_RANGE_REQ,
                 "X-TERRAIN-SAFETY-REQ": handle_X_TERRAIN_SAFETY_REQ,
+                TERRAIN_CALC_REQUEST_TYPE: handle_X_TERRAIN_CALC_REQ,
                 terrain_unsafe.REQUEST_TYPE: handle_X_TERRAIN_UNSAFE_REQ,
                 terrain_areas.REQUEST_TYPE: handle_X_TERRAIN_UNSAFE_AREA_REQ,
             }

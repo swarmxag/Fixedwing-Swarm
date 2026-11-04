@@ -31,26 +31,51 @@ def make_yaml():
 
 
 class ServerMessage(unittest.TestCase):
+    class Recorder:
+        def __init__(self):
+            self.sent = []
+
+        def send_all(self, data, kind="cmd", **kw):
+            self.sent.append(data)
+            return {1: True}
+
     def setUp(self):
         sys.path.insert(0, os.path.join(REPO, "Xag-Server", "src"))
         import flockwave.server.swarm as swarm
 
         self.swarm = swarm
+        self.rec = self.Recorder()
+        self.real_router = self.swarm.ROUTER
+        self.swarm.ROUTER = self.rec
 
-    def test_message_carries_the_exact_yaml(self):
+    def tearDown(self):
+        self.swarm.ROUTER = self.real_router
+
+    def test_push_sends_origin_then_the_exact_yaml(self):
         text = make_yaml()
-        msg = self.swarm._geofence_message(text)
-        self.assertTrue(msg.startswith("geofence,"))
-        self.assertEqual(base64.b64decode(msg[len("geofence,"):]).decode("utf-8"), text)
+        lat, lon = rng.uniform(-60, 60), rng.uniform(-170, 170)
+        self.assertTrue(self.swarm.push_origin_and_geofence((lat, lon), text))
+        self.assertEqual(self.rec.sent[0], "origin,{},{}".format(lat, lon))
+        self.assertTrue(self.rec.sent[1].startswith("geofence,"))
+        self.assertEqual(base64.b64decode(self.rec.sent[1][len("geofence,"):]).decode("utf-8"), text)
 
-    def test_falls_back_to_the_plain_message(self):
-        self.assertEqual(self.swarm._geofence_message(None), "geofence")
-        self.assertEqual(self.swarm._geofence_message(""), "geofence")
-        self.assertEqual(self.swarm._geofence_message("x" * (self.swarm.FENCE_MAX_BYTES + 1)), "geofence")
-
-    def test_fits_in_one_datagram_at_the_limit(self):
-        msg = self.swarm._geofence_message("x" * self.swarm.FENCE_MAX_BYTES)
-        self.assertLess(len(msg), 60000)
+    def test_process_fence_sends_the_yaml_it_just_wrote(self):
+        """Regression: process_fence used to drop the yaml text and call the push without it."""
+        tmp = tempfile.mkdtemp()
+        lat0, lon0 = rng.uniform(-60, 60), rng.uniform(-170, 170)
+        span = rng.uniform(0.002, 0.05)
+        fence = [[lat0, lon0], [lat0 + span, lon0], [lat0 + span, lon0 + span], [lat0, lon0 + span]]
+        real_path = self.swarm._origin_file_path
+        real_docs = self.swarm.FenceToYAML.get_documents_folder
+        self.swarm._origin_file_path = lambda: os.path.join(tmp, "rectangles.yaml")
+        self.swarm.FenceToYAML.get_documents_folder = staticmethod(lambda: tmp)  # never touch ~/Documents
+        try:
+            self.swarm.process_fence([fence], ["outer"])
+        finally:
+            self.swarm._origin_file_path = real_path
+            self.swarm.FenceToYAML.get_documents_folder = real_docs
+        written = open(os.path.join(tmp, "rectangles.yaml"), encoding="utf-8").read()
+        self.assertEqual(base64.b64decode(self.rec.sent[1][len("geofence,"):]).decode("utf-8"), written.replace("\r\n", "\n"))
 
 
 class NodeSide(unittest.TestCase):

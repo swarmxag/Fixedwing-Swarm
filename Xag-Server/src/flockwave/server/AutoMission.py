@@ -1,5 +1,6 @@
 import os
 import csv
+import math
 import simplekml
 from geopy.distance import distance
 from geopy.point import Point
@@ -73,12 +74,23 @@ class AutoSplitMission:
 
             csv_data = []
 
-            current_lat = bottom.latitude
+            # Same line placement as the swarm computer's groupsplitauto.py
+            # (which is what is flown): an equal number of lines in every
+            # strip, spaced evenly INSIDE it, never wider than grid_spacing.
+            # Lines used to start on the strip edge and repeat every
+            # grid_spacing while <= the top edge, so neighbouring UAVs shared
+            # the edge line and rounding gave some UAVs one line fewer.
+            num_lines = (
+                max(1, math.ceil(rectangle_height / grid_spacing - 1e-9))
+                if grid_spacing else 1
+            )
+            line_gap = rectangle_height / num_lines
             line_number = 0
 
-            while current_lat <= top.latitude:
+            for k in range(num_lines):
                 line_number += 1
-                current_point = Point(current_lat, west_edge.longitude)
+                line_point = distance(meters=(k + 0.5) * line_gap).destination(bottom, 0)
+                current_point = Point(line_point.latitude, west_edge.longitude)
                 east_point = distance(meters=full_width).destination(current_point, 90)
                 if line_number % 2 == 1:
                     csv_data.append((current_point.latitude, current_point.longitude))
@@ -97,10 +109,6 @@ class AutoSplitMission:
                         current_point, 250
                     )
                     csv_data.append((point_225.latitude, point_225.longitude))
-
-                current_lat = (
-                    distance(meters=grid_spacing).destination(current_point, 0).latitude
-                )
 
             uav_id = drone_ids_for_area[i]
             # Grid points never persisted -- fed straight into

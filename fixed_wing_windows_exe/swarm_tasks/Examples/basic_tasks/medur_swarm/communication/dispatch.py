@@ -49,19 +49,30 @@ def check_for_new_command(started_seq):
         handle_concurrent_remove_command,
     )
 
+    from medur_swarm.boundary import FenceViolation
+
     if pending_command.seq > started_seq:
         concurrent_seq = pending_command.seq
         if concurrent_seq > state.handled_concurrent_command_seq:
-            with lifecycle.claiming(concurrent_seq):
-                handled = (
-                    handle_concurrent_goal_command(pending_command.data)
-                    or handle_concurrent_autogoal_command(pending_command.data)
-                    or handle_concurrent_search_command(pending_command.data)
-                    or handle_concurrent_split_command(pending_command.data)
-                    or handle_concurrent_different_command(pending_command.data)
-                    or handle_concurrent_remove_command(pending_command.data)
-                    or handle_concurrent_add_command(pending_command.data)
-                )
+            try:
+                with lifecycle.claiming(concurrent_seq):
+                    handled = (
+                        handle_concurrent_goal_command(pending_command.data)
+                        or handle_concurrent_autogoal_command(pending_command.data)
+                        or handle_concurrent_search_command(pending_command.data)
+                        or handle_concurrent_split_command(pending_command.data)
+                        or handle_concurrent_different_command(pending_command.data)
+                        or handle_concurrent_remove_command(pending_command.data)
+                        or handle_concurrent_add_command(pending_command.data)
+                    )
+            except FenceViolation as e:
+                # Refused, not run: consume it so it neither interrupts the
+                # running mission nor gets retried by the foreground handler.
+                print("[fence] command refused:", e)
+                state.handled_concurrent_command_seq = concurrent_seq
+                state.last_seq = concurrent_seq
+                lifecycle.concurrent_refused(concurrent_seq, str(e))
+                return None
         else:
             handled = False
         if handled:
@@ -74,3 +85,34 @@ def check_for_new_command(started_seq):
         raise MissionPreempted(
             pending_command.data, pending_command.address, pending_command.seq
         )
+
+
+def apply_pending_topology_command():
+    """For mission loops that do not call check_for_new_command: apply a
+    pending 'remove,N' / 'add,N' without leaving the mission. Anything else
+    (goal, search, stop, ...) is left in the mailbox untouched, exactly as
+    before. Each mailbox seq is applied at most once. Returns True if a
+    topology command was consumed."""
+    from medur_swarm.uav import topology
+    from medur_swarm.uav.management import (
+        handle_concurrent_add_command,
+        handle_concurrent_remove_command,
+    )
+
+    seq = pending_command.seq  # read before data: _promote sets data first
+    if seq <= state.last_seq or seq <= state.handled_concurrent_command_seq:
+        return False
+    data = pending_command.data
+    if not topology.is_topology_command(data):
+        return False
+    with lifecycle.claiming(seq):
+        handled = handle_concurrent_remove_command(
+            data
+        ) or handle_concurrent_add_command(data)
+    state.handled_concurrent_command_seq = seq
+    state.last_seq = seq
+    if handled:
+        lifecycle.concurrent_handled(seq)
+    else:
+        lifecycle.concurrent_refused(seq, "topology_change_failed")
+    return True

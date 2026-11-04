@@ -18,7 +18,8 @@ from swarm_tasks.simulation import visualizer as viz
 
 import swarm_tasks
 
-from medur_swarm import config, state
+from medur_swarm import boundary, config, state
+from medur_swarm.uav import link_monitor
 from medur_swarm.uav.management import remove_vehicle
 from medur_swarm.utils import (
     allocate_drones,
@@ -34,8 +35,14 @@ from medur_swarm.uav.guidance import (
     uav_reached_waypoint,
 )
 from medur_swarm.uav.telemetry import live_gps_plot_points, print_sim_vs_real_latlon
-from medur_swarm.tasks.runner import assign_mission_tasks, synchronize_mission_topology
+from medur_swarm.tasks.runner import (
+    assign_mission_tasks,
+    removed_area_end,
+    start_deferred_redistribution_round,
+    synchronize_mission_topology,
+)
 from medur_swarm.communication.dispatch import check_for_new_command
+from medur_swarm.communication import lifecycle
 from medur_swarm.tasks import specific_split
 
 
@@ -86,6 +93,7 @@ def start_split_mission(decoded_index):
             set(state.pos_array),
         )
         return False
+    plan_backup = boundary.snapshot()
     split = AutoSplitMission(
         origin=state.origin,
         center_lat_lons=center_lat_lon_array,
@@ -104,6 +112,7 @@ def start_split_mission(decoded_index):
     for bot_index in selected_indexes:
         uav_id = state.pos_array[bot_index]
         csv_paths_by_index[bot_index] = uav_path_csv(uav_id)
+    boundary.check_csv_paths(csv_paths_by_index.values(), "split", restore=plan_backup)
     assign_mission_tasks(csv_paths_by_index, "split")
     print(
         "[concurrent split] accepted during running mission",
@@ -123,6 +132,8 @@ def handle_concurrent_split_command(command_data):
         if decoded_index.startswith("specificsplit"):
             return specific_split.start_specific_split_mission(decoded_index)
         return start_split_mission(decoded_index)
+    except boundary.FenceViolation:
+        raise
     except Exception as e:
         print("[concurrent split] failed", e)
         return False
@@ -147,6 +158,7 @@ def run_split_or_specific_split_command(data):
     """
     if not (data.startswith(b"split") or data.startswith(b"specificsplit")):
         return
+    plan_backup = boundary.snapshot()  # the generators below overwrite path files
     if data.startswith(b"specificsplit"):
         selected_uav_ids = specific_split.parse_and_start_foreground(
             data.decode("utf-8")
@@ -180,6 +192,10 @@ def run_split_or_specific_split_command(data):
                     "not a subset of connected pos_array",
                     set(state.pos_array),
                 )
+                lifecycle.fail_current(
+                    "UAVs not connected: %s"
+                    % sorted(set(selected_uav_ids) - set(state.pos_array))
+                )
                 return True
             else:
                 split = AutoSplitMission(
@@ -198,10 +214,15 @@ def run_split_or_specific_split_command(data):
         except Exception as e:
             print("Exception", e)
 
-    _run_split_movement(selected_uav_ids)
+    _run_split_movement(selected_uav_ids, plan_backup)
 
 
-def _run_split_movement(selected_uav_ids):
+def _run_split_movement(selected_uav_ids, plan_backup=None):
+    # Refuse a plan that leaves the fence -- before any mission state is reset
+    # or the simulation rebuilt; the previous path files are put back.
+    boundary.check_csv_paths(
+        [uav_path_csv(u) for u in selected_uav_ids], "split", restore=plan_backup
+    )
     state.split_flag = True
     state.split_flag_val = 0
     state.search_step = 1
@@ -211,8 +232,11 @@ def _run_split_movement(selected_uav_ids):
     state.pop_flag_arr = [1] * len(state.pos_array)
     state.removed_uav_grid = []
     state.removed_grid_path_length = []
+    state.removed_grid_path_end = []
+    state.deferred_removed_segments = []
     state.uncovered_area_points = []
     state.uncovered_area_filename = []
+    state.uncovered_area_end = []
     state.removed_grid_path_array_flag = False
     state.removed_grid_path_array = [0] * len(state.pos_array)
     state.removed_grid_filename = [0] * len(state.pos_array)
@@ -297,12 +321,7 @@ def _run_split_movement(selected_uav_ids):
             state.vehicle_lost_flag = True
             x = remove_vehicle()
             print(x)
-        if state.remove_bot_flag:
-            for m in sorted(set(state.remove_bot_array), reverse=True):
-                if 0 <= m < len(state.all_uav_csv_grid_array):
-                    state.removed_uav_grid.append(state.all_uav_csv_grid_array[m])
-                if 0 <= m < len(state.grid_path_array):
-                    state.removed_grid_path_length.append(state.grid_path_array[m])
+        # Also keeps each removed UAV's unfinished work for redistribution
         selected_indexes = synchronize_mission_topology(
             selected_indexes,
             csv_file_paths,
@@ -311,7 +330,9 @@ def _run_split_movement(selected_uav_ids):
             num_lines,
             current_goals,
             planned_paths_by_bot,
+            index_sets=(diverted_indexes,),
         )
+        start_deferred_redistribution_round(selected_indexes)
         selected_index_set = set(selected_indexes)
         # Keep the "this loop owns these bots" set aligned after any add/remove.
         state.foreground_mission_indexes = set(selected_indexes)
@@ -337,6 +358,8 @@ def _run_split_movement(selected_uav_ids):
                 diverted_indexes.add(i)
             if i in diverted_indexes:
                 continue
+            if not link_monitor.ready(i):
+                continue  # link down: hold the bot at its lane point
             if len(state.checkall_removed_grid_path_array_start_val) == len(
                 state.pos_array
             ):
@@ -357,7 +380,10 @@ def _run_split_movement(selected_uav_ids):
             ):
                 print("removed_grid_path_length", state.removed_grid_path_length)
                 allocation, remaining_points_list = allocate_drones(
-                    int(num_lines[i]),
+                    [
+                        removed_area_end(x, num_lines[i])
+                        for x in range(len(state.removed_grid_path_length))
+                    ],
                     state.removed_grid_path_length,
                     len(selected_indexes),
                 )
@@ -374,13 +400,15 @@ def _run_split_movement(selected_uav_ids):
                         start_index = state.removed_grid_path_length[x] - 1
                     print("start_index", start_index)
                     print("JJJ", allocation[x])
+                    area_end = removed_area_end(x, num_lines[i])
                     if (allocation[x] == 0) and state.removed_grid_path_length[
                         x
-                    ] != int(num_lines[i]):
+                    ] != area_end:
                         state.uncovered_area_points.append(
                             state.removed_grid_path_length[x]
                         )
                         state.uncovered_area_filename.append(state.removed_uav_grid[x])
+                        state.uncovered_area_end.append(area_end)
                         print(
                             "uncovered_area_points",
                             x,
@@ -402,8 +430,8 @@ def _run_split_movement(selected_uav_ids):
                         )
                         if m != 0:
                             end_index += add_points
-                        if end_index > int(num_lines[i]):
-                            end_index = int(num_lines[i])
+                        if end_index > area_end:
+                            end_index = area_end
                         state.removed_grid_path_array[
                             state.removed_grid_path_array_index
                         ] = (start_index, end_index)
@@ -469,9 +497,14 @@ def _run_split_movement(selected_uav_ids):
                             state.removed_grid_filename[i] = (
                                 state.uncovered_area_filename[u]
                             )
+                            uncovered_end = (
+                                state.uncovered_area_end[u]
+                                if u < len(state.uncovered_area_end)
+                                else int(num_lines[i])
+                            )
                             state.removed_grid_path_array[i] = (
                                 state.uncovered_area_points[u],
-                                int(num_lines[i]),
+                                uncovered_end,
                             )
                             print(
                                 "removed_grid_path_array_start_val",
@@ -481,6 +514,12 @@ def _run_split_movement(selected_uav_ids):
                             state.checkall_removed_grid_path_array_start_val[i] = 0
                             state.uncovered_area_points.pop(u)
                             state.uncovered_area_filename.pop(u)
+                            if u < len(state.uncovered_area_end):
+                                state.uncovered_area_end.pop(u)
+                            # One area per finished UAV: popping while the
+                            # loop went on overwrote this one with the next
+                            # and dropped every other waiting area.
+                            break
                     else:
                         continue
             if (

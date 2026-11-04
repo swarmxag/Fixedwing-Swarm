@@ -674,10 +674,13 @@ async def test_safety_request_handler_returns_current_thresholds(env):
 def test_app_calls_the_terrain_hooks_at_the_right_places():
     from flockwave.server.app import SkybrushServer
 
+    # Takeoff only flies: the safety altitude comes from the GCS "Calculate" button
     takeoff = inspect.getsource(SkybrushServer.dispatch_to_uavs)
-    i_alt = takeoff.index("update_Takeoff_Alt(alt)")
-    i_hook = takeoff.index("on_takeoff_commanded(self, alt, uav_ids)")
-    assert i_alt < i_hook < takeoff.index("check_height")  # right after the alt is stored, before takeoff runs
+    assert "update_Takeoff_Alt(alt)" in takeoff
+    assert "on_takeoff_commanded" not in takeoff
+    assert "on_altitude_commanded" not in inspect.getsource(SkybrushServer)
+    calc = inspect.getsource(T.handle_X_TERRAIN_CALC_REQ)
+    assert "on_takeoff_commanded(app, float(alt), [])" in calc  # [] = every UAV
 
     funnel = inspect.getsource(SkybrushServer.request_to_send_UAV_INF_message_for)
     assert "on_uav_status_updated(self, uav_ids)" in funnel
@@ -807,10 +810,12 @@ def test_gps_jitter_on_the_ground_does_not_move_the_home_or_republish():
     assert t.take_origin_change() is False
 
 
-def test_a_uav_carried_far_before_takeoff_gets_a_new_home():
+def test_a_uav_carried_far_before_takeoff_keeps_its_home_until_the_takeoff():
     t = home_tracker()
     t.update_uav("1", 0.0, position=HOME_A)
-    p = t.update_uav("1", 0.0, position=FAR)  # ~2.7 km away, still on the ground
+    assert t.update_uav("1", 0.0, position=FAR) is None  # ~2.7 km away on the ground: home unchanged
+    assert t.uav_payload("1")["referenceLocation"] == {"lat": HOME_A[0], "lon": HOME_A[1]}
+    (_o, p) = t.command_takeoff(100, ["1"], positions={"1": FAR})  # the takeoff sets the home
     assert p["referenceTerrainElevation"] == 4077.0
     assert p["referenceLocation"] == {"lat": FAR[0], "lon": FAR[1]}
 
@@ -840,28 +845,33 @@ def test_a_position_outside_the_terrain_grid_falls_back_to_the_corner():
     assert (p["referenceTerrainElevation"], p["referenceSource"]) == (6005.0, "origin_corner")
 
 
-def test_a_new_origin_rereads_every_home_from_its_own_grid():
+def test_a_new_origin_never_changes_a_saved_home():
     t = home_tracker()
     t.update_uav("1", 0.0, position=HOME_A)
     assert t.uav_payload("1")["referenceTerrainElevation"] == 4096.0
 
     assert t.set_origin("fp-B", 5000.0, CORNER, 50.0, lambda lat, lon: 3900.0)  # another Origin, another grid
     p = t.uav_payload("1")
-    assert (p["referenceTerrainElevation"], p["referenceSource"]) == (3900.0, "uav_home")  # no new position needed
+    assert (p["referenceTerrainElevation"], p["referenceSource"]) == (4096.0, "uav_home")
 
     assert t.set_origin("fp-C", 5000.0, CORNER, 50.0, lambda lat, lon: None)  # UAV is outside this Origin's grid
-    assert t.uav_payload("1")["referenceSource"] == "origin_corner"
+    p = t.uav_payload("1")
+    assert (p["referenceTerrainElevation"], p["referenceSource"]) == (4096.0, "uav_home")
 
 
-def test_a_landed_uav_takes_the_place_it_landed_on_as_its_next_home():
+def test_a_landed_uav_keeps_its_home_until_the_next_takeoff():
     t = home_tracker()
     t.update_uav("1", 0.0, position=HOME_A)
     t.command_takeoff(80, ["1"])
     t.update_uav("1", 90.0, armed=True, position=FAR)  # flying
     p = t.update_uav("1", 0.0, armed=False, position=FAR)  # landed
-    assert p["flightPhase"] == "pre_takeoff" and p["referenceSource"] == "origin_corner"  # home forgotten
-    p = t.update_uav("1", 0.0, armed=False, position=FAR)  # next update: on the ground, new home
+    assert p["flightPhase"] == "pre_takeoff"
+    assert (p["referenceTerrainElevation"], p["referenceSource"]) == (4096.0, "uav_home")  # home kept
+    assert t.update_uav("1", 0.0, armed=False, position=FAR) is None  # still on the ground: unchanged
+    # a takeoff noticed from telemetry: the place it last stood disarmed becomes the home
+    p = t.update_uav("1", 50.0, armed=True, airborne=True, position=FAR)
     assert (p["referenceTerrainElevation"], p["referenceSource"]) == (4077.0, "uav_home")
+    assert p["referenceLocation"] == {"lat": FAR[0], "lon": FAR[1]}
 
 
 def test_a_takeoff_command_records_the_home_of_a_uav_not_seen_before():
@@ -949,194 +959,12 @@ async def test_the_takeoff_command_records_the_home_of_a_uav_that_had_no_telemet
 
 
 
-# --- A climb that levels off below the commanded altitude -----------------------------
-#
-# `climbing` reports the COMMANDED altitude, so a UAV that stops short used to be
-# treated as higher than it really is -- for the rest of the sortie, because the only
-# way out of that stage was reaching the commanded altitude exactly. These cover the
-# stall detection that ends the climb instead (ts.CLIMB_STALL_UPDATES).
+# --- which altitude counts ------------------------------------------------------------
 
 
-def _climb_to(t, uav_id, ahl, airborne=True):
-    """One telemetry update from an airborne UAV."""
-    return t.update_uav(uav_id, ahl, airborne=airborne)
-
-
-def test_a_climb_that_levels_off_below_the_commanded_altitude_switches_to_telemetry():
-    t = make_tracker()
-    t.update_uav("1", 0.0)
-    t.command_takeoff(300, ["1"])
-
-    # Climbs, then levels off 30 m short -- well inside normal altitude-hold error.
-    for ahl in (50.0, 120.0, 200.0, 270.0):
-        _climb_to(t, "1", ahl)
-    assert t.uav_payload("1")["flightPhase"] == "climbing_to_takeoff_altitude"
-    assert t.uav_payload("1")["safetyAltitude"] == 300.0  # still the commanded value
-
-    # Holding that altitude eventually ends the climb.
-    for _ in range(ts.CLIMB_STALL_UPDATES):
-        _climb_to(t, "1", 270.0)
-
-    p = t.uav_payload("1")
-    assert p["flightPhase"] == "flying"
-    assert p["altitudeSource"] == "telemetry_agl"
-    assert p["safetyAltitude"] == 270.0  # the REAL altitude, not the commanded 300
-
-
-def test_a_slow_but_real_climb_is_never_treated_as_stalled():
-    t = make_tracker()
-    t.update_uav("1", 0.0)
-    t.command_takeoff(300, ["1"])
-
-    # Far more updates than the stall limit, but always gaining: still climbing.
-    ahl = 30.0
-    for _ in range(ts.CLIMB_STALL_UPDATES * 3):
-        ahl += ts.CLIMB_PROGRESS_EPSILON_M
-        _climb_to(t, "1", ahl)
-
-    p = t.uav_payload("1")
-    assert p["flightPhase"] == "climbing_to_takeoff_altitude"
-    assert p["safetyAltitude"] == 300.0
-
-
-def test_a_uav_still_on_the_ground_after_takeoff_keeps_the_commanded_altitude():
-    """A flat AHL on the ground is not a stalled climb: it must keep showing the
-    commanded altitude (the pre-flight planning view), never "flying at 0 m"."""
-    t = make_tracker()
-    t.update_uav("1", 0.0)
-    t.command_takeoff(300, ["1"])
-
-    for _ in range(ts.CLIMB_STALL_UPDATES * 2):
-        t.update_uav("1", 0.0, airborne=False)
-
-    p = t.uav_payload("1")
-    assert p["flightPhase"] == "climbing_to_takeoff_altitude"
-    assert p["safetyAltitude"] == 300.0
-
-
-def test_stall_detection_ignores_a_flat_low_ahl_when_no_heartbeat_is_available():
-    """Without a heartbeat, `airborne` is None and AHL alone decides. A UAV sitting
-    at 0 m must still not be taken for a stalled climb."""
-    t = make_tracker()
-    t.update_uav("1", 0.0)
-    t.command_takeoff(300, ["1"])
-
-    for _ in range(ts.CLIMB_STALL_UPDATES * 2):
-        t.update_uav("1", 0.0)  # airborne unknown, AHL below MIN_AIRBORNE_AHL_M
-
-    assert t.uav_payload("1")["flightPhase"] == "climbing_to_takeoff_altitude"
-
-
-def test_a_new_takeoff_command_restarts_the_climb_after_a_stall():
-    t = make_tracker()
-    t.update_uav("1", 0.0)
-    t.command_takeoff(300, ["1"])
-    for _ in range(ts.CLIMB_STALL_UPDATES + 1):
-        _climb_to(t, "1", 270.0)
-    assert t.uav_payload("1")["flightPhase"] == "flying"
-
-    t.command_takeoff(500, ["1"])  # climb again, to a new altitude
-    p = t.uav_payload("1")
-    assert p["flightPhase"] == "climbing_to_takeoff_altitude"
-    assert p["safetyAltitude"] == 500.0
-
-
-# --- "same": one shared level-off altitude, lower-of-two governs -----------------------
-#
-# A commanded DESCENT is a hazard the moment it is ordered, so it counts immediately.
-# A commanded CLIMB earns no credit until telemetry confirms the height.
-
-
-def _flying_at(t, uav_id, ahl, commanded=80.0):
-    """Get a UAV into the `flying` stage at `ahl`."""
-    t.update_uav(uav_id, 0.0)
-    t.command_takeoff(commanded, [uav_id])
-    t.update_uav(uav_id, commanded, airborne=True)   # reached -> flying
-    t.update_uav(uav_id, ahl, airborne=True)
-    return t
-
-
-def test_a_commanded_descent_lowers_the_safety_altitude_immediately():
-    t = make_tracker()
-    _flying_at(t, "1", 200.0, commanded=200.0)
-    assert t.uav_payload("1")["safetyAltitude"] == 200.0
-
-    t.command_altitude(80, ["1"])  # "same 80": descend, not yet begun
-
-    p = t.uav_payload("1")
-    assert p["safetyAltitude"] == 80.0            # the ORDERED altitude, not the current 200
-    assert p["altitudeSource"] == "commanded_altitude"
-
-
-def test_a_commanded_climb_is_not_credited_until_telemetry_confirms_it():
-    t = make_tracker()
-    _flying_at(t, "1", 100.0, commanded=100.0)
-
-    t.command_altitude(400, ["1"])  # "same 400": climb, not yet achieved
-
-    p = t.uav_payload("1")
-    assert p["safetyAltitude"] == 100.0           # still the real altitude
-    assert p["altitudeSource"] == "telemetry_agl"
-
-
-def test_a_completed_descent_hands_control_back_to_telemetry():
-    t = make_tracker()
-    _flying_at(t, "1", 200.0, commanded=200.0)
-    t.command_altitude(80, ["1"])
-    assert t.uav_payload("1")["altitudeSource"] == "commanded_altitude"
-
-    t.update_uav("1", 80.0, airborne=True)        # descent achieved
-
-    p = t.uav_payload("1")
-    assert p["altitudeSource"] == "telemetry_agl"
-    assert p["safetyAltitude"] == 80.0
-
-
-def test_a_stale_level_off_cannot_clamp_a_later_higher_command():
-    """Once the descent is achieved the command is consumed, so a subsequent
-    climb is not held down by it."""
-    t = make_tracker()
-    _flying_at(t, "1", 200.0, commanded=200.0)
-    t.command_altitude(80, ["1"])
-    t.update_uav("1", 80.0, airborne=True)        # achieved -> cleared
-
-    t.update_uav("1", 300.0, airborne=True)       # later climbs well above it
-    p = t.uav_payload("1")
-    assert p["safetyAltitude"] == 300.0
-    assert p["altitudeSource"] == "telemetry_agl"
-
-
-def test_a_new_takeoff_command_supersedes_a_pending_level_off():
-    t = make_tracker()
-    _flying_at(t, "1", 200.0, commanded=200.0)
-    t.command_altitude(80, ["1"])
-
-    t.command_takeoff(500, ["1"])
-    p = t.uav_payload("1")
-    assert p["flightPhase"] == "climbing_to_takeoff_altitude"
-    assert (p["safetyAltitude"], p["altitudeSource"]) == (500.0, "takeoff_altitude")
-
-
-def test_command_altitude_does_not_restart_the_climb_stage():
-    """Unlike a Takeoff, a level-off must not push a flying UAV back to `climbing`."""
-    t = make_tracker()
-    _flying_at(t, "1", 200.0, commanded=200.0)
-    t.command_altitude(80, ["1"])
-    assert t.uav_payload("1")["flightPhase"] == "flying"
-
-
-def test_command_altitude_rejects_an_invalid_altitude():
-    t = make_tracker()
-    _flying_at(t, "1", 200.0, commanded=200.0)
-    for bad in (None, 0, -50, float("nan"), "120"):
-        assert t.command_altitude(bad, ["1"]) == []
-    assert t.uav_payload("1")["safetyAltitude"] == 200.0  # untouched
-
-
-def test_select_safety_altitude_takes_the_lower_of_commanded_and_actual():
+def test_select_safety_altitude_follows_the_flight_stage():
     S = ts.select_safety_altitude
-    F = FlightPhase.FLYING
-    assert S(F, 80.0, 200.0, 80.0) == (80.0, "commanded_altitude")   # descent ordered
-    assert S(F, 80.0, 200.0, 400.0) == (200.0, "telemetry_agl")      # climb ordered
-    assert S(F, 80.0, 200.0, None) == (200.0, "telemetry_agl")       # nothing pending
-    assert S(F, 80.0, 200.0, 200.0) == (200.0, "telemetry_agl")      # equal -> telemetry
+    assert S(FlightPhase.PRE_TAKEOFF, None, None) == (50.0, "initial_50m")
+    assert S(FlightPhase.CLIMBING, 300.0, 120.0) == (300.0, "takeoff_altitude")  # the calculated altitude while climbing
+    assert S(FlightPhase.FLYING, 300.0, 200.0) == (200.0, "telemetry_agl")  # flying: the real height
+    assert S(FlightPhase.FLYING, 300.0, None) == (300.0, "takeoff_altitude")  # no usable height yet

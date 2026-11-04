@@ -42,6 +42,20 @@ CONNECT_MAX_WORKERS = None
 # unbounded "wait until board has booted" step after the first heartbeat.
 CONNECT_DEADLINE_GRACE_S = 60
 
+# --- In-flight MAVLink link watch (uav/link_monitor.py) ---------------------
+# No heartbeat for LINK_STALE_S: the UAV's bot is held (its mission does not
+# advance on frozen telemetry). LINK_LOST_S: reported as lost. When heartbeats
+# return, the bot is moved to the aircraft's first fresh GPS position and the
+# mission continues; no position within LINK_POSITION_WAIT_S -> ask the
+# autopilot for its telemetry streams again. A link whose dronekit threads
+# stopped is reconnected on the same slot, retrying every LINK_RECONNECT_RETRY_S.
+LINK_STALE_S = 3.0
+LINK_LOST_S = 10.0
+LINK_CHECK_INTERVAL_S = 0.5
+LINK_POSITION_WAIT_S = 3.0
+LINK_RECONNECT_TIMEOUT_S = 30
+LINK_RECONNECT_RETRY_S = 5.0
+
 HEARTBEAT_IP = [
     "192.168.0.151",
     "192.168.0.152",
@@ -188,15 +202,24 @@ SEARCH_UAV_FLYBY_RADIUS_M = 100.0
 # number. UAV_DEFAULT_LOITER_RADIUS_M is the fallback when telemetry is absent.
 UAV_DEFAULT_LOITER_RADIUS_M = 200.0
 UAV_FINAL_WAYPOINT_RADIUS_MARGIN_M = 150.0
+# A goal whose loiter circle (live WP_LOITER_RAD plus this margin) would leave
+# the fence is refused. The server uses the same value (fence_guard.LOITER_MARGIN_M).
+GEOFENCE_LOITER_MARGIN_M = 50.0
 UAV_CURVE_POINT_SWITCH_RADIUS = 3.0  # sim units, bot-only progression
 
 # Forward guidance distance for fixed-wing aircraft on a Bezier turn, in
 # real (unscaled) metres. The bot still follows each sample for CVG safety.
 UAV_CURVE_LOOKAHEAD_M = 0.0
 
-# Print real UAV-to-bot separation for every moving command. This prints once
-# per bot control tick; set False only when a quiet console is required.
+# Print real UAV-to-bot separation for every moving command, once per bot
+# control tick, but only while the real UAV is AHEAD of its bot (signed lead
+# > 0); set False for a quiet console.
 BOT_SYNC_DEBUG = True
+
+# Show the matplotlib reference plot window. False keeps every plot
+# computation (the figure is still built and updated off-screen) but never
+# opens or redraws a window.
+SHOW_PLOT = True
 
 # A fixed-wing can't turn on a dime, so a wide switch radius issues the next
 # CSV point's command while still approaching the current one -- turn

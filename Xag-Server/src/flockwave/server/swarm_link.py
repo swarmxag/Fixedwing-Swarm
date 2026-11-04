@@ -63,26 +63,49 @@ COMMAND_LOG = collections.OrderedDict()  # (node, sid, seq) -> dict
 _log_lock = threading.Lock()
 _LOG_MAX = 200
 
+# Called with a copy of a command-log entry every time its status changes,
+# from the requesting thread or a link's reader thread. Installed by app.py
+# to tell the GUI; must not raise into the reader.
+on_command_status = None
+
+
+def _notify(entry):
+    if on_command_status is None:
+        return
+    try:
+        on_command_status(entry)
+    except Exception as e:
+        print("[swarm_link] command status notification failed:", repr(e))
+
 
 def _log_command(node, sid, seq, payload, status):
+    entry = {
+        "node": node,
+        "seq": seq,
+        "cmd": str(payload)[:48],
+        "status": status,
+        "why": "",
+        "ts": time.time(),
+    }
     with _log_lock:
-        COMMAND_LOG[(node, sid, seq)] = {
-            "node": node,
-            "seq": seq,
-            "cmd": str(payload)[:48],
-            "status": status,
-            "why": "",
-            "ts": time.time(),
-        }
+        COMMAND_LOG[(node, sid, seq)] = entry
         while len(COMMAND_LOG) > _LOG_MAX:
             COMMAND_LOG.popitem(last=False)
+        entry = dict(entry)
+    _notify(entry)
 
 
 def _update_command(node, sid, seq, status, why=""):
     with _log_lock:
         entry = COMMAND_LOG.get((node, sid, seq))
-        if entry is not None:
+        if entry is None:
+            return
+        # "error" is a notice about a background task, not a lifecycle
+        # state: report it but keep the command's real status.
+        if status != "error":
             entry["status"], entry["why"], entry["ts"] = status, why, time.time()
+        entry = dict(entry, status=status, why=why)
+    _notify(entry)
 
 
 def recent_commands(limit=30):
@@ -175,31 +198,6 @@ class ReliableUdp:
 # ---------------------------------------------------------------------------
 
 
-def _target_ids(payload):
-    """UAV ids a known command is aimed at (None = whole swarm / unknown)."""
-    try:
-        text = payload if isinstance(payload, str) else payload.decode("utf-8")
-        if text.startswith(("goal_", "autogoalrad_")):
-            ids = json.loads(text.rsplit("_", 1)[1])
-        elif text.startswith("autogoal_"):
-            ids = json.loads(text.rsplit("_", 3)[1])
-        elif text.startswith("different,"):
-            ids = json.loads(text.split(",", 3)[3])
-        elif text.startswith("search,"):
-            ids = json.loads(text.split(",", 6)[6])
-        elif text.startswith("split_"):
-            ids = json.loads(text.split("_")[2])
-        elif text.startswith("specificsplit_"):
-            ids = [i for group in json.loads(text.split("_")[2]) for i in group]
-        elif text.startswith(("add,", "remove,", "remove_bot,")):
-            ids = [int(text.split(",", 1)[1])]
-        else:
-            return None
-        return [int(i) for i in ids] or None
-    except (ValueError, IndexError, TypeError, UnicodeDecodeError):
-        return None
-
-
 class Router:
     def __init__(self, nodes_file=None, state_file=None, auto_replicate=True):
         self._auto_replicate = auto_replicate
@@ -208,7 +206,7 @@ class Router:
         self._nodes_file = nodes_file or os.environ.get("SWARM_NODES_FILE") or os.path.join(folder, "swarm_nodes.json")
         self._state_file = state_file or os.path.join(folder, "swarm_master.json")
         self._lock = threading.RLock()
-        self.nodes = {}  # uav id -> {"ip", "cmd", "ctl"}
+        self.nodes = {}  # node (swarm computer) id -> {"ip", "cmd", "ctl"}
         self.master = None
         self.epoch = 0
         self.pending_demotions = set()
@@ -284,11 +282,8 @@ class Router:
             return self._refuse(payload, self.load_error)
         if self.master is None:
             return self._refuse(payload, "no_master_selected")
-        targets = _target_ids(payload)
-        if targets and not self.legacy:
-            unknown = [i for i in targets if i not in self.nodes]
-            if unknown:
-                return self._refuse(payload, "unregistered_uav:%s" % unknown)
+        # The UAV ids inside a command are NOT checked against the node table:
+        # nodes are swarm computers, and the master flies every connected UAV.
         return self.links[self.master].sendto(payload, self.address(self.master, kind), self.epoch)
 
     def _refuse(self, payload, reason):
@@ -342,6 +337,8 @@ class Router:
                     reasons.append("node_epoch_ahead")
                 if status.get("promoting"):
                     reasons.append("promotion_in_progress")
+                if status.get("fence_ready") is False:
+                    reasons.append("no_geofence")
                 if node == self.master and status.get("role") == "master":
                     reasons.append("already_master")
         return {"node": node, "eligible": not reasons, "reasons": reasons, "status": status}

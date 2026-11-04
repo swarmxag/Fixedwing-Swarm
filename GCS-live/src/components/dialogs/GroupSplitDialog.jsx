@@ -157,6 +157,12 @@ const MultipleSelectChip = ({
         showErrorMsg(splitErrorMessages[res.body.message]);
         return;
       }
+      // Outside the geofence: the server sent nothing to the swarm.
+      const body = res?.body?.message;
+      if (typeof body === 'string' && body.startsWith('out_of_boundary')) {
+        showErrorMsg(body.slice(body.indexOf('|') + 1));
+        return;
+      }
       if (Boolean(res?.body?.message)) {
         showMsg('split Mission Message sent');
       }
@@ -165,9 +171,14 @@ const MultipleSelectChip = ({
         return;
       }
       showMsg(typeof res.body.time?.toFixed(2));
-      dispatch(setMissionFromServer(res.body.message));
-      if (res?.body?.missionByUav) {
+      // missionByUav (when present) is the same paths as message, just keyed
+      // by UAV id -- dispatch only one, like SwarmPanel's split/search. Setting
+      // both drew the grid twice, and the missionPoints copy stayed on the map
+      // after a later search, which only replaces missionByUav.
+      if (res?.body?.missionByUav && Object.keys(res.body.missionByUav).length > 0) {
         dispatch(mergeMissionForUavs(res.body.missionByUav));
+      } else {
+        dispatch(setMissionFromServer(res.body.message));
       }
       dispatch(setTime(res.body.time?.toFixed(2)));
     } catch (err) {

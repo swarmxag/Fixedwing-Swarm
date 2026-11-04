@@ -1,4 +1,4 @@
-import os, json, socket, time, csv
+import base64, os, json, socket, time, csv
 from math import radians, cos, sin, sqrt, atan2
 from .search import BezierCurve
 from .AutoMission import AutoSplitMission
@@ -168,14 +168,23 @@ def _origin_file_path():
 server_address_220 = ("127.0.0.1", 12008)
 
 
-def push_origin_and_geofence(origin1):
-    """Origin + geofence-refresh go to EVERY node (not just the master) so a
-    standby that is later promoted already has the right origin. Each node
-    must ACK; the origin is validated again on the receiving side. Returns
-    True only if every node accepted both messages."""
-    results = ROUTER.send_all("origin,{},{}".format(origin1[0], origin1[1]))
-    results.update({f"geofence:{k}": v for k, v in ROUTER.send_all("geofence").items()})
-    return all(v is True for v in results.values()) and bool(results)
+# def push_origin_and_geofence(origin1):
+#     """Origin + geofence-refresh go to EVERY node (not just the master) so a
+#     standby that is later promoted already has the right origin. Each node
+#     must ACK; the origin is validated again on the receiving side. Returns
+#     True only if every node accepted both messages."""
+#     results = ROUTER.send_all("origin,{},{}".format(origin1[0], origin1[1]))
+#     results.update({f"geofence:{k}": v for k, v in ROUTER.send_all("geofence").items()})
+#     return all(v is True for v in results.values()) and bool(results)
+
+
+def push_origin_and_geofence(origin1, yaml_text):
+    b64 = base64.b64encode(yaml_text.encode()).decode()
+    results = ROUTER.send_all("origin,{},{}".format(*origin1))
+    results.update(
+        {f"geofence:{k}": v for k, v in ROUTER.send_all("geofence," + b64).items()}
+    )
+    return bool(results) and all(v is True for v in results.values())
 
 
 def get_origin():
@@ -190,11 +199,14 @@ def process_fence(coords, labels):
     """coords/labels: parsed the same way app.py's "fence" handler parses them.
     Writes rectangles.yaml (origin + obstacle walls) and pushes the refresh."""
     global origin
+    from .fence_guard import set_outer_fence
+
+    set_outer_fence(coords[labels.index("outer")])  # commands are checked against it
     fence_yaml = FenceToYAML(fence_coordinates=coords, labels=labels)
     fence_yaml.process_fences()
-    new_origin, _ = fence_yaml.generate_yaml(_origin_file_path())
+    new_origin, yaml_text = fence_yaml.generate_yaml(_origin_file_path())
     origin = new_origin
-    push_origin_and_geofence(origin)
+    push_origin_and_geofence(origin, yaml_text)
     return origin
 
 

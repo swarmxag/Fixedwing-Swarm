@@ -4,6 +4,7 @@ from appdirs import AppDirs
 from collections import defaultdict
 from inspect import isawaitable, isasyncgen
 from os import environ
+import re
 from trio import BrokenResourceError, move_on_after, sleep, open_nursery
 from typing import (
     Any,
@@ -57,7 +58,8 @@ from .registries import (
 )
 from .version import __version__ as server_version
 from .swarm import *
-from .swarm_link import collect_failures
+from .swarm_link import ROUTER as SWARM_ROUTER, collect_failures
+from . import fence_guard
 from flockwave.server.ext.mavlink.automission import AutoMissionManager
 from flockwave.server.ext.mavlink.enums import MAVCommand
 from typing import List
@@ -1305,7 +1307,11 @@ class SkybrushServer(DaemonApp):
                     print("[fence] calling process_fence()...")
                     generated_origin = process_fence(coords, label)
                     print(f"[fence] rectangles.yaml written, origin={generated_origin}")
-                    if not is_server_running("medur_fixed_wing.exe"):
+                    # With a node table (separate swarm computers) the swarm runs
+                    # on them: never start a second one on this machine.
+                    if SWARM_ROUTER.legacy and not is_server_running(
+                        "medur_fixed_wing.exe"
+                    ):
                         print("[fence] swarm script not running, launching...")
                         run_server_exe()
 
@@ -1355,6 +1361,13 @@ class SkybrushServer(DaemonApp):
             if get_origin() is None:
                 print("[origin reminder] Set Origin/Geofence before sending search")
                 result = "origin_not_set"
+            elif refused := fence_guard.check_areas(
+                [[p[1], p[0]] for p in (parameters.get("coords") or [])[:1]],
+                parameters.get("coverage"),
+                "search",
+            ):
+                print("[fence-guard]", refused)
+                result = refused
             else:
                 # requested_ids non-empty means the operator targeted a specific
                 # UAV subset -- skip stop_socket() (broadcasts stop to everyone)
@@ -1423,18 +1436,8 @@ class SkybrushServer(DaemonApp):
                 )
 
         if msg == "same":  # TODO
-            # Terrain safety: "same" is ONE altitude shared by every UAV, so the
-            # server knows exactly what is being flown and can show it before the
-            # aircraft get there. A commanded descent counts immediately; a climb
-            # earns credit only once telemetry confirms it.
-            #
-            # The "different" ladder above is deliberately NOT hooked: the server
-            # derives its steps from the selection index, while the swarm computer
-            # flies them from pos_array, so the numbers here are not the ones being
-            # flown. Those UAVs are picked up from telemetry instead.
-            from .terrain_safety import on_altitude_commanded
-
-            on_altitude_commanded(self, parameters["same_alt"], uav_ids)
+            # Terrain safety follows the GCS "Calculate" altitude and telemetry
+            # (terrain_safety.py); an altitude change is picked up from telemetry.
             result = same_alt_socket(parameters["same_alt"])
 
         if msg == "clear_csv":
@@ -1450,6 +1453,16 @@ class SkybrushServer(DaemonApp):
             if get_origin() is None:
                 print("[origin reminder] Set Origin/Geofence before sending goal")
                 result = "origin_not_set"
+            elif refused := fence_guard.check_points(
+                [[p[1], p[0]] for p in parameters.get("coords") or []], "goal"
+            ) or fence_guard.check_loiter(
+                # only the final point is loitered around; earlier ones are flown through
+                [[p[1], p[0]] for p in (parameters.get("coords") or [])[-1:]],
+                parameters.get("radius"),
+                "final goal",
+            ):
+                print("[fence-guard]", refused)  # nothing is sent, not even stop
+                result = refused
             else:
                 # requested_ids non-empty means the operator targeted a specific
                 # UAV subset (e.g. just UAV3) rather than the whole swarm -- in
@@ -1488,6 +1501,16 @@ class SkybrushServer(DaemonApp):
             if get_origin() is None:
                 print("[origin reminder] Set Origin/Geofence before sending autogoal")
                 result = "origin_not_set"
+            elif refused := fence_guard.check_autogoal(
+                parameters.get("coords"),
+                len(parameters.get("ids") or [])
+                or len(list(self.object_registry.ids_by_type(UAV))),
+                parameters.get("radius"),
+                parameters.get("automateBearing", 90),
+                parameters.get("automateSafetyMargin", 50),
+            ):
+                print("[fence-guard]", refused)
+                result = refused
             else:
                 requested_ids = [int(uav_id) for uav_id in parameters.get("ids", [])]
                 if not requested_ids:
@@ -1518,16 +1541,16 @@ class SkybrushServer(DaemonApp):
         if msg == "log":
             result = fetch_file_content(get_log_file_path())
 
+        # No stop before adding/removing a UAV: the swarm applies it to the
+        # running mission and only the added/removed UAV is affected
+        # (medur_swarm/uav/topology.py). A stop here ended the mission for
+        # every UAV.
         if msg == "remove_link":
-            stop_socket()
-            await sleep(1)
             uav = int(parameters.get("id"))
             result = mavlink_remove(uav)
             result = True
 
         if msg == "add_link":
-            stop_socket()
-            await sleep(1)
             uav = int(parameters.get("id"))
             result = mavlink_add(uav)
 
@@ -1600,6 +1623,13 @@ class SkybrushServer(DaemonApp):
         if msg == "groupsplit":
             if get_origin() is None:
                 result = "no_fence_drawn"
+            elif refused := fence_guard.check_areas(
+                [[p[1], p[0]] for p in parameters.get("coords") or []],
+                parameters.get("coverage"),
+                "split",
+            ):
+                print("[fence-guard]", refused)
+                result = refused
             else:
                 import traceback
 
@@ -1679,12 +1709,18 @@ class SkybrushServer(DaemonApp):
                     connected_ids = {
                         int(uav_id) for uav_id in self.object_registry.ids_by_type(UAV)
                     }
+                    # Group centres arrive as [lat, lon]; refuse before anything is sent.
+                    refused = fence_guard.check_areas(latlon, coverage, "split")
+                    if refused:
+                        print("[fence-guard]", refused)
                     # Only broadcast stop (affects every connected UAV) when this
                     # assignment actually covers the whole swarm.
-                    if set(assigned_ids) == connected_ids:
+                    if not refused and set(assigned_ids) == connected_ids:
                         stop_socket()
                         await sleep(1)
-                    if (
+                    if refused:
+                        result = refused
+                    elif (
                         not assigned_ids
                         or len(assigned_ids) != len(set(assigned_ids))
                         or not set(assigned_ids).issubset(connected_ids)
@@ -1874,15 +1910,9 @@ class SkybrushServer(DaemonApp):
             alt = parameters.pop("alt")
             update_Takeoff_Alt(alt)
 
-            # Terrain safety: the Takeoff command itself is the trigger. The
-            # commanded `alt` becomes the safety altitude right now, without
-            # waiting for the UAV to move or for telemetry to change. This
-            # only records state and broadcasts the new threshold for display
-            # -- it never gates the takeoff (terrain clearance is enforced on
-            # the swarm computer, see medur_swarm/terrain_gate.py).
-            from .terrain_safety import on_takeoff_commanded
-
-            on_takeoff_commanded(self, alt, uav_ids)
+            # Terrain safety: Takeoff only flies. The safety altitude comes from
+            # the GCS "Calculate" button (X-TERRAIN-CALC-REQ, ext/terrain.py)
+            # and, once airborne, from telemetry -- see terrain_safety.py.
             point = parameters.pop("coords")
             # A client may send the coordinates as strings (a marker restored
             # from persisted GCS state does). The VTOL math below multiplies
@@ -2119,7 +2149,68 @@ class SkybrushServer(DaemonApp):
         self.run_in_background(self.command_execution_manager.run)
         self.run_in_background(self.message_hub.run)
         self.run_in_background(self.rate_limiters.run)
+        self._report_swarm_command_status_to_clients()
         return await super().run()
+
+    # Swarm command statuses shown to the operator, and how. "started" and
+    # "running" are progress only; "rejected" is already reported as a
+    # delivery failure in the response to the request that sent it.
+    _SWARM_STATUS_SEVERITY = {
+        "received": Severity.INFO,
+        "completed": Severity.INFO,
+        "superseded": Severity.WARNING,
+        "discarded": Severity.WARNING,
+        "preempted": Severity.WARNING,
+        "cancelled": Severity.WARNING,
+        "interrupted": Severity.WARNING,
+        "failed": Severity.ERROR,
+        "error": Severity.ERROR,
+    }
+
+    def _report_swarm_command_status_to_clients(self) -> None:
+        """Turns every swarm command status change (swarm_link) into a SYS-MSG
+        notification, so the GUI shows each command the swarm computer
+        received and any failure or exception it reported."""
+        import trio
+
+        from . import swarm_link
+
+        token = trio.lowlevel.current_trio_token()
+
+        def send(entry: dict) -> None:
+            # Runs on the trio thread; an exception here would crash trio
+            try:
+                self._send_swarm_command_status(entry)
+            except Exception as e:
+                print("[swarm_link] could not report command status:", repr(e))
+
+        def on_status(entry: dict) -> None:
+            # Statuses arrive on swarm_link's reader threads and on the worker
+            # threads of send_all(), while the trio thread may be blocked
+            # waiting for those very threads (send_all, an ACK wait). So only
+            # queue the SYS-MSG for the trio thread, never wait for it: a
+            # blocking trio.from_thread.run_sync() here deadlocked the server
+            # when a geofence was sent to a swarm that ACKed instantly.
+            token.run_sync_soon(send, entry)
+
+        swarm_link.on_command_status = on_status
+
+    def _send_swarm_command_status(self, entry: dict) -> None:
+        from .swarm_link import LEGACY_NODE
+
+        status = entry.get("status")
+        severity = self._SWARM_STATUS_SEVERITY.get(status)
+        if severity is None:
+            return
+        cmd = entry.get("cmd") or ""
+        name = re.split(r"[_,{\[ ]", cmd, maxsplit=1)[0] or cmd
+        node = entry.get("node")
+        where = "swarm" if node == LEGACY_NODE else f"swarm node UAV {node}"
+        why = entry.get("why")
+        self.request_to_send_SYS_MSG_message(
+            f"{where}: '{name}' {status.upper()}" + (f": {why}" if why else ""),
+            severity=severity,
+        )
 
     def sort_uavs_by_drivers(
         self, uav_ids: Iterable[str], response: Optional[FlockwaveResponse] = None

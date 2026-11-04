@@ -26,6 +26,7 @@ export namespace Source {
 
   export enum MAPBOX {
     SATELLITE = 'mapbox.satellite',
+    SATELLITE_STREETS = 'mapbox.satellite-streets',
     STATIC = 'mapbox.static',
     VECTOR = 'mapbox.vector',
   }
@@ -64,7 +65,11 @@ export const Sources = [Source.OSM, Source.STAMEN.TERRAIN];
 // We add Mapbox, Maptiler, Bing Maps and Google Maps map sources only if we
 // have at least a default API key for them. This might change in the future.
 if (APIKeys.MAPBOX) {
-  Sources.push(Source.MAPBOX.STATIC, Source.MAPBOX.SATELLITE);
+  Sources.push(
+    Source.MAPBOX.STATIC,
+    Source.MAPBOX.SATELLITE,
+    Source.MAPBOX.SATELLITE_STREETS
+  );
   // MAPBOX.VECTOR does not look great with OpenLayers -- we would need the
   // Mapbox GL JS library :(
 }
@@ -140,6 +145,10 @@ const visualRepresentationsForSources: Record<
   },
   [Source.MAPBOX.SATELLITE]: {
     label: 'Mapbox satellite',
+    attributions: attributions.mapbox,
+  },
+  [Source.MAPBOX.SATELLITE_STREETS]: {
+    label: 'Mapbox satellite streets',
     attributions: attributions.mapbox,
   },
   [Source.MAPBOX.VECTOR]: {

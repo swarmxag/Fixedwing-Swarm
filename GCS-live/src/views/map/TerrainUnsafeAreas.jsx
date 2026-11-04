@@ -13,6 +13,7 @@ import PropTypes from 'prop-types';
 import React, { useEffect, useMemo } from 'react';
 import { connect } from 'react-redux';
 
+import Switch from '@material-ui/core/Switch';
 import Typography from '@material-ui/core/Typography';
 
 import { Feature, geom, layer, source } from '@collmot/ol-react';
@@ -29,16 +30,19 @@ import {
   getUnsafeTerrain,
   isUnsafeTerrainVisible,
 } from '~/features/terrain-safety/selectors';
-import { clearUnsafeTerrain } from '~/features/terrain-safety/slice';
+import {
+  clearUnsafeTerrain,
+  setUnsafeTerrainVisible,
+} from '~/features/terrain-safety/slice';
 import { ConnectionState } from '~/model/enums';
 import { mapViewCoordinateFromLonLat } from '~/utils/geography';
 
 const FILL_COLOR = 'rgba(255, 0, 0, 0.35)';
 const STROKE_COLOR = 'rgba(200, 0, 0, 0.9)';
 
-// area.severity === 'yellow': the live UAV has reached/passed this area's
-// terrain but not yet cleared the safety margin (computed server-side by
-// Xag-Server's terrain_areas.attach_area_severity; never recomputed here).
+// area.severity === 'yellow': every cell of the area is below the drone but
+// inside the safety margin (classified per cell server-side by Xag-Server's
+// terrain_areas.classify_cell_severity; never recomputed here).
 const YELLOW_FILL_COLOR = 'rgba(255, 200, 0, 0.35)';
 const YELLOW_STROKE_COLOR = 'rgba(200, 150, 0, 0.9)';
 
@@ -53,53 +57,63 @@ const unsafeAreaYellowStyle = new Style({
 });
 
 // Above the base map, below everything else (graticule, features, UAVs, ...).
-const Z_INDEX = 0.5;
+// Red is drawn on top of yellow.
+const YELLOW_Z_INDEX = 0.5;
+const RED_Z_INDEX = 0.6;
 
-// === The red areas ===
+// === The red and yellow areas ===
+
+const AreasLayer = ({ areas, style, zIndex }) => (
+  <layer.Vector zIndex={zIndex}>
+    <source.Vector>
+      {areas.map(({ id, rings: [exterior, ...holes] }) => (
+        <Feature key={`unsafeTerrain.${id}`} style={style}>
+          <geom.Polygon coordinates={exterior} holes={holes} />
+        </Feature>
+      ))}
+    </source.Vector>
+  </layer.Vector>
+);
+
+AreasLayer.propTypes = {
+  areas: PropTypes.array,
+  style: PropTypes.object,
+  zIndex: PropTypes.number,
+};
 
 const TerrainUnsafeAreasLayerPresentation = ({ unsafeTerrain, visible }) => {
-  // Nothing is drawn unless both hold, so nothing needs projecting either.
-  const shouldRender = visible && unsafeTerrain?.status === 'unsafe';
+  // Projecting thousands of vertices is worth doing only when the areas change.
+  // The SERVER already split red and yellow cells into separate areas; an
+  // area without a severity (an older server) is drawn red.
+  const { red, yellow } = useMemo(() => {
+    const result = { red: [], yellow: [] };
+    for (const area of unsafeTerrain?.areas ?? []) {
+      result[area.severity === 'yellow' ? 'yellow' : 'red'].push({
+        id: area.id,
+        rings: areaToRings(area, mapViewCoordinateFromLonLat),
+      });
+    }
 
-  // Projecting thousands of vertices is worth doing only when the areas change
-  // -- and only when they are actually on screen. The threshold is recalculated
-  // on every ~5 m of altitude, so without the `shouldRender` guard, turning the
-  // layer off would still re-project every vertex on each of those updates.
-  const areas = useMemo(
-    () =>
-      shouldRender
-        ? (unsafeTerrain?.areas ?? []).map((area) => ({
-            id: area.id,
-            rings: areaToRings(area, mapViewCoordinateFromLonLat),
-            // The SERVER already decided this (Xag-Server's
-            // terrain_areas.attach_area_severity, from the live UAV altitude);
-            // the frontend only ever reads it back. `undefined` (an older
-            // server) keeps the plain red, same as before this field existed.
-            severity: area.severity,
-          }))
-        : [],
-    [unsafeTerrain, shouldRender]
-  );
+    return result;
+  }, [unsafeTerrain]);
 
-  if (!shouldRender || areas.length === 0) {
+  if (!visible || unsafeTerrain?.status !== 'unsafe') {
     return null;
   }
 
   return (
-    <layer.Vector zIndex={Z_INDEX}>
-      <source.Vector>
-        {areas.map(({ id, rings: [exterior, ...holes], severity }) => (
-          <Feature
-            key={`unsafeTerrain.${id}`}
-            style={
-              severity === 'yellow' ? unsafeAreaYellowStyle : unsafeAreaStyle
-            }
-          >
-            <geom.Polygon coordinates={exterior} holes={holes} />
-          </Feature>
-        ))}
-      </source.Vector>
-    </layer.Vector>
+    <>
+      {yellow.length > 0 && (
+        <AreasLayer
+          areas={yellow}
+          style={unsafeAreaYellowStyle}
+          zIndex={YELLOW_Z_INDEX}
+        />
+      )}
+      {red.length > 0 && (
+        <AreasLayer areas={red} style={unsafeAreaStyle} zIndex={RED_Z_INDEX} />
+      )}
+    </>
   );
 };
 
@@ -140,9 +154,14 @@ BreakdownRow.propTypes = {
   bold: PropTypes.bool,
 };
 
-const TerrainSafetyWidgetPresentation = ({ unsafeTerrain, visible }) => {
-  // The on/off switch lives in the Swarm panel; this only reports.
-  if (!visible || !unsafeTerrain) {
+const TerrainSafetyWidgetPresentation = ({
+  unsafeTerrain,
+  visible,
+  onToggle,
+}) => {
+  // The details box is shown only while the Terrain toggle in the swarm
+  // panel is on.
+  if (!unsafeTerrain || !visible) {
     return null;
   }
 
@@ -168,11 +187,18 @@ const TerrainSafetyWidgetPresentation = ({ unsafeTerrain, visible }) => {
               marginRight: 8,
               background: FILL_COLOR,
               border: `1.5px solid ${STROKE_COLOR}`,
+              opacity: visible ? 1 : 0.4,
             }}
           />
           <Typography variant='body2' style={{ flexGrow: 1 }}>
             {describeUnsafeTerrain(unsafeTerrain)}
           </Typography>
+          <Switch
+            size='small'
+            checked={visible}
+            inputProps={{ 'aria-label': 'Show unsafe terrain on the map' }}
+            onChange={(event) => onToggle(event.target.checked)}
+          />
         </div>
         {breakdown && (
           <div style={{ paddingBottom: 4 }}>
@@ -192,6 +218,12 @@ const TerrainSafetyWidgetPresentation = ({ unsafeTerrain, visible }) => {
               label='Safety margin'
               value={breakdown.safetyMargin}
             />
+            {breakdown.terrainErrorBuffer && (
+              <BreakdownRow
+                label='Terrain error buffer'
+                value={breakdown.terrainErrorBuffer}
+              />
+            )}
             {/* <BreakdownRow
               label='Highest terrain peak'
               value={breakdown.highestPeak}
@@ -232,12 +264,16 @@ const TerrainSafetyWidgetPresentation = ({ unsafeTerrain, visible }) => {
 TerrainSafetyWidgetPresentation.propTypes = {
   unsafeTerrain: PropTypes.object,
   visible: PropTypes.bool,
+  onToggle: PropTypes.func,
 };
 
-export const TerrainSafetyWidget = connect((state) => ({
-  unsafeTerrain: getUnsafeTerrain(state),
-  visible: isUnsafeTerrainVisible(state),
-}))(TerrainSafetyWidgetPresentation);
+export const TerrainSafetyWidget = connect(
+  (state) => ({
+    unsafeTerrain: getUnsafeTerrain(state),
+    visible: isUnsafeTerrainVisible(state),
+  }),
+  { onToggle: setUnsafeTerrainVisible }
+)(TerrainSafetyWidgetPresentation);
 
 // === Keeps the state in step with the server connection ===
 

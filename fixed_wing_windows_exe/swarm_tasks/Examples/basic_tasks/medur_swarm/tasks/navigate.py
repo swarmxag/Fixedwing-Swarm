@@ -13,6 +13,7 @@ from swarm_tasks.simulation import simulation as sim
 from swarm_tasks.simulation import visualizer as viz
 
 from medur_swarm import config, state
+from medur_swarm.uav import link_monitor
 from medur_swarm.uav.guidance import (
     _drive_vehicle_towards,
     advance_bot_with_uav_pacing,
@@ -100,6 +101,8 @@ def run_navigate_command(data):
                     diverted_indexes.add(i)
                 if i in diverted_indexes:
                     continue
+                if not link_monitor.ready(i):
+                    continue  # link down: hold the bot where it is
                 current_position = [b.x, b.y]
                 if state.skip_wp_flag:
                     with open(csv_path, "a") as csvfile:

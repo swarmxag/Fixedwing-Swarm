@@ -62,6 +62,7 @@ def reload_geofence(data):
         state.s.env.obstacles = new_obstacles
         state.s.env.size = new_size
         state.s.size = new_size
+        state.s.env.fence = sim.envs.world.fence_polygon(world_data)
 
         # Every s = sim.Simulation(..., env_name=file_name) call
         # throughout this script (preview rebuilds, vehicle
@@ -75,6 +76,7 @@ def reload_geofence(data):
         worlds_dir = sim.envs.world.worlds_path
         shutil.copyfile(rectangles_path, os.path.join(worlds_dir, "rectangles.yaml"))
         state.file_name = "rectangles"
+        state.fence_ready = True
 
         print(
             f"Obstacles hot-reloaded from {rectangles_path}: {len(new_obstacles)} walls, origin:",
@@ -82,6 +84,31 @@ def reload_geofence(data):
         )
     except Exception as e:
         print(f"Error reloading obstacles: {e}")
+
+
+def apply_before_dispatch(data):
+    """Origin / geofence arriving while the program is still starting up (a
+    master waiting for its UAVs to be armed and airborne, or a standby waiting
+    to be promoted) are applied at once by the receiver -- the command loop
+    that normally handles them does not run yet, and the bring-up needs the
+    CURRENT origin. There is no simulation yet, so this only sets the origin
+    and stores the fence file where the coming simulation will load it.
+    Returns True if `data` was one of these two commands."""
+    if data.startswith(b"origin,"):
+        apply_origin_update(data)
+        state.file_name = "rectangles"
+        return True
+    if data == b"geofence" or data.startswith(b"geofence,"):
+        rectangles_path = config.RECTANGLES_PATH
+        if data.startswith(b"geofence,"):
+            _store_received_fence(data[len(b"geofence,"):], rectangles_path)
+        worlds_dir = sim.envs.world.worlds_path
+        shutil.copyfile(rectangles_path, os.path.join(worlds_dir, "rectangles.yaml"))
+        state.file_name = "rectangles"
+        state.fence_ready = True
+        print("Geofence applied before start-up finished, origin:", state.origin)
+        return True
+    return False
 
 
 def store_uav_pos(data):

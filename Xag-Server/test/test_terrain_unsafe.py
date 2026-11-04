@@ -18,6 +18,14 @@ from flockwave.server.ext import terrain as T
 from flockwave.server.geofence_validator import Fence
 
 DLAT_PER_M = 1 / 111320.0
+REAL_ERROR_BUFFER = T._terrain_error_buffer_m  # before the fixture below replaces it
+
+
+@pytest.fixture(autouse=True)
+def no_error_buffer(monkeypatch):
+    """These tests check the comparison itself, so the terrain error buffer is set
+    to 0 m (as with `terrain_error_buffer_m: 0`). The buffer has its own tests."""
+    monkeypatch.setattr(T, "_terrain_error_buffer_m", lambda: 0.0)
 
 
 class PatternTerrain(T.TerrainManager):
@@ -131,7 +139,37 @@ def test_no_unsafe_terrain_gives_the_safe_response(tmp_path):
         "maxUnsafeElevation": None,
         "highestPoint": None,
         "originFingerprint": "fp-test",
+        "terrainErrorBuffer": 0.0,
     }
+
+
+# --- terrain error buffer ----------------------------------------------------------------
+
+
+def test_default_error_buffer_is_added_to_every_cell(tmp_path, monkeypatch):
+    monkeypatch.setattr(T, "_terrain_error_buffer_m", REAL_ERROR_BUFFER)
+    monkeypatch.setattr(T, "configuration", None)
+    grid, _ = build_grid(tmp_path, [[470.0, 400.0], [460.0, 400.0]])
+    result = T._build_unsafe_index_sync(grid).scan(478.0)
+    buf = T.DEFAULT_TERRAIN_ERROR_BUFFER_M
+    # 470 + 15 = 485 > 478 is unsafe; 460 + 15 = 475 is not
+    assert [p["elevation"] for p in result["unsafePoints"]] == [470.0 + buf]
+    assert result["terrainErrorBuffer"] == buf
+
+
+def test_configured_error_buffer_is_used(tmp_path, monkeypatch):
+    monkeypatch.setattr(T, "_terrain_error_buffer_m", REAL_ERROR_BUFFER)
+    monkeypatch.setattr(T, "configuration", {"terrain_error_buffer_m": 30})
+    grid, _ = build_grid(tmp_path, [[460.0, 400.0], [400.0, 400.0]])
+    result = T._build_unsafe_index_sync(grid).scan(478.0)
+    assert [p["elevation"] for p in result["unsafePoints"]] == [490.0]
+    assert result["terrainErrorBuffer"] == 30.0
+
+
+def test_an_invalid_error_buffer_setting_falls_back_to_the_default(monkeypatch):
+    for bad in (-1, "15", True, float("nan")):
+        monkeypatch.setattr(T, "configuration", {"terrain_error_buffer_m": bad})
+        assert REAL_ERROR_BUFFER() == T.DEFAULT_TERRAIN_ERROR_BUFFER_M, bad
 
 
 def test_unavailable_response_shape():

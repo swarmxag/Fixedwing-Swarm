@@ -576,6 +576,8 @@ class FenceToYAML:
             [[x - min_x / 2, y - min_y / 2] for x, y in boundary]
             for boundary in self.obstacles_list
         ]
+        # Same shift for the fence outline, so it lines up with the walls.
+        self._shift = (min_x / 2, min_y / 2)
         return size_x, size_y, shifted_obstacles_list
 
     @staticmethod
@@ -603,6 +605,17 @@ class FenceToYAML:
         for boundary in shifted_obstacles_list:
             formatted = ",".join([f"[{x:.2f},{y:.2f}]" for x, y in boundary])
             yaml_lines.append(f"  - [{formatted}]")
+        # The drawn fence itself (inside area), in the same frame as the walls.
+        # The swarm refuses goals/paths outside it and keeps bots from crossing
+        # a wall outward; the walls, size and origin above are unchanged.
+        shift_x, shift_y = self._shift
+        outer_fence = self.fence_coordinates[self.labels.index("outer")]
+        fence_xy = [
+            [x - shift_x, y - shift_y] for x, y in self.convert_to_xy_array(outer_fence)
+        ]
+        yaml_lines.append(
+            "fence: [" + ",".join(f"[{x:.2f},{y:.2f}]" for x, y in fence_xy) + "]"
+        )
         yaml_lines.append(f"origin: {self.origin}")
         yaml_text = "\n".join(yaml_lines)
 

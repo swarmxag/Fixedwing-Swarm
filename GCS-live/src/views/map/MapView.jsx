@@ -5,6 +5,7 @@ import unary from 'lodash-es/unary';
 import PropTypes from 'prop-types';
 import React, { useEffect, useRef, useState } from 'react';
 import { connect } from 'react-redux';
+import { Point } from 'ol/geom';
 import { Fill, Style, Text } from 'ol/style';
 import { MessageSemantics } from '~/features/snackbar/types';
 import { Map, View, control, interaction, withMap } from '@collmot/ol-react';
@@ -69,6 +70,7 @@ import { hasFeature } from '~/utils/configuration';
 import {
   mapViewCoordinateFromLonLat,
   findFeaturesById,
+  bearing,
   lonLatFromMapViewCoordinate,
   measureFeature,
 } from '~/utils/geography';
@@ -370,40 +372,64 @@ const sketchOutlineStyles = [
 ];
 
 /**
- * Style function of the path that is currently being drawn; adds a length
- * readout that is recalculated from the sketch geometry on every render, so
- * it follows the pointer while the path is being drawn.
+ * Returns the bearing of the last non-degenerate segment of a path, i.e. the
+ * direction in which the path is currently being extended.
+ *
+ * Right after a vertex is placed, the pointer coincides with it and the last
+ * segment has zero length; the segment before it is used then so that the
+ * readout does not jump to 0°.
+ *
+ * @param  {number[][]}  points  the points of the path, in lon-lat order
+ * @return {number|undefined}  the bearing in degrees, in the [0; 360) range,
+ *         or undefined if the path has no segment of non-zero length
+ */
+const bearingOfLastSegment = (points) => {
+  for (let i = points.length - 1; i > 0; i--) {
+    const [start, end] = [points[i - 1], points[i]];
+    if (start[0] !== end[0] || start[1] !== end[1]) {
+      return bearing(start, end);
+    }
+  }
+
+  return undefined;
+};
+
+/**
+ * Style function of the path that is currently being drawn; adds a length and
+ * bearing readout next to the pointer that is recalculated from the sketch
+ * geometry on every render, so it follows the pointer while the path is being
+ * drawn.
  *
  * @param  {ol.Feature}  olFeature  the sketch feature of the draw interaction
  * @return {ol.style.Style[]}  the styles of the sketch feature
  */
 const sketchStyle = (olFeature) => {
   const coordinates = olFeature.getGeometry().getCoordinates();
+  const points = coordinates.map(unary(lonLatFromMapViewCoordinate));
 
   // `measureFeature()` works on our own feature representation, which stores
   // its points in lon-lat, while the sketch geometry is in map view
   // coordinates. Going through it keeps the units and the rounding of the
   // live readout identical to the label of the finished feature.
-  const length = measureFeature({
-    type: FeatureType.LINE_STRING,
-    points: coordinates.map(unary(lonLatFromMapViewCoordinate)),
-  });
+  const length = measureFeature({ type: FeatureType.LINE_STRING, points });
+  const heading = bearingOfLastSegment(points);
 
   return [
     ...sketchOutlineStyles,
     new Style({
+      // The last sketch coordinate is the one that follows the pointer
+      geometry: new Point(coordinates.at(-1)),
       text: new Text({
         font: '20px sans-serif',
         fill: new Fill({ color: 'black' }),
-        offsetY: 3,
-        // Keep the readout visible even when the path drawn so far is still
-        // shorter than the text itself
-        overflow: true,
-        placement: 'line',
+        offsetY: -15,
         stroke: whiteThinOutline,
-        text: `(${length})`,
+        text:
+          heading === undefined
+            ? length
+            : `${length}\n${heading.toFixed(1)}°`,
         textAlign: 'center',
-        textBaseline: 'top',
+        textBaseline: 'bottom',
       }),
     }),
   ];

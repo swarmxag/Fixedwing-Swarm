@@ -9,32 +9,6 @@ const pendingKeys = new Set();
 const listeners = new Set();
 
 /**
- * Upper bound on cached cells. A Map preserves insertion order, so the oldest
- * key is always the first one -- evicting it gives LRU-by-insertion without a
- * second data structure. An evicted cell simply re-queries on the next hover,
- * so the only cost of eviction is one extra round trip.
- *
- * Without a cap this grows one entry per ~100 m cell for as long as the session
- * lasts, which over a wide area is unbounded.
- */
-const MAX_CACHED_CELLS = 5000;
-
-function cacheElevation(key, entry) {
-  // Re-inserting must move the key to the newest position, so delete first.
-  elevationCache.delete(key);
-  elevationCache.set(key, entry);
-
-  while (elevationCache.size > MAX_CACHED_CELLS) {
-    const oldest = elevationCache.keys().next();
-    if (oldest.done) {
-      break;
-    }
-
-    elevationCache.delete(oldest.value);
-  }
-}
-
-/**
  * Registers a listener to be notified whenever new terrain elevation data arrives.
  * @param {Function} listener
  * @returns {Function} Unsubscribe callback
@@ -46,45 +20,13 @@ export function subscribeTerrainUpdates(listener) {
   };
 }
 
-function flushListeners() {
+function notifyListeners() {
   for (const listener of listeners) {
     try {
       listener();
-    } catch (error) {
-      console.error('Terrain update listener error:', error);
+    } catch (e) {
+      console.error('Terrain update listener error:', e);
     }
-  }
-}
-
-/**
- * Coalesces notifications into at most one per frame.
- *
- * Every resolved lookup used to notify immediately, and the map's only way to
- * refresh the readout is to remount its MousePosition control (its `key`
- * changes) -- so sweeping the mouse over N uncached cells produced N remounts.
- * Batching collapses a burst into a single one, which is all the UI needs since
- * the readout shows one coordinate at a time.
- */
-let notifyScheduled = false;
-
-function notifyListeners() {
-  if (notifyScheduled || listeners.size === 0) {
-    return;
-  }
-
-  notifyScheduled = true;
-
-  const run = () => {
-    notifyScheduled = false;
-    flushListeners();
-  };
-
-  // rAF keeps this aligned with painting; it does not fire in a background tab,
-  // so fall back to a timer where it is unavailable.
-  if (typeof requestAnimationFrame === 'function') {
-    requestAnimationFrame(run);
-  } else {
-    setTimeout(run, 16);
   }
 }
 
@@ -133,7 +75,6 @@ const requestElevation = async (key, lat, lon) => {
   if (pendingKeys.has(key)) {
     return;
   }
-
   pendingKeys.add(key);
 
   try {
@@ -143,22 +84,22 @@ const requestElevation = async (key, lat, lon) => {
         lat,
         lon,
       },
-      // The server downloads a missing tile before answering, so this has to
-      // outlast a ~26 MB download, not just a round trip.
-      { timeout: 60 }
+      // Read-only cache lookup now (the server never downloads a missing
+      // tile for a hover request -- only "Set Origin" does that), so this
+      // just needs to survive normal round-trip latency, not a download.
+      { timeout: 10 }
     );
 
     const body = response ? response.body : {};
-    const elevation =
-      body && body.elevation !== undefined ? body.elevation : null;
+    const elevation = body && body.elevation !== undefined ? body.elevation : null;
 
-    cacheElevation(key, {
+    elevationCache.set(key, {
       status: 'resolved',
       elevation,
     });
   } catch (error) {
     console.warn(`[Terrain] Socket.IO request failed for ${key}:`, error);
-    cacheElevation(key, {
+    elevationCache.set(key, {
       status: 'failed',
       elevation: null,
     });
@@ -189,10 +130,7 @@ export async function requestTerrainRange(points) {
     return null;
   }
 
-  console.log(
-    `[Terrain] Requesting terrain range for ${points.length} point(s)`,
-    points
-  );
+  console.log(`[Terrain] Requesting terrain range for ${points.length} point(s)`, points);
 
   try {
     const response = await messageHub.sendMessage(
@@ -205,11 +143,7 @@ export async function requestTerrainRange(points) {
     const body = response ? response.body : null;
     console.log('[Terrain] Range request response:', body);
 
-    if (
-      body &&
-      body.status === 'completed' &&
-      body.downloaded_tiles?.length > 0
-    ) {
+    if (body && body.status === 'completed' && body.downloaded_tiles?.length > 0) {
       clearStaleNegativeCache();
     }
 
@@ -233,12 +167,7 @@ export function getElevationFormatted(coords) {
   }
 
   const [lon, lat] = coords;
-  if (
-    typeof lat !== 'number' ||
-    typeof lon !== 'number' ||
-    Number.isNaN(lat) ||
-    Number.isNaN(lon)
-  ) {
+  if (typeof lat !== 'number' || typeof lon !== 'number' || isNaN(lat) || isNaN(lon)) {
     return 'Elev: N/A';
   }
 
@@ -250,16 +179,14 @@ export function getElevationFormatted(coords) {
     if (entry.status === 'pending') {
       return 'Elev: ---';
     }
-
     if (entry.elevation === null || entry.elevation === undefined) {
       return 'Elev: N/A';
     }
-
     return `Elev: ${Math.round(entry.elevation)} m`;
   }
 
   // Not in cache yet: mark pending and queue request
-  cacheElevation(key, { status: 'pending', elevation: null });
+  elevationCache.set(key, { status: 'pending', elevation: null });
   requestElevation(key, lat, lon);
 
   return 'Elev: ---';

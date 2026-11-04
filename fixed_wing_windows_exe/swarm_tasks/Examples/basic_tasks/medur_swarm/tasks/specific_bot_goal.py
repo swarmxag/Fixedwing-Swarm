@@ -9,6 +9,8 @@ import time
 import locatePosition
 
 from medur_swarm import config, state
+from medur_swarm.communication.dispatch import apply_pending_topology_command
+from medur_swarm.uav import topology
 from medur_swarm.uav.guidance import (
     _drive_vehicle_towards,
     advance_bot_with_uav_pacing,
@@ -44,41 +46,48 @@ def run_specific_bot_goal_command(data):
         goal_pos[state.goal_bot_num] = goal_position
         specific_bot_goal_flag_array[state.goal_bot_num] = True
         print("specific_bot_goal_flag_array", specific_bot_goal_flag_array)
-        while 1:
-            time.sleep(0.1)
-            if state.specific_bot_goal_flag:
-                state.specific_bot_goal_flag = False
-                break
+        # goal_pos / specific_bot_goal_flag_array are indexed by swarm
+        # position: keep them on the same UAVs while UAVs are added/removed
+        # (an added UAV gets no goal).
+        with topology.tracking(
+            (goal_pos, 0), (specific_bot_goal_flag_array, False)
+        ):
+            while 1:
+                time.sleep(0.1)
+                apply_pending_topology_command()
+                if state.specific_bot_goal_flag:
+                    state.specific_bot_goal_flag = False
+                    break
 
-            for i, b in enumerate(state.s.swarm):
-                current_position = [b.x, b.y]
-                if specific_bot_goal_flag_array[i]:
-                    dx = abs(goal_pos[i][0] - current_position[0])
-                    dy = abs(goal_pos[i][1] - current_position[1])
-                    if dx <= 10 and dy <= 10:
-                        specific_bot_goal_flag_array[i] = False
-                        print(
-                            "specific_bot_goal_flag_array",
-                            specific_bot_goal_flag_array,
-                        )
-                    if all(flag == False for flag in specific_bot_goal_flag_array):
-                        state.specific_bot_goal_flag = True
-                        break
-                    else:
-                        current_position = (b.x, b.y)
-                        if specific_bot_goal_flag_array[i]:
-                            b.set_goal(goal_pos[i][0], goal_pos[i][1])
-                            advance_bot_with_uav_pacing(
-                                i, b, goal_pos[i], label="specific_bot_goal"
+                for i, b in enumerate(state.s.swarm):
+                    current_position = [b.x, b.y]
+                    if specific_bot_goal_flag_array[i]:
+                        dx = abs(goal_pos[i][0] - current_position[0])
+                        dy = abs(goal_pos[i][1] - current_position[1])
+                        if dx <= 10 and dy <= 10:
+                            specific_bot_goal_flag_array[i] = False
+                            print(
+                                "specific_bot_goal_flag_array",
+                                specific_bot_goal_flag_array,
                             )
-                    # Pursuit point ahead of the bot's own heading, corrected
-                    # for real UAV-to-UAV separation -- same guidance
-                    # goal/search/split use, instead of the bot's raw position.
-                    _drive_vehicle_towards(i, b, pursuit_target_with_avoidance(i, b))
+                        if all(flag == False for flag in specific_bot_goal_flag_array):
+                            state.specific_bot_goal_flag = True
+                            break
+                        else:
+                            current_position = (b.x, b.y)
+                            if specific_bot_goal_flag_array[i]:
+                                b.set_goal(goal_pos[i][0], goal_pos[i][1])
+                                advance_bot_with_uav_pacing(
+                                    i, b, goal_pos[i], label="specific_bot_goal"
+                                )
+                        # Pursuit point ahead of the bot's own heading, corrected
+                        # for real UAV-to-UAV separation -- same guidance
+                        # goal/search/split use, instead of the bot's raw position.
+                        _drive_vehicle_towards(i, b, pursuit_target_with_avoidance(i, b))
 
-            if state.index == b"stop":
-                state.specific_bot_goal_flag = False
-                break
+                if state.index == b"stop":
+                    state.specific_bot_goal_flag = False
+                    break
     except Exception as e:
         print("exceptiiiooonnn", e)
         pass

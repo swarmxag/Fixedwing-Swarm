@@ -32,6 +32,13 @@ from test_terrain_unsafe import (  # noqa: E402
     rect,
 )
 
+@pytest.fixture(autouse=True)
+def no_error_buffer(monkeypatch):
+    """Grouping is tested on the cells as given: terrain error buffer 0 m (as with
+    `terrain_error_buffer_m: 0`). The buffer has its own tests in test_terrain_unsafe."""
+    monkeypatch.setattr(T, "_terrain_error_buffer_m", lambda: 0.0)
+
+
 UNSAFE, SAFE = 600.0, 100.0
 THRESHOLD = 500.0
 MARGIN = 2  # safe cells around every test pattern, so no cell touches the Origin edge
@@ -172,9 +179,8 @@ def test_safe_grid_gives_status_safe_and_no_areas(tmp_path):
         "status": "safe", "thresholdAMSL": THRESHOLD, "areaCount": 0, "unsafeCellCount": 0,
         "maxUnsafeElevation": None, "highestPoint": None, "vertexCount": 0, "simplifyToleranceM": None,
         "areas": [], "originFingerprint": "fp-test",
-        # Data coverage travels with every response, "safe" included: safe over a
-        # largely void Origin has verified almost nothing (see void handling below).
-        "originCellCount": 42, "checkedCellCount": 42, "voidCellCount": 0, "voidFraction": 0.0,
+        # without a drone altitude there is no red/yellow split
+        "redCellCount": 0, "yellowCellCount": 0, "droneAMSL": None, "terrainErrorBuffer": 0.0,
     }
 
 
@@ -712,69 +718,58 @@ async def test_a_request_shows_the_current_inputs_even_when_no_new_broadcast_was
         T.app = None
 
 
-# --- per-area RED/YELLOW severity -----------------------------------------------------------
+# --- per-cell RED/YELLOW severity -----------------------------------------------------------
 
 
-def test_classify_area_severity_matches_the_first_worked_example():
-    # home = 5779, area maxElevation = 6091, margin = 50 -> relative = 312
+def test_classify_cell_severity_matches_the_first_worked_example():
+    # home = 5779, cell elevation = 6091, margin = 50 -> relative = 312
     home, terrain, margin = 5779.0, 6091.0, 50.0
     cases = [
         (250, "red"), (300, "red"),
         (312, "yellow"), (320, "yellow"), (350, "yellow"), (361, "yellow"),
-        (362, "clear"),
+        (362, "safe"),
     ]
     for ahl, expected in cases:
-        assert ta.classify_area_severity(terrain, home, ahl, margin) == expected, ahl
+        assert ta.classify_cell_severity(terrain, home, ahl, margin) == expected, ahl
 
 
-def test_classify_area_severity_matches_the_second_worked_example():
-    # home = 5779, area maxElevation = 5979, margin = 50 -> relative = 200
+def test_classify_cell_severity_matches_the_second_worked_example():
+    # home = 5779, cell elevation = 5979, margin = 50 -> relative = 200
     home, terrain, margin = 5779.0, 5979.0, 50.0
     cases = [
         (150, "red"),
         (200, "yellow"), (220, "yellow"), (240, "yellow"), (249, "yellow"),
-        (250, "clear"),
+        (250, "safe"),
     ]
     for ahl, expected in cases:
-        assert ta.classify_area_severity(terrain, home, ahl, margin) == expected, ahl
+        assert ta.classify_cell_severity(terrain, home, ahl, margin) == expected, ahl
 
 
-def test_attach_area_severity_writes_red_or_yellow_onto_each_area():
-    areas = [{"maxElevation": 6091.0}, {"maxElevation": 5979.0}]
-    ta.attach_area_severity(areas, 5779.0, 300.0, 50.0)
-    # relative 312 -> 300 is red; relative 200 -> 300 is (200+50=250 <= 300) clamped-clear -> yellow
-    assert [a["severity"] for a in areas] == ["red", "yellow"]
+def test_red_and_yellow_cells_form_separate_areas(tmp_path):
+    # '#' = 600 m, threshold 500 m. Drone at 550 m AMSL: every 600 m cell is above
+    # the drone -> red. Drone at 650 m: the same cells clear it by 50 m but are
+    # inside the margin (threshold 500 = 650 - 150 here) -> yellow.
+    art = ["##.", "...", ".##"]
+    red, _, _ = areas_of(tmp_path, art, drone_amsl=550.0)
+    assert (red["redCellCount"], red["yellowCellCount"]) == (4, 0)
+    assert [a["severity"] for a in red["areas"]] == ["red", "red"]
+    yellow, _, _ = areas_of(tmp_path, art, drone_amsl=650.0)
+    assert (yellow["redCellCount"], yellow["yellowCellCount"]) == (0, 4)
+    assert [a["severity"] for a in yellow["areas"]] == ["yellow", "yellow"]
 
 
-def test_attach_area_severity_never_writes_clear_even_when_the_math_would_say_so():
-    # Can't happen for a real response (that area's own condition would already have removed
-    # it), but attach_area_severity must still never put "clear" on the wire.
-    areas = [{"maxElevation": 5979.0}]
-    ta.attach_area_severity(areas, 5779.0, 250.0, 50.0)  # relative 200; 250 >= 200 + 50
-    assert areas[0]["severity"] == "yellow"
-
-
-def test_attach_area_severity_is_a_noop_without_all_three_finite_inputs():
-    for reference, altitude, margin in [
-        (None, 300.0, 50.0),
-        (5779.0, None, 50.0),
-        (5779.0, 300.0, None),
-        ("not-a-number", 300.0, 50.0),
-        (5779.0, float("nan"), 50.0),
-    ]:
-        areas = [{"maxElevation": 6091.0}]
-        ta.attach_area_severity(areas, reference, altitude, margin)
-        assert "severity" not in areas[0], (reference, altitude, margin)
+def test_without_a_drone_altitude_areas_carry_no_severity(tmp_path):
+    result, _, _ = areas_of(tmp_path, ["##"])
+    assert result["areaCount"] == 1 and "severity" not in result["areas"][0]
 
 
 def test_step4b_severity_never_touches_srtm_the_grid_or_the_unsafe_decision():
     import inspect
 
     module = inspect.getsource(ta)
-    # the new functions must not depend on anything build_unsafe_areas doesn't already use
     assert "get_elevation" not in module and "TerrainManager" not in module
-    # and must never redefine what "unsafe" means (no new threshold comparison against elevation)
-    severity_src = inspect.getsource(ta.classify_area_severity) + inspect.getsource(ta.attach_area_severity)
+    # severity never redefines what "unsafe" means (no scan of its own)
+    severity_src = inspect.getsource(ta.classify_cell_severity)
     assert "unsafe_cells" not in severity_src and "TerrainScanIndex" not in severity_src
 
 
@@ -843,48 +838,10 @@ async def test_area_messages_use_the_uav_home_terrain_and_say_where_it_came_from
 
 
 
-# --- SRTM voids are reported, not silently treated as safe -----------------------------
-#
-# A void cell inside the Origin has no elevation, so it becomes -inf in the scan and can
-# never compare as unsafe. That is unavoidable -- you cannot test terrain you have no
-# data for -- but it must not be presented as verified-clear terrain. Every response
-# therefore carries the void count and fraction.
+# --- SRTM voids -------------------------------------------------------------------------
 
 
-def test_a_fully_void_origin_reports_safe_but_declares_zero_coverage(tmp_path):
-    """The dangerous case: nothing is drawn, yet nothing was actually checked."""
-    result, index, _ = areas_of(tmp_path, ["xxx", "xxx"])
-
-    assert result["status"] == "safe"       # no unsafe cell can be found ...
-    assert result["areaCount"] == 0
-    assert result["voidCellCount"] == 6    # ... because 6 cells have no data
-    assert result["checkedCellCount"] == result["originCellCount"] - 6
-    assert result["voidFraction"] > 0.0
-    assert index.void_cells == 6
-
-
-def test_void_cells_next_to_unsafe_terrain_are_counted_separately(tmp_path):
-    """Voids and unsafe cells coexist: the areas are still exact, and the void
-    count tells the operator the rest of the Origin was not fully verified."""
+def test_void_cells_are_never_part_of_an_unsafe_area(tmp_path):
     result, _, _ = areas_of(tmp_path, ["#x", "##"])
-
     assert result["status"] == "unsafe"
-    assert result["unsafeCellCount"] == 3   # the void is NOT counted as unsafe
-    assert result["voidCellCount"] == 1
-    assert result["checkedCellCount"] == result["originCellCount"] - 1
-
-
-def test_a_void_free_origin_reports_full_coverage(tmp_path):
-    result, _, _ = areas_of(tmp_path, ["#.", ".."])
-
-    assert result["voidCellCount"] == 0
-    assert result["voidFraction"] == 0.0
-    assert result["checkedCellCount"] == result["originCellCount"]
-
-
-def test_void_fraction_is_the_share_of_the_origin_with_no_data(tmp_path):
-    result, index, _ = areas_of(tmp_path, ["xxxx", "xxxx"])
-
-    expected = index.void_cells / index.origin_cells
-    assert result["voidFraction"] == round(expected, 6)
-    assert 0.0 < result["voidFraction"] < 1.0  # the safe margin around the art has data
+    assert result["unsafeCellCount"] == 3  # the void is not counted as unsafe

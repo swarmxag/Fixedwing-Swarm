@@ -30,6 +30,8 @@ slave_heal_ip = ["192.168.0.153"] * 15
 # --- Origin / coordinate frame ----------------------------------------------
 
 origin = None  # set at startup from rectangles.yaml if present, else on fence draw
+fence_ready = False  # a geofence was received (or reloaded) since this program started
+dispatch_running = False  # main.py's command loop has started (bring-up finished)
 
 # --- Fleet topology ----------------------------------------------------------
 
@@ -146,6 +148,14 @@ all_uav_csv_grid_array = [0] * num_bots
 
 removed_uav_grid = []
 removed_grid_path_length = []
+# Parallel to removed_uav_grid: last line (exclusive) still to fly in that
+# area, or None for "to the end of the file" (a UAV removed before
+# redistribution). A UAV removed while flying a redistributed segment leaves
+# only the rest of that segment, which ends before the end of the file.
+removed_grid_path_end = []
+# Segments left by UAVs removed during a redistribution round, each
+# (csv file, next line, end line); redistributed once that round is done.
+deferred_removed_segments = []
 removed_grid_path_array = [0] * len(pos_array)
 removed_grid_path_array_start_val = [0] * len(pos_array)
 removed_grid_path_array_index = 0
@@ -155,6 +165,7 @@ removed_grid_path_array_flag = False
 
 uncovered_area_filename = []
 uncovered_area_points = []
+uncovered_area_end = []  # parallel to uncovered_area_points, same as removed_grid_path_end
 
 # --- Background per-bot task driver (goal / mission / guided-circle /
 # altitude) -- see tasks/runner.py -------------------------------------------

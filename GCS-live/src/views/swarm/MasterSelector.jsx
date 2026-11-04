@@ -24,6 +24,8 @@ const REASONS = {
   promotion_in_progress: 'A promotion is already in progress on it',
   node_epoch_ahead: 'It is ahead of the server (stale server state)',
   node_not_in_decentralised_mode: 'Its swarm program has no SWARM_NODE_ID set',
+  no_geofence:
+    'It has not received a geofence since it started — press Set Origin first',
   legacy_mode_single_computer:
     'No node table configured (single-computer mode)',
 };

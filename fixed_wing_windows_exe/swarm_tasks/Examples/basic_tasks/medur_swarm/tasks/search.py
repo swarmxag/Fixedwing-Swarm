@@ -15,7 +15,7 @@ from swarm_tasks.simulation import visualizer as viz
 
 import swarm_tasks
 
-from medur_swarm import config, state
+from medur_swarm import boundary, config, state
 from medur_swarm.utils import (
     allocate_drones,
     parse_selected_uav_ids,
@@ -31,9 +31,15 @@ from medur_swarm.uav.guidance import (
     signed_uav_lead,
     uav_reached_waypoint,
 )
+from medur_swarm.uav import link_monitor
 from medur_swarm.uav.telemetry import live_gps_plot_points
 from medur_swarm.uav.management import remove_vehicle
-from medur_swarm.tasks.runner import assign_mission_tasks, synchronize_mission_topology
+from medur_swarm.tasks.runner import (
+    assign_mission_tasks,
+    removed_area_end,
+    start_deferred_redistribution_round,
+    synchronize_mission_topology,
+)
 from medur_swarm.communication.dispatch import check_for_new_command
 
 
@@ -104,6 +110,7 @@ def start_search_mission(decoded_index):
     if not selected_uav_ids:
         return False
     selected_indexes = selected_swarm_indexes(selected_uav_ids)
+    plan_backup = boundary.snapshot(selected_uav_ids)
     effective_num_uavs = max(1, len(selected_indexes))
     curve = BezierCurveMultiple(
         state.origin,
@@ -119,6 +126,7 @@ def start_search_mission(decoded_index):
     csv_paths_by_index = {}
     for path_slot, bot_index in enumerate(selected_indexes):
         csv_paths_by_index[bot_index] = uav_path_csv(selected_uav_ids[path_slot])
+    boundary.check_csv_paths(csv_paths_by_index.values(), "search", restore=plan_backup)
     assign_mission_tasks(csv_paths_by_index, "search")
     print(
         "[concurrent search] accepted during running mission",
@@ -133,6 +141,8 @@ def handle_concurrent_search_command(command_data):
         return False
     try:
         return start_search_mission(command_data.decode("utf-8"))
+    except boundary.FenceViolation:
+        raise
     except Exception as e:
         print("[concurrent search] failed", e)
         return False
@@ -154,6 +164,7 @@ def run_search_command(data):
     selected_uav_ids = parse_selected_uav_ids(selected_uav_raw)
     selected_indexes = selected_swarm_indexes(selected_uav_ids)
     selected_index_set = set(selected_indexes)
+    plan_backup = boundary.snapshot(selected_uav_ids, selected_indexes)
     # A bot can still have an active_goal_tasks entry from an earlier
     # goal command (still en route, or already looping forever as a
     # guided_circle) -- without clearing it here, this fresh search
@@ -189,6 +200,11 @@ def run_search_command(data):
     )
     val = curve.GridFormation()
     path = curve.generate_bezier_curve()
+    # Refuse a plan that leaves the fence -- before the simulation is rebuilt or
+    # any bot moves; the previous paths/tasks are put back as they were.
+    boundary.check_csv_paths(
+        [uav_path_csv(u) for u in ids_for_curve], "search", restore=plan_backup
+    )
     state.search_step = 1
     gui = None
     if state.master_flag:
@@ -234,6 +250,10 @@ def run_search_command(data):
     planned_paths_by_bot = [None] * len(state.pos_array)
     my_seq = state.last_seq
     diverted_indexes = set()
+    # Removals queued before this mission were already applied to the
+    # topology it was planned from; only removals from now on concern it.
+    state.remove_bot_flag = False
+    state.remove_bot_array = []
     # Tell apply_different_heights this loop owns these bots' movement, so a
     # concurrent 'different' only re-targets their altitude (picked up by the
     # simple_goto below next tick) instead of spawning an altitude task that
@@ -266,14 +286,7 @@ def run_search_command(data):
             state.vehicle_lost_flag = True
             x = remove_vehicle()
             print(x)
-        if state.remove_bot_flag:
-            # Preserve progress for redistribution before compacting
-            # the foreground mission arrays below.
-            for m in sorted(set(state.remove_bot_array), reverse=True):
-                if 0 <= m < len(state.all_uav_csv_grid_array):
-                    state.removed_uav_grid.append(state.all_uav_csv_grid_array[m])
-                if 0 <= m < len(state.grid_path_array):
-                    state.removed_grid_path_length.append(state.grid_path_array[m])
+        # Also keeps each removed UAV's unfinished work for redistribution
         selected_indexes = synchronize_mission_topology(
             selected_indexes,
             csv_file_paths,
@@ -282,7 +295,9 @@ def run_search_command(data):
             num_lines,
             current_goals,
             planned_paths_by_bot,
+            index_sets=(diverted_indexes,),
         )
+        start_deferred_redistribution_round(selected_indexes)
         selected_index_set = set(selected_indexes)
         # Keep the "this loop owns these bots" set aligned after any add/remove.
         state.foreground_mission_indexes = set(selected_indexes)
@@ -336,6 +351,8 @@ def run_search_command(data):
                 diverted_indexes.add(i)
             if i in diverted_indexes:
                 continue
+            if not link_monitor.ready(i):
+                continue  # link down: hold the bot at its lane point
             if len(state.checkall_removed_grid_path_array_start_val) == len(
                 state.pos_array
             ):
@@ -355,7 +372,10 @@ def run_search_command(data):
             ):
                 print("removed_grid_path_length", state.removed_grid_path_length)
                 allocation, remaining_points_list = allocate_drones(
-                    int(num_lines[i]),
+                    [
+                        removed_area_end(x, num_lines[i])
+                        for x in range(len(state.removed_grid_path_length))
+                    ],
                     state.removed_grid_path_length,
                     len(selected_indexes),
                 )
@@ -372,13 +392,15 @@ def run_search_command(data):
                         start_index = state.removed_grid_path_length[x] - 1
                     print("start_index", start_index)
                     print("JJJ", allocation[x])
+                    area_end = removed_area_end(x, num_lines[i])
                     if (allocation[x] == 0) and state.removed_grid_path_length[
                         x
-                    ] != int(num_lines[i]):
+                    ] != area_end:
                         state.uncovered_area_points.append(
                             state.removed_grid_path_length[x]
                         )
                         state.uncovered_area_filename.append(state.removed_uav_grid[x])
+                        state.uncovered_area_end.append(area_end)
                         print(
                             "uncovered_area_points",
                             x,
@@ -400,8 +422,8 @@ def run_search_command(data):
                         )
                         if m != 0:
                             end_index += add_points
-                        if end_index > int(num_lines[i]):
-                            end_index = int(num_lines[i])
+                        if end_index > area_end:
+                            end_index = area_end
                         state.removed_grid_path_array[
                             state.removed_grid_path_array_index
                         ] = (start_index, end_index)
@@ -467,9 +489,14 @@ def run_search_command(data):
                             state.removed_grid_filename[i] = (
                                 state.uncovered_area_filename[u]
                             )
+                            uncovered_end = (
+                                state.uncovered_area_end[u]
+                                if u < len(state.uncovered_area_end)
+                                else int(num_lines[i])
+                            )
                             state.removed_grid_path_array[i] = (
                                 state.uncovered_area_points[u],
-                                int(num_lines[i]),
+                                uncovered_end,
                             )
                             print(
                                 "removed_grid_path_array_start_val",
@@ -479,6 +506,12 @@ def run_search_command(data):
                             state.checkall_removed_grid_path_array_start_val[i] = 0
                             state.uncovered_area_points.pop(u)
                             state.uncovered_area_filename.pop(u)
+                            if u < len(state.uncovered_area_end):
+                                state.uncovered_area_end.pop(u)
+                            # One area per finished UAV: popping while the
+                            # loop went on overwrote this one with the next
+                            # and dropped every other waiting area.
+                            break
                     else:
                         continue
             if (
@@ -607,7 +640,21 @@ def run_search_command(data):
                 else:
                     state.grid_path_array[i] += 1
                     print("grid_path_array", state.grid_path_array)
-            if state.master_flag:
+            # This tick completed the UAV's last point (own path, or its
+            # redistributed segment): it gets no more gotos after this one.
+            if state.removed_grid_path_array_flag:
+                finished_search = (
+                    state.removed_grid_path_array_start_val[i]
+                    >= state.removed_grid_path_array[i][1]
+                )
+            else:
+                finished_search = state.grid_path_array[i] >= int(num_lines[i])
+            if state.master_flag and finished_search:
+                # Loiter on the last search point itself, not on a lookahead
+                # point projected one loiter radius past it.
+                tx, ty = goal
+                state.uav_lookahead_points[i] = (tx, ty)
+            elif state.master_flag:
                 # Pursuit point: a fixed distance ahead of the bot along its
                 # own heading, that the real UAV closes on -- never a point
                 # that runs away from it, and never one that falls behind
@@ -640,6 +687,7 @@ def run_search_command(data):
                 tx += avoid_x
                 ty += avoid_y
                 state.uav_lookahead_points[i] = (tx, ty)
+            if state.master_flag:
                 lat, lon = locatePosition.cartToGeo(
                     state.origin, config.END_DISTANCE, [tx * 2, ty * 2]
                 )

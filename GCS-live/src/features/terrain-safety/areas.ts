@@ -18,8 +18,9 @@ export type UnsafeTerrainPoint = {
   elevation: number;
 };
 
-/** How to draw an already-unsafe area; computed by the SERVER (Xag-Server's
- * `terrain_areas.attach_area_severity`), never recomputed on the frontend. */
+/** How to draw an already-unsafe area; decided PER CELL by the SERVER (Xag-Server's
+ * `terrain_areas.classify_cell_severity`: red cells and yellow cells are grouped
+ * into separate areas), never recomputed on the frontend. */
 export type AreaSeverity = 'red' | 'yellow';
 
 export type UnsafeArea = {
@@ -32,9 +33,9 @@ export type UnsafeArea = {
   /** Interior rings (safe pockets inside the area), each closed */
   holes: LatLon[][];
   /**
-   * Colour the server wants this area drawn in, right now: RED while the
-   * live UAV is still below this area's terrain, YELLOW once it has
-   * reached/passed it but not yet cleared the safety margin. `undefined`
+   * Colour the server wants this area drawn in, right now: RED when every cell
+   * of it is above the drone's altitude (AMSL), YELLOW when every cell of it is
+   * below the drone but inside the safety margin. `undefined`
    * (an older server) means "draw plain red", the behaviour from before this
    * field existed -- the frontend never falls back to computing it itself.
    */
@@ -64,6 +65,13 @@ export type UnsafeTerrain = {
   referenceTerrainElevation: number | undefined; // home terrain, m AMSL
   safetyAltitude: number | undefined; // drone height, m
   safetyMargin: number | undefined; // positive distance that is subtracted, m
+
+  /**
+   * Metres the server added to every terrain elevation (SRTM error, trees,
+   * small obstacles) before classifying it; all elevations in this message
+   * already include it.
+   */
+  terrainErrorBuffer: number | undefined;
 
   /**
    * Where the home terrain elevation was read: at a UAV's own home
@@ -103,6 +111,7 @@ type RawMessage = {
   referenceTerrainElevation?: unknown;
   safetyAltitude?: unknown;
   safetyMargin?: unknown;
+  terrainErrorBuffer?: unknown;
   referenceSource?: unknown;
   referenceLocation?: unknown;
 };
@@ -243,6 +252,7 @@ export function parseUnsafeTerrainMessage(
     referenceTerrainElevation: numberOrUndefined(raw.referenceTerrainElevation),
     safetyAltitude: numberOrUndefined(raw.safetyAltitude),
     safetyMargin: numberOrUndefined(raw.safetyMargin),
+    terrainErrorBuffer: numberOrUndefined(raw.terrainErrorBuffer),
     referenceSource: stringOrUndefined(raw.referenceSource),
     referenceLocation: parseLocation(raw.referenceLocation),
   };
@@ -313,6 +323,8 @@ export type ThresholdBreakdown = {
   homeSource: string | undefined;
   droneHeight: string;
   safetyMargin: string;
+  /** `undefined` when the server did not send it (an older server) */
+  terrainErrorBuffer: string | undefined;
   threshold: string;
   /** e.g. `300 + 100 - 50 = 350 m AMSL` */
   formula: string;
@@ -414,6 +426,10 @@ export function describeThresholdBreakdown(
     homeSource: describeHomeSource(terrain),
     droneHeight: `${height} m`,
     safetyMargin: `${margin} m`,
+    terrainErrorBuffer:
+      terrain.terrainErrorBuffer === undefined
+        ? undefined
+        : `${formatMetres(terrain.terrainErrorBuffer)} m`,
     threshold: `${threshold} m AMSL`,
     formula: `${home} + ${height} - ${margin} = ${threshold} m AMSL`,
     highestPeak,

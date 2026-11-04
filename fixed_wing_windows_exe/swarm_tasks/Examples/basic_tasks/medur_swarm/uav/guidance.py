@@ -449,18 +449,15 @@ def advance_bot_with_uav_pacing(i, b, goal, label="", leash=True):
     # aircraft's own ground speed) turns into the bot's motion.
     cmd.exec(b, step_size=step_size)
     moved_m = 2.0 * math.hypot(b.x - before_x, b.y - before_y)
-    if config.BOT_SYNC_DEBUG:
+    # Only the AHEAD case is logged: printed every tick for every bot it
+    # buried the received-command lines in the console.
+    if config.BOT_SYNC_DEBUG and signed_lead is not None and signed_lead > 0:
         goal_distance_m = 2.0 * math.hypot(goal[0] - b.x, goal[1] - b.y)
         # `dis` is undirected -- it cannot tell a lagging aircraft from one
         # that has already overflown the bot, nor from one sitting off to the
         # side mid-turn. signed_lead resolves that: +ve AHEAD, -ve BEHIND,
         # ~0 means lateral (no real lead either way).
-        if signed_lead is None:
-            lead_text = "n/a"
-        else:
-            lead_text = (
-                f"{signed_lead:+.1f}m " f"({'AHEAD' if signed_lead > 0 else 'BEHIND'})"
-            )
+        lead_text = f"{signed_lead:+.1f}m (AHEAD)"
         print(
             f"[bot-sync] label={label} bot={i} "
             f"dis={dis:.1f}m lead={lead_text} "

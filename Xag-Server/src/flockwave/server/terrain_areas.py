@@ -36,6 +36,13 @@ Pipeline (all on the in-memory Step 2 grid; no SRTM, no new grid):
 
 Components are simplified one by one, so two regions that only touch at a corner
 remain two areas (their grown outlines may overlap by a few metres).
+
+Severity is decided PER CELL before any of this (`classify_cell_severity`): RED
+cells (above the drone's own altitude AMSL) and YELLOW cells (between it and the
+threshold, i.e. inside the safety margin) run through steps 1-5 separately, so a
+red area never contains a yellow or safe cell and one ridge can give a red area
+on its top and yellow areas on its flanks. With a positive tolerance the grown
+yellow outlines are cut back by the red ones, so the two never overlap.
 """
 
 from __future__ import annotations
@@ -53,9 +60,8 @@ __all__ = (
     "EXACT_VERTEX_LIMIT",
     "REQUEST_TYPE",
     "SIMPLIFY_TOLERANCE_M",
-    "attach_area_severity",
     "build_unsafe_areas",
-    "classify_area_severity",
+    "classify_cell_severity",
     "safe_response",
     "unavailable_response",
 )
@@ -86,15 +92,9 @@ def unavailable_response(origin_fingerprint: Optional[str] = None) -> Dict[str, 
 
 
 def safe_response(
-    threshold: float,
-    origin_fingerprint: Optional[str] = None,
-    coverage: Optional[Dict[str, Any]] = None,
+    threshold: float, origin_fingerprint: Optional[str] = None
 ) -> Dict[str, Any]:
-    """`coverage` matters most here: "safe" over a largely void Origin has
-    verified almost nothing, and the operator has to be able to tell."""
-    return _response(
-        "safe", float(threshold), [], 0, None, origin_fingerprint, coverage=coverage
-    )
+    return _response("safe", float(threshold), [], 0, None, origin_fingerprint)
 
 
 def _response(
@@ -105,17 +105,17 @@ def _response(
     highest: Optional[Dict[str, float]],
     origin_fingerprint: Optional[str],
     tolerance_m: Optional[float] = None,
-    coverage: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     return {
-        **(coverage or {}),
         "status": status,
         "thresholdAMSL": threshold,
         "areaCount": len(areas),
         "unsafeCellCount": unsafe_cells,
         "maxUnsafeElevation": highest["elevation"] if highest else None,
         "highestPoint": highest,
-        "vertexCount": sum(len(a["polygon"]) - 1 + sum(len(h) - 1 for h in a["holes"]) for a in areas),
+        "vertexCount": sum(
+            len(a["polygon"]) - 1 + sum(len(h) - 1 for h in a["holes"]) for a in areas
+        ),
         "simplifyToleranceM": tolerance_m,
         "areas": areas,
         "originFingerprint": origin_fingerprint,
@@ -125,7 +125,9 @@ def _response(
 # --- 1 + 2: runs and 4-connected components ------------------------------------------
 
 
-def _label_components(run_row: np.ndarray, run_c0: np.ndarray, run_c1: np.ndarray) -> Tuple[np.ndarray, int]:
+def _label_components(
+    run_row: np.ndarray, run_c0: np.ndarray, run_c1: np.ndarray
+) -> Tuple[np.ndarray, int]:
     """Component number of every run. Runs are sorted by (row, c0); `c1` is
     exclusive. Runs of consecutive rows are connected when their column ranges
     overlap by at least one column -- cells that share an edge. A run that only
@@ -193,7 +195,9 @@ def _simplify_outward(outlines: np.ndarray, tolerance_cells: float) -> np.ndarra
     if complex_.any():
         grown = shapely.buffer(outlines[complex_], tolerance_cells, join_style="mitre")
         # simplification error < growth  =>  the exact outline stays inside
-        outlines[complex_] = shapely.simplify(grown, tolerance_cells * 0.99, preserve_topology=True)
+        outlines[complex_] = shapely.simplify(
+            grown, tolerance_cells * 0.99, preserve_topology=True
+        )
     return outlines
 
 
@@ -209,28 +213,52 @@ def _clip_to_origin(outlines: np.ndarray, region) -> np.ndarray:
 
 def _polygon_parts(geometry) -> List[Any]:
     return [
-        g for g in shapely.get_parts(geometry) if g.geom_type == "Polygon" and g.area > _MIN_PART_AREA
+        g
+        for g in shapely.get_parts(geometry)
+        if g.geom_type == "Polygon" and g.area > _MIN_PART_AREA
     ]
+
+
+# --- per-cell RED/YELLOW severity ------------------------------------------------------------
+
+
+def classify_cell_severity(
+    elevation: float,
+    reference_terrain_elevation: float,
+    safety_altitude: float,
+    safety_margin: float,
+) -> str:
+    """ "red" / "yellow" / "safe" for ONE cell (its elevation already includes the
+    terrain error buffer), with droneAMSL = reference_terrain_elevation + safety_altitude:
+
+        red     elevation > droneAMSL                            the drone WILL hit it
+        yellow  droneAMSL - margin < elevation <= droneAMSL      clears it, inside the margin
+        safe    elevation <= droneAMSL - margin                  (= not above the threshold)
+
+    `build_unsafe_areas` applies exactly this, vectorised, to every unsafe cell."""
+    drone_amsl = reference_terrain_elevation + safety_altitude
+    if elevation > drone_amsl:
+        return "red"
+    return "yellow" if elevation > drone_amsl - safety_margin else "safe"
 
 
 # --- the whole of Step 4B ---------------------------------------------------------------
 
 
-def build_unsafe_areas(
+def _group_areas(
     index: TerrainScanIndex,
-    threshold: float,
-    origin_fingerprint: Optional[str] = None,
-    tolerance_m: float = SIMPLIFY_TOLERANCE_M,
-) -> Dict[str, Any]:
-    """The unsafe terrain of `index` at `threshold` as connected areas with
-    polygon outlines, computed from the same cells Step 4A reports."""
-    threshold = float(threshold)
-    coverage = index.coverage()
-    hits, elevation = index.unsafe_cells(threshold)  # exactly Step 4A's unsafe cells
+    hits: np.ndarray,
+    elevation: np.ndarray,
+    tolerance_cells: float,
+    severity: Optional[str],
+    rank: int,
+    exclude: Any = None,
+) -> Tuple[List[Tuple[Tuple[int, ...], Dict[str, Any]]], Any]:
+    """Groups ONE class of cells (`hits`: sorted flat indices, `elevation`: theirs)
+    into edge-connected areas. Returns ([(sort key, area)], union of the outlines).
+    `exclude` (a geometry in cell-index space) is cut out of every outline before
+    clipping, so a grown yellow outline never covers a red one."""
     n = int(hits.size)
-    if n == 0:
-        return safe_response(threshold, origin_fingerprint, coverage)
-
     rows, cols = np.divmod(hits, index.cols)
 
     # 1. horizontal runs (consecutive flat indices within one row)
@@ -242,17 +270,21 @@ def build_unsafe_areas(
 
     # 2. connected components
     comp_of_run, count = _label_components(run_row, run_c0, run_c1)
-    cell_comp = np.repeat(comp_of_run, ends - starts)  # component of every unsafe cell
+    cell_comp = np.repeat(comp_of_run, ends - starts)  # component of every cell
 
     # per-component statistics, one vectorised pass
-    order = np.argsort(cell_comp, kind="stable")  # groups cells; keeps scan order inside a group
+    order = np.argsort(
+        cell_comp, kind="stable"
+    )  # groups cells; keeps scan order inside a group
     cell_count = np.bincount(cell_comp, minlength=count)
     group_start = np.concatenate(([0], np.cumsum(cell_count)[:-1]))
     e_sorted = elevation[order]
     group_max = np.maximum.reduceat(e_sorted, group_start)
     at_max = np.flatnonzero(e_sorted == np.repeat(group_max, cell_count))
     _, first = np.unique(cell_comp[order][at_max], return_index=True)
-    best_cell = order[at_max[first]]  # index into `hits`: first highest cell of each component
+    best_cell = order[
+        at_max[first]
+    ]  # index into `hits`: first highest cell of each component
 
     def cell_point(cell: int) -> Dict[str, float]:
         return {
@@ -261,17 +293,20 @@ def build_unsafe_areas(
             "elevation": float(elevation[cell]),
         }
 
-    # 3 - 5. outlines -> outward simplification -> clip to the Origin
-    tolerance_cells = max(0.0, float(tolerance_m)) / index.cell_size_m
+    # 3 - 5. outlines -> outward simplification -> (minus `exclude`) -> clip to the Origin
     outlines = _component_outlines(comp_of_run, run_row, run_c0, run_c1, count)
     outlines = _simplify_outward(outlines, tolerance_cells)
+    if exclude is not None:
+        outlines = shapely.difference(outlines, exclude)
     outlines = _clip_to_origin(outlines, index.clip_region())
 
     def ring(coords) -> List[List[float]]:
         xy = np.asarray(coords)
         lat = np.round(index.cell_lat(xy[:, 1]), COORD_DECIMALS)
         lon = np.round(index.cell_lon(xy[:, 0]), COORD_DECIMALS)
-        return np.column_stack((lat, lon)).tolist()  # closed: first point repeated at the end
+        return np.column_stack(
+            (lat, lon)
+        ).tolist()  # closed: first point repeated at the end
 
     entries = []  # (sort key, area)
     for k in range(count):
@@ -281,110 +316,119 @@ def build_unsafe_areas(
         component_cells = order[group_start[k] : group_start[k] + cell_count[k]]
         for part in parts:
             if len(parts) == 1:
-                cells, max_elev, best = int(cell_count[k]), float(group_max[k]), int(best_cell[k])
+                cells, max_elev, best = (
+                    int(cell_count[k]),
+                    float(group_max[k]),
+                    int(best_cell[k]),
+                )
             else:
                 # Clipping split this component (a concave Origin): each piece gets
                 # the statistics of the cells whose centres lie in it.
-                inside = shapely.intersects_xy(part, cols[component_cells], rows[component_cells])
+                inside = shapely.intersects_xy(
+                    part, cols[component_cells], rows[component_cells]
+                )
                 mine = component_cells[inside]
                 if mine.size == 0:
                     continue  # a sliver of a cell edge; its cell belongs to another piece
                 cells = int(mine.size)
                 max_elev = float(elevation[mine].max())
                 best = int(mine[int(np.argmax(elevation[mine]))])
+            area: Dict[str, Any] = {} if severity is None else {"severity": severity}
+            area.update(
+                {
+                    "cellCount": cells,
+                    "maxElevation": max_elev,
+                    "highestPoint": cell_point(best),
+                    "polygon": ring(part.exterior.coords),
+                    "holes": [ring(h.coords) for h in part.interiors],
+                }
+            )
             entries.append(
-                (
-                    (-cells, int(hits[component_cells].min()), len(entries)),
-                    {
-                        "cellCount": cells,
-                        "maxElevation": max_elev,
-                        "highestPoint": cell_point(best),
-                        "polygon": ring(part.exterior.coords),
-                        "holes": [ring(h.coords) for h in part.interiors],
-                    },
-                )
+                ((rank, -cells, int(hits[component_cells].min()), len(entries)), area)
             )
 
-    entries.sort(key=lambda e: e[0])  # biggest first; ties in scan order
-    areas = []
-    for number, (_, area) in enumerate(entries, start=1):
-        areas.append({"id": number, **area})
+    return entries, shapely.union_all(outlines)
 
-    highest = cell_point(int(np.argmax(elevation)))  # first highest unsafe cell overall
-    return _response(
-        "unsafe", threshold, areas, n, highest, origin_fingerprint, tolerance_m, coverage
+
+def build_unsafe_areas(
+    index: TerrainScanIndex,
+    threshold: float,
+    origin_fingerprint: Optional[str] = None,
+    tolerance_m: float = SIMPLIFY_TOLERANCE_M,
+    drone_amsl: Optional[float] = None,
+) -> Dict[str, Any]:
+    """The unsafe terrain of `index` at `threshold` (= droneAMSL - margin) as
+    connected areas with polygon outlines, computed from the same cells Step 4A
+    reports.
+
+    With `drone_amsl`, every unsafe cell is classified ON ITS OWN (see
+    `classify_cell_severity`): cells above `drone_amsl` are RED, the rest are
+    YELLOW, and the two classes are grouped into areas SEPARATELY -- a red area
+    never contains a yellow or safe cell. Red areas come first. Without it
+    (`None`) all unsafe cells form areas with no "severity" key, which a client
+    draws red."""
+    threshold = float(threshold)
+    hits, elevation = index.unsafe_cells(threshold)  # exactly Step 4A's unsafe cells
+    n = int(hits.size)
+    if drone_amsl is not None and not math.isfinite(drone_amsl):
+        drone_amsl = None
+    red = (
+        elevation > float(drone_amsl)
+        if drone_amsl is not None
+        else np.zeros(n, dtype=bool)
     )
+    counts = {
+        "redCellCount": int(red.sum()) if drone_amsl is not None else 0,
+        "yellowCellCount": int(n - red.sum()) if drone_amsl is not None else 0,
+        "droneAMSL": None if drone_amsl is None else float(drone_amsl),
+        "terrainErrorBuffer": index.error_buffer_m,  # already included in every elevation
+    }
+    if n == 0:
+        return {**safe_response(threshold, origin_fingerprint), **counts}
 
+    tolerance_cells = max(0.0, float(tolerance_m)) / index.cell_size_m
+    if drone_amsl is None:
+        classes = [(None, np.ones(n, dtype=bool))]
+    else:
+        classes = [("red", red), ("yellow", ~red)]
 
-# --- per-area RED/YELLOW severity ------------------------------------------------------------
-#
-# A second, independent classification of the SAME already-unsafe areas above: not "is this
-# terrain unsafe" (that stays exactly the Step 3/4A/4B `elevation > threshold` decision, never
-# touched here), but "how close is the live UAV to it right now". Computed once, here, from
-# numbers Step 3 already produces (the effective threshold's own referenceTerrainElevation /
-# safetyAltitude / safetyMargin -- see ext/terrain.py, which calls attach_area_severity right
-# after build_unsafe_areas), so it updates on exactly the same telemetry-driven schedule Step 3
-# already recalculates the threshold on (see terrain_safety.ALTITUDE_RECALC_THRESHOLD).
-
-
-def classify_area_severity(
-    max_elevation: float,
-    reference_terrain_elevation: float,
-    safety_altitude: float,
-    safety_margin: float,
-) -> str:
-    """"red" / "yellow" / "clear" for ONE already-unsafe area:
-
-        terrainRelativeHeight = max_elevation - reference_terrain_elevation
-
-        red    safety_altitude < terrainRelativeHeight
-        yellow terrainRelativeHeight <= safety_altitude < terrainRelativeHeight + safety_margin
-        clear  safety_altitude >= terrainRelativeHeight + safety_margin
-
-    "clear" here is algebraically the SAME condition as the area's own unsafe test failing
-    (`threshold = reference_terrain_elevation + safety_altitude - safety_margin >= max_elevation`,
-    i.e. `elevation > threshold` no longer holds for this area's own peak) -- an area that is
-    actually present in a response can therefore never classify as "clear" in practice; this
-    three-way result exists so the formula is complete and independently testable.
-    `attach_area_severity` (the only real caller) never writes "clear" onto an area for exactly
-    that reason.
-    """
-    terrain_relative_height = max_elevation - reference_terrain_elevation
-    if safety_altitude < terrain_relative_height:
-        return "red"
-    return "yellow" if safety_altitude < terrain_relative_height + safety_margin else "clear"
-
-
-def _is_finite_number(value: Any) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
-
-
-def attach_area_severity(
-    areas: List[Dict[str, Any]],
-    reference_terrain_elevation: Optional[float],
-    safety_altitude: Optional[float],
-    safety_margin: Optional[float],
-) -> None:
-    """Adds a `"severity": "red" | "yellow"` field to every area in `areas`, in place -- the ONE
-    place per-area severity is computed; the frontend only ever reads it back, never recomputes
-    it and never needs its own UAV telemetry to do so.
-
-    A no-op (areas keep no "severity" key at all) when any of the three inputs is missing or not
-    a finite number (e.g. an Origin whose threshold is not active yet): the frontend then falls
-    back to plain red, exactly as if this had never run.
-    """
-    if not (
-        _is_finite_number(reference_terrain_elevation)
-        and _is_finite_number(safety_altitude)
-        and _is_finite_number(safety_margin)
-    ):
-        return
-
-    for area in areas:
-        severity = classify_area_severity(
-            area["maxElevation"],
-            reference_terrain_elevation,  # type: ignore[arg-type]
-            safety_altitude,  # type: ignore[arg-type]
-            safety_margin,  # type: ignore[arg-type]
+    entries: List[Tuple[Tuple[int, ...], Dict[str, Any]]] = []
+    red_cover = (
+        None  # only needed when outlines are grown: exact cell outlines never overlap
+    )
+    for rank, (severity, mask) in enumerate(classes):
+        if not mask.any():
+            continue
+        group, cover = _group_areas(
+            index,
+            hits[mask],
+            elevation[mask],
+            tolerance_cells,
+            severity,
+            rank,
+            exclude=red_cover if severity == "yellow" else None,
         )
-        area["severity"] = "yellow" if severity == "clear" else severity
+        entries.extend(group)
+        if severity == "red" and tolerance_cells > 0:
+            red_cover = cover
+
+    entries.sort(
+        key=lambda e: e[0]
+    )  # red first, then biggest first; ties in scan order
+    areas = [
+        {"id": number, **area} for number, (_, area) in enumerate(entries, start=1)
+    ]
+
+    top = int(np.argmax(elevation))  # first highest unsafe cell overall
+    row, col = divmod(int(hits[top]), index.cols)
+    highest = {
+        "lat": float(np.round(index.cell_lat(row), COORD_DECIMALS)),
+        "lon": float(np.round(index.cell_lon(col), COORD_DECIMALS)),
+        "elevation": float(elevation[top]),
+    }
+    return {
+        **_response(
+            "unsafe", threshold, areas, n, highest, origin_fingerprint, tolerance_m
+        ),
+        **counts,
+    }

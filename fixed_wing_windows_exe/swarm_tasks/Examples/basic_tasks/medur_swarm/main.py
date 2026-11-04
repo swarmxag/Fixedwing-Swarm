@@ -17,15 +17,18 @@ import time
 import traceback
 
 from swarm_tasks.simulation import simulation as sim
+from swarm_tasks.simulation import visualizer as viz
 
 import swarm_tasks
 
 from medur_swarm import config, state
+from medur_swarm.boundary import FenceViolation
 from medur_swarm.utils import read_origin
 from medur_swarm.communication import lifecycle, replica, sockets
 from medur_swarm.communication.dispatch import MissionPreempted
 from medur_swarm.uav import connection as uav_connection
 from medur_swarm.uav import management as uav_management
+from medur_swarm.uav import topology
 from medur_swarm.uav.telemetry import sync_swarm_with_telemetry
 from medur_swarm.tasks import (
     admin,
@@ -74,8 +77,22 @@ def _bring_up_master():
             if vehicle.armed and alt is not None and alt > 10:
                 all_armed[i] = True
         if all(all_armed):
-            uav_connection.fetch_location()
-            break
+            try:
+                uav_connection.fetch_location()
+                break
+            except ValueError as e:
+                # A UAV is outside the range of the current origin (e.g. a fence
+                # file left from another site). Don't stop the program: a new
+                # geofence is applied the moment it arrives, then this retries.
+                print(
+                    "[startup] UAV positions cannot be used with origin",
+                    state.origin,
+                    "--",
+                    e,
+                    "-- give the geofence (Set Origin)",
+                )
+                time.sleep(2)
+                continue
         time.sleep(0.1)
 
 
@@ -99,6 +116,13 @@ def _dispatch_one(data):
     in the original's exact order. Returns True if the caller must
     `continue` the outer while(1) immediately (an original inline
     `continue`), matching goal.py/split.py's own contract."""
+    if topology.is_topology_command(data):
+        # A UAV joining or leaving is not a new mission: change only that
+        # UAV's membership (uav/topology.py), not every bot's mission state.
+        print("!!msg", data)
+        uav_management.run_remove_command(data)
+        uav_management.run_add_command(data)
+        return True
     runner._reset_mission_state()
     print("!!msg", data)
     if data == b"stop":
@@ -149,6 +173,7 @@ def _dispatch_one(data):
 
 
 def run():
+    viz.set_visible(config.SHOW_PLOT)
     _load_origin()
     sockets.start_listener_threads()
     _bring_up_master()
@@ -159,6 +184,9 @@ def run():
     # dispatched immediately, with no idle wait for a fresh mailbox seq.
     _next_data, _next_address, _next_seq = None, None, None
     state.last_seq = 0
+    # From here on origin/geofence go through the normal command queue again
+    # (sockets._apply_now_if_starting stops applying them directly).
+    state.dispatch_running = True
     while 1:
         seq = None
         if state.master_flag:
@@ -201,9 +229,14 @@ def run():
             # failure (e.g. an index mismatch after a bot removal) looked like
             # the swarm just stopped for no reason. Log it so the real cause is
             # visible instead of only the flags being reset.
-            print("[mission] aborted by exception:", repr(e))
+            if isinstance(e, FenceViolation):
+                # Refused before anything was assigned: one line, no traceback.
+                print("[fence] command refused, outside the geofence:", e)
+            else:
+                print("[mission] aborted by exception:", repr(e))
             lifecycle.foreground_failed(seq, e)
-            traceback.print_exc()
+            if not isinstance(e, FenceViolation):
+                traceback.print_exc()
             if state.search_flag:
                 state.search_flag = False
             if state.split_flag:
@@ -216,6 +249,12 @@ def run():
                 state.home_flag = False
             if state.home_goto_flag:
                 state.home_goto_flag = False
+        finally:
+            # Main thread, no mission loop running: close any plot window an
+            # interrupted mission left open (search/split/navigate only close
+            # theirs on "stop"), before a dronekit thread's garbage collection
+            # frees it and aborts the process.
+            viz.close_leftover_windows()
 
 
 if __name__ == "__main__":

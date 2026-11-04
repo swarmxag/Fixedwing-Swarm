@@ -35,6 +35,8 @@ state = _mod(
     vehicles=[],
     file_name="x",
     s=None,
+    dispatch_running=True,  # this helper IS the running mailbox consumer
+    fence_ready=True,  # these test nodes already have a geofence
 )
 _mod("medur_swarm.config", HEARTBEAT_IP=[])
 _mod("medur_swarm.uav", __path__=[])
@@ -43,6 +45,9 @@ _mod(
     vehicle_connection=lambda: None,
     fetch_location=lambda: None,
 )
+_mod("medur_swarm.uav.link_monitor", link_states=lambda: {})
+sys.modules["medur_swarm.uav"].connection = sys.modules["medur_swarm.uav.connection"]
+sys.modules["medur_swarm.uav"].link_monitor = sys.modules["medur_swarm.uav.link_monitor"]
 medur.state, medur.config = state, sys.modules["medur_swarm.config"]
 _mod("swarm_tasks")
 _mod("swarm_tasks.simulation")

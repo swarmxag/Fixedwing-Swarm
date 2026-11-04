@@ -91,6 +91,22 @@ def fake_dispatch(data):
 
 m._load_origin = lambda: None
 m._bring_up_master = lambda: None
-m._bring_up_simulation = lambda: None
+
+# A received fence file is stored by the real admin code: never let a test node
+# write to the real ~/Documents/swarm_env or the package's worlds folder.
+import tempfile
+from medur_swarm import config
+from medur_swarm.tasks import admin
+
+config.RECTANGLES_PATH = os.path.join(
+    os.environ["SWARM_STATE_DIR"], "node%s_rectangles.yaml" % os.environ.get("SWARM_NODE_ID", "legacy")
+)
+admin.sim.envs.world.worlds_path = tempfile.mkdtemp()
+
+# Test nodes already have a geofence unless a test says otherwise.
+state.fence_ready = not os.environ.get("HARNESS_NO_FENCE")
+if not os.environ.get("HARNESS_REAL_BRINGUP"):
+    m._bring_up_simulation = lambda: None
+# else: keep the REAL start-up wait -- a standby parks there and never dispatches.
 m._dispatch_one = fake_dispatch
 m.run()

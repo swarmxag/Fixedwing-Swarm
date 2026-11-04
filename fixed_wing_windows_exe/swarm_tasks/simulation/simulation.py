@@ -4,7 +4,7 @@ import swarm_tasks.utils as utils
 import numpy as np
 import pandas as pd
 import random
-from shapely.geometry import Point, Polygon
+from shapely.geometry import LineString, Point, Polygon
 
 DEFAULT_SIZE = (20, 20)
 
@@ -229,6 +229,31 @@ class Simulation:
                 return False
 
         return True
+
+    def path_crosses_obstacle(self, x0, y0, x1, y1):
+        """True if moving in a straight line from (x0,y0) to (x1,y1) would pass
+        through a wall. check_free only tests where a step LANDS, so a step
+        longer than a wall is thick used to jump straight over it.
+
+        Two exceptions keep a bot from being trapped:
+        * a bot already inside a wall polygon may leave that wall;
+        * when the fence outline is known (env.fence), a bot that is OUTSIDE
+          the fence may cross back IN -- a GPS resync can place it outside
+          after the real aircraft turned wide past the boundary.
+        Crossing from inside the fence to outside is never allowed."""
+        if x0 == x1 and y0 == y1:
+            return False
+        path = LineString([(x0, y0), (x1, y1)])
+        start, end = Point(x0, y0), Point(x1, y1)
+        fence = getattr(self.env, "fence", None)
+        if fence is not None and not fence.covers(start) and fence.covers(end):
+            return False  # coming back inside
+        for obs in self.env.obstacles:
+            if obs.distance(start) == 0:
+                continue  # starting inside/on this wall: let it get out
+            if obs.intersects(path):
+                return True
+        return False
 
     def create_custom_grid(self, size, _type="bool"):
         self.grid = np.zeros(size, dtype=_type)

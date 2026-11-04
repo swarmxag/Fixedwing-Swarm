@@ -17,30 +17,7 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 PKG = os.path.dirname(HERE)
 REPO = os.path.abspath(os.path.join(PKG, *[".."] * 5))
-LINK = os.path.join(REPO, "(suffix=".log")
-        open(self.out, "wb").close()
-        self.proc = None
-
-    def start(self):
-        env = dict(os.environ, SWARM_NODE_ID=str(self.id), SWARM_CMD_PORT=str(PORTS[self.id][0]),
-                   SWARM_CTL_PORT=str(PORTS[self.id][1]))
-        self.proc = subprocess.Popen(
-            [sys.executable, os.path.join(HERE, "transport_receiver.py"), self.out, str(self.busy)],
-            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        assert self.proc.stdout.readline().strip() == b"READY", self.proc.stderr.read()
-        return self
-
-    def stop(self):
-        if self.proc:
-            self.proc.kill()
-            self.proc.wait()
-            self.proc.stdout.close()
-            self.proc.stderr.close()
-            self.proc = None
-
-    def got(self, wait=0.4):
-        time.sleep(wait)
-        with open(self.out, "rb") as Xag-Server", "src", "flockwave", "server", "swarm_link.py")
+LINK = os.path.join(REPO, "Xag-Server", "src", "flockwave", "server", "swarm_link.py")
 
 spec = importlib.util.spec_from_file_location("swarm_link_r", LINK)
 link = importlib.util.module_from_spec(spec)
@@ -54,15 +31,60 @@ IPS = {1: "127.0.0.1", 2: "127.0.0.2"}
 class Node:
     def __init__(self, node_id, busy=0.0):
         self.id, self.busy = node_id, busy
-        self.out = tempfile.mktempf:
+        self.out = tempfile.mktemp(suffix=".log")
+        open(self.out, "wb").close()
+        self.proc = None
+
+    def start(self):
+        env = dict(
+            os.environ,
+            SWARM_NODE_ID=str(self.id),
+            SWARM_CMD_PORT=str(PORTS[self.id][0]),
+            SWARM_CTL_PORT=str(PORTS[self.id][1]),
+        )
+        self.proc = subprocess.Popen(
+            [
+                sys.executable,
+                os.path.join(HERE, "transport_receiver.py"),
+                self.out,
+                str(self.busy),
+            ],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        assert self.proc.stdout.readline().strip() == b"READY", self.proc.stderr.read()
+        return self
+
+    def stop(self):
+        if self.proc:
+            self.proc.kill()
+            self.proc.wait()
+            self.proc.stdout.close()
+            self.proc.stderr.close()
+            self.proc = None
+
+    def got(self, wait=0.4):
+        time.sleep(wait)
+        with open(self.out, "rb") as f:
             return [l for l in f.read().split(b"\n") if l]
 
 
 def make_router(tmp):
-    nodes = {str(i): {"ip": IPS[i], "cmd_port": PORTS[i][0], "ctl_port": PORTS[i][1]} for i in (1, 2)}
+    nodes = {
+        str(i): {"ip": IPS[i], "cmd_port": PORTS[i][0], "ctl_port": PORTS[i][1]}
+        for i in (1, 2)
+    }
     nf = os.path.join(tmp, "nodes.json")
     json.dump({"nodes": nodes}, open(nf, "w"))
-    return link.Router(nodes_file=nf, state_file=os.path.join(tmp, "master.json"), auto_replicate=False), nf
+    return (
+        link.Router(
+            nodes_file=nf,
+            state_file=os.path.join(tmp, "master.json"),
+            auto_replicate=False,
+        ),
+        nf,
+    )
 
 
 def wait_for(fn, timeout=3.0):
@@ -90,12 +112,19 @@ class RouterTests(unittest.TestCase):
 
     def role_of(self, node):
         st = self.router.probe(node)
-        return None if st is None else ("promoting" if st.get("promoting") else st.get("role"))
+        return (
+            None
+            if st is None
+            else ("promoting" if st.get("promoting") else st.get("role"))
+        )
 
     def promote(self, node):
         res = self.router.set_master(node)
         self.assertTrue(res["ok"], res)
-        self.assertTrue(wait_for(lambda: self.role_of(node) == "master"), "node never reported master")
+        self.assertTrue(
+            wait_for(lambda: self.role_of(node) == "master"),
+            "node never reported master",
+        )
         return res
 
     def test_no_master_means_refused_not_lost(self):
@@ -105,7 +134,9 @@ class RouterTests(unittest.TestCase):
 
     def test_nodes_start_standby_and_report_their_own_state(self):
         st = self.router.status()
-        self.assertEqual([n["status"]["role"] for n in st["nodes"]], ["standby", "standby"])
+        self.assertEqual(
+            [n["status"]["role"] for n in st["nodes"]], ["standby", "standby"]
+        )
         self.assertTrue(all(n["reachable"] for n in st["nodes"]))
 
     def test_commands_go_to_master_only(self):
@@ -116,7 +147,9 @@ class RouterTests(unittest.TestCase):
 
     def test_standby_refuses_mission_command_directly(self):
         self.promote(1)
-        ok = self.router.links[2].sendto(GOAL.encode(), self.router.address(2, "cmd"), self.router.epoch)
+        ok = self.router.links[2].sendto(
+            GOAL.encode(), self.router.address(2, "cmd"), self.router.epoch
+        )
         self.assertFalse(ok)
         self.assertEqual(self.fail[-1]["reason"], "not_master")
         self.assertEqual(self.n2.got(), [])
@@ -130,10 +163,14 @@ class RouterTests(unittest.TestCase):
         self.assertEqual(res, {1: "not_delivered", 2: "not_delivered"})
         self.assertIn("invalid_origin", [f["reason"] for f in self.fail])
 
-    def test_unregistered_target_refused(self):
+    def test_uav_ids_not_in_node_table_still_reach_master(self):
+        # Node ids are swarm computers; one master flies every UAV, so a command
+        # for UAVs 1..10 goes to the master even with only nodes 1 and 2 listed.
         self.promote(1)
-        self.assertFalse(self.router.send("goal_[[1.0,2.0]]_1_50_[9]"))
-        self.assertIn("unregistered_uav", self.fail[-1]["reason"])
+        cmd = "search,27.2,71.4,10,1000,5000,[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]"
+        self.assertTrue(self.router.send(cmd), self.fail)
+        self.assertEqual(self.n1.got(), [cmd.encode()])
+        self.assertEqual(self.n2.got(0.0), [])
 
     def test_failover_fences_old_master(self):
         self.promote(1)
@@ -144,7 +181,9 @@ class RouterTests(unittest.TestCase):
         self.assertEqual(self.n2.got(), [GOAL.encode()])
         self.assertEqual(self.n1.got(0.0), [])
         # a delayed command from the old epoch is refused even by the (re)promoted-looking node
-        ok = self.router.links[1].sendto(GOAL.encode(), self.router.address(1, "cmd"), 1)
+        ok = self.router.links[1].sendto(
+            GOAL.encode(), self.router.address(1, "cmd"), 1
+        )
         self.assertFalse(ok)
         self.assertEqual(self.fail[-1]["reason"], "stale_epoch")
 
@@ -179,24 +218,32 @@ class RouterTests(unittest.TestCase):
         self.n1.stop()
         self.n1 = Node(1, busy=0.6).start()
         self.promote(1)
-        self.assertTrue(self.router.send("add,1"))              # consumed, receiver now "busy"
+        self.assertTrue(self.router.send("add,1"))  # consumed, receiver now "busy"
         time.sleep(0.15)
-        self.assertTrue(self.router.send("remove,1"))           # promoted to mailbox, unread
-        self.assertTrue(self.router.send(GOAL))                 # pending behind it
-        self.assertTrue(self.router.send(GOAL.replace("50", "75")))  # newer goal, same UAV set
+        self.assertTrue(self.router.send("remove,1"))  # promoted to mailbox, unread
+        self.assertTrue(self.router.send(GOAL))  # pending behind it
+        self.assertTrue(
+            self.router.send(GOAL.replace("50", "75"))
+        )  # newer goal, same UAV set
         time.sleep(0.5)
         by_cmd = {c["cmd"]: c for c in link.recent_commands(50)}
         self.assertEqual(by_cmd[GOAL[:48]]["status"], "superseded")
         self.assertEqual(by_cmd[GOAL[:48]]["why"], "newer_goal")
         got = self.n1.got(2.5)
-        self.assertEqual(got.count(GOAL.encode()), 0)           # the superseded plan never flew
+        self.assertEqual(got.count(GOAL.encode()), 0)  # the superseded plan never flew
         self.assertIn(GOAL.replace("50", "75").encode(), got)
-        self.assertEqual(got[:2], [b"add,1", b"remove,1"])      # ordering of other commands kept
+        self.assertEqual(
+            got[:2], [b"add,1", b"remove,1"]
+        )  # ordering of other commands kept
 
     def test_invalid_node_table_refuses_to_route(self):
         with open(self.nodes_file, "w") as f:
             json.dump({"nodes": {"1": {"ip": "10.0.0.1"}, "2": {"ip": "10.0.0.1"}}}, f)
-        bad = link.Router(nodes_file=self.nodes_file, state_file=os.path.join(self.tmp, "m2.json"), auto_replicate=False)
+        bad = link.Router(
+            nodes_file=self.nodes_file,
+            state_file=os.path.join(self.tmp, "m2.json"),
+            auto_replicate=False,
+        )
         self.assertIn("duplicate ip", bad.load_error)
         self.assertFalse(bad.send("stop"))
 

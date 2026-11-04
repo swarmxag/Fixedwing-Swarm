@@ -12,11 +12,13 @@ import csv
 import math
 import threading
 import time
+import traceback
 
 import locatePosition
 
-from medur_swarm import config, state
+from medur_swarm import boundary, config, state
 from medur_swarm.communication import lifecycle
+from medur_swarm.uav import link_monitor
 from medur_swarm.utils import generate_points, read_specific_line
 from medur_swarm.uav.guidance import (
     _drive_vehicle_towards,
@@ -24,6 +26,7 @@ from medur_swarm.uav.guidance import (
     advance_bot_with_uav_pacing,
     pursuit_target_with_avoidance,
     signed_uav_lead,
+    bot_at_waypoint,
     real_uav_avoidance_vector,
     uav_reached_waypoint,
 )
@@ -43,6 +46,8 @@ def _reset_mission_state():
     state.landing_flag = False
     state.removed_uav_grid = []
     state.removed_grid_path_length = []
+    state.removed_grid_path_end = []
+    state.deferred_removed_segments = []
     state.removed_grid_path_array = [0] * len(state.pos_array)
     state.removed_grid_path_array_start_val = [0] * len(state.pos_array)
     state.checkall_removed_grid_path_array_start_val = [0] * len(state.pos_array)
@@ -51,6 +56,7 @@ def _reset_mission_state():
     state.removed_grid_path_array_index = 0
     state.uncovered_area_points = []
     state.uncovered_area_filename = []
+    state.uncovered_area_end = []
     state.group_goal_flag = False
     state.guided_circle_flag = False
     state.guided_circle_formation_flag = False
@@ -82,6 +88,15 @@ def clear_all_active_tasks():
 def assign_goal_tasks(
     selected_indexes, goal_xy, guided_circle_radius=None, guided_circle_direction=None
 ):
+    # Refuse (FenceViolation) before touching any task if a goal is outside the fence.
+    boundary.check_points(goal_xy, "goal")
+    # Each UAV orbits the FINAL point at its own live WP_LOITER_RAD; earlier
+    # points are flown through, so only the last one gets the circle check.
+    if goal_xy and selected_indexes:
+        boundary.check_loiter(
+            [(goal_xy[-1], max(_uav_loiter_radius_m(i) for i in selected_indexes))],
+            "final goal",
+        )
     with state.active_goal_tasks_lock:
         for slot, bot_index in enumerate(selected_indexes):
             # Fresh task -- start the closest-approach latch and the
@@ -125,6 +140,8 @@ def assign_autogoal_tasks(
     `guided_circle_radius` around that same center, so every bot ends up
     on its own non-overlapping circle.
 
+    Every center must be inside the fence, or nothing is assigned.
+
     circle_slot/circle_slot_count are pinned to 0/1: each bot owns its
     circle alone, so there is no group of bots to stagger it against.
 
@@ -132,6 +149,21 @@ def assign_autogoal_tasks(
     layout) simply overwrites each bot's task, same "new command
     terminates the old one" behavior assign_goal_tasks already has.
     """
+    boundary.check_points(per_uav_goal_xy[: len(selected_indexes)], "auto-goal")
+    # The layout radius can be ahead of the live WP_LOITER_RAD during a radius
+    # change, so check whichever circle is bigger.
+    try:
+        layout_radius = abs(float(guided_circle_radius))
+    except (TypeError, ValueError):
+        layout_radius = 0.0
+    boundary.check_loiter(
+        [
+            (per_uav_goal_xy[slot], max(layout_radius, _uav_loiter_radius_m(bot_index)))
+            for slot, bot_index in enumerate(selected_indexes)
+            if slot < len(per_uav_goal_xy)
+        ],
+        "auto-goal",
+    )
     with state.active_goal_tasks_lock:
         for slot, bot_index in enumerate(selected_indexes):
             if slot < len(per_uav_goal_xy):
@@ -211,6 +243,81 @@ def remove_goal_task_index(removed_index):
     )
 
 
+def _preserve_removed_search_work(m, selected_indexes, all_csv_paths, grid_indexes):
+    """Keep the unfinished work of the UAV being removed from index m, once,
+    so it can be redistributed; called before its slots are dropped.
+
+    Before redistribution its own file is left from its progress to the end
+    of the file. During redistribution its own file is already done, but
+    the segment it was given is not: the rest of that segment is deferred
+    to the next round (see start_deferred_redistribution_round). A UAV that
+    is not flying this mission (idle, or just added) leaves nothing."""
+    if m not in selected_indexes:
+        return
+    if state.removed_grid_path_array_flag:
+        segment = (
+            state.removed_grid_path_array[m]
+            if m < len(state.removed_grid_path_array)
+            else 0
+        )
+        finished = (
+            m < len(state.checkall_removed_grid_path_array_start_val)
+            and state.checkall_removed_grid_path_array_start_val[m] == 1
+        )
+        if segment and not finished:
+            next_line = state.removed_grid_path_array_start_val[m]
+            if next_line < segment[1]:
+                state.deferred_removed_segments.append(
+                    (state.removed_grid_filename[m], next_line, segment[1])
+                )
+                print(
+                    "[mission-topology] kept unfinished segment",
+                    state.deferred_removed_segments[-1],
+                )
+        return
+    if 0 <= m < len(all_csv_paths) and all_csv_paths[m]:
+        state.removed_uav_grid.append(all_csv_paths[m])
+        state.removed_grid_path_length.append(
+            grid_indexes[m] if m < len(grid_indexes) else 0
+        )
+        state.removed_grid_path_end.append(None)
+
+
+def start_deferred_redistribution_round(selected_indexes):
+    """Segments kept from UAVs removed during a redistribution round are
+    redistributed once every remaining UAV has finished its current segment
+    -- no UAV is re-targeted mid-segment. Resets the round so the existing
+    allocation (search.py/split.py) runs again over just those segments."""
+    if not state.deferred_removed_segments or not state.removed_grid_path_array_flag:
+        return
+    checkall = state.checkall_removed_grid_path_array_start_val
+    if not all(x < len(checkall) and checkall[x] == 1 for x in selected_indexes):
+        return
+    if state.uncovered_area_points:
+        return  # the current round still has areas waiting for a UAV
+    segments = state.deferred_removed_segments
+    state.deferred_removed_segments = []
+    state.removed_uav_grid = [s[0] for s in segments]
+    state.removed_grid_path_length = [s[1] for s in segments]
+    state.removed_grid_path_end = [s[2] for s in segments]
+    size = len(state.pos_array)
+    state.removed_grid_path_array = [0] * size
+    state.removed_grid_path_array_start_val = [0] * size
+    state.removed_grid_filename = [0] * size
+    state.checkall_removed_grid_path_array_start_val = [0] * size
+    state.removed_grid_path_array_index = 0
+    state.removed_grid_path_array_flag = False
+    print("[mission-topology] redistributing kept segments", segments)
+
+
+def removed_area_end(x, default_end):
+    """Last line (exclusive) of removed area x; the end of the file unless
+    the area is the rest of a segment (see state.removed_grid_path_end)."""
+    ends = state.removed_grid_path_end
+    end = ends[x] if x < len(ends) else None
+    return int(default_end) if end is None else int(end)
+
+
 def synchronize_mission_topology(
     selected_indexes,
     csv_file_paths,
@@ -219,6 +326,7 @@ def synchronize_mission_topology(
     line_counts,
     current_goals,
     planned_paths,
+    index_sets=(),
 ):
     """Apply queued UAV removals to one foreground search/split mission.
 
@@ -227,13 +335,18 @@ def synchronize_mission_topology(
     are shifted; otherwise the UAV after it is given the removed UAV's path.
     The resize also makes adding an idle UAV safe while a selected subset is
     still executing.
+
+    index_sets: the loop's own sets of bot indexes (e.g. diverted_indexes),
+    remapped in place so they keep naming the same UAVs.
     """
-    removed_indexes = (
-        sorted(set(state.remove_bot_array), reverse=True)
-        if state.remove_bot_flag
-        else []
-    )
+    # In arrival order: each queued index is in the frame left by the removal
+    # before it, so two removals of "index 6" are two different UAVs. (A
+    # sorted set() collapsed them into one and misaligned every array.)
+    removed_indexes = list(state.remove_bot_array) if state.remove_bot_flag else []
     for removed_index in removed_indexes:
+        _preserve_removed_search_work(
+            removed_index, selected_indexes, all_csv_paths, grid_indexes
+        )
         # csv_file_paths is indexed by selected_indexes, not by bot index.
         if removed_index in selected_indexes:
             path_slot = selected_indexes.index(removed_index)
@@ -245,6 +358,10 @@ def synchronize_mission_topology(
             line_counts,
             current_goals,
             planned_paths,
+            state.removed_grid_path_array,
+            state.removed_grid_path_array_start_val,
+            state.removed_grid_filename,
+            state.checkall_removed_grid_path_array_start_val,
         ):
             if 0 <= removed_index < len(values):
                 values.pop(removed_index)
@@ -253,6 +370,14 @@ def synchronize_mission_topology(
             for index in selected_indexes
             if index != removed_index
         ]
+        for index_set in index_sets:
+            remapped = {
+                index - 1 if index > removed_index else index
+                for index in index_set
+                if index != removed_index
+            }
+            index_set.clear()
+            index_set.update(remapped)
 
     # Addition appends an IDLE bot. Keep every foreground bookkeeping array
     # aligned, but do not add that new bot to selected_indexes: it must not be
@@ -267,6 +392,15 @@ def synchronize_mission_topology(
     ):
         del values[target_size:]
         values.extend([fill] * (target_size - len(values)))
+    # Redistribution slots only ever grow here (an added, idle UAV gets an
+    # empty one); they are allocated by bot index, so never truncate them.
+    for values in (
+        state.removed_grid_path_array,
+        state.removed_grid_path_array_start_val,
+        state.removed_grid_filename,
+        state.checkall_removed_grid_path_array_start_val,
+    ):
+        values.extend([0] * (target_size - len(values)))
 
     if removed_indexes:
         print(
@@ -769,6 +903,8 @@ def _goal_task_runner():
                     if i >= len(state.s.swarm) or i >= len(state.pos_array):
                         completed.append(i)
                         continue
+                    if not link_monitor.ready(i):
+                        continue  # link down: hold the bot and its task as they are
                     b = state.s.swarm[i]
                     task_type = task.get("type")
                     if task_type == "mission":
@@ -795,6 +931,19 @@ def _goal_task_runner():
             # own gui.update() call happens to run again.
         except Exception as e:
             print("[goal-task] runner exception", e)
+            # The runner retries every tick, so a persistent fault would repeat
+            # this ~10x a second: report (with traceback) only when the error
+            # changes or every ERROR_REPORT_INTERVAL_S while it persists.
+            why = repr(e)[:120]
+            now = time.monotonic()
+            if why != _last_error[0] or now - _last_error[1] >= ERROR_REPORT_INTERVAL_S:
+                _last_error[:] = [why, now]
+                traceback.print_exc()
+                lifecycle.report_task_error(why)
+
+
+ERROR_REPORT_INTERVAL_S = 10.0
+_last_error = [None, 0.0]  # [repr of the last reported error, monotonic time]
 
 
 def start_goal_task_thread():

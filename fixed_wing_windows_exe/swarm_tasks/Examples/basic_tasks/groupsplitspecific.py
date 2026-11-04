@@ -1,4 +1,5 @@
 import csv,os,sys
+import math
 import simplekml
 from geopy.distance import distance
 from geopy.point import Point
@@ -29,11 +30,16 @@ class SpecificSplitMission():
         else:
             self.TURN_RADIUS = (self.SPEED ** 2) / (self.G * np.tan(self.MAX_BANK_ANGLE))
         self.TURN_RATE = self.SPEED / self.TURN_RADIUS
-        if grid_spacing and grid_spacing < 2 * self.TURN_RADIUS:
-            print(
-                f"[bezier] WARNING grid_spacing={grid_spacing} m < 2*turn_radius="
-                f"{2 * self.TURN_RADIUS:.0f} m -- turn-arounds will bulge past adjacent lines"
-            )
+        # grid_spacing is one value per area here (specificsplit sends a
+        # list); comparing the whole list to a numpy float gave an array and
+        # `if` on it raised, aborting every multi-area specificsplit.
+        spacings = grid_spacing if isinstance(grid_spacing, (list, tuple)) else [grid_spacing]
+        for spacing in spacings:
+            if spacing and spacing < 2 * self.TURN_RADIUS:
+                print(
+                    f"[bezier] WARNING grid_spacing={spacing} m < 2*turn_radius="
+                    f"{2 * self.TURN_RADIUS:.0f} m -- turn-arounds will bulge past adjacent lines"
+                )
         self.sample_points = []
         self.path = []
         self.waypoints = []
@@ -75,12 +81,22 @@ class SpecificSplitMission():
 
             csv_data = []
 
-            current_lat = bottom.latitude
+            # Same number of lines in every strip, spaced evenly INSIDE it
+            # (never wider than grid_spacing). Lines used to start on the strip
+            # edge and repeat every grid_spacing while <= the top edge, so a
+            # strip edge was flown by both neighbouring UAVs and float rounding
+            # on the top edge gave some UAVs one line fewer than others.
+            num_lines = (
+                max(1, math.ceil(rectangle_height / grid_spacing - 1e-9))
+                if grid_spacing else 1
+            )
+            line_gap = rectangle_height / num_lines
             line_number = 0
 
-            while current_lat <= top.latitude:
+            for k in range(num_lines):
                 line_number += 1
-                current_point = Point(current_lat, west_edge.longitude)
+                line_point = distance(meters=(k + 0.5) * line_gap).destination(bottom, 0)
+                current_point = Point(line_point.latitude, west_edge.longitude)
                 east_point = distance(meters=full_width).destination(current_point, 90)
                 if line_number % 2 == 1:
                     csv_data.append((current_point.latitude, current_point.longitude))
@@ -99,10 +115,6 @@ class SpecificSplitMission():
                         current_point, 250
                     )
                     csv_data.append((point_225.latitude, point_225.longitude))
-
-                current_lat = (
-                    distance(meters=grid_spacing).destination(current_point, 0).latitude
-                )
 
             uav_id = uav_ids[i]
             # Grid points never persisted -- fed straight into

@@ -22,6 +22,7 @@ from medur_swarm.utils import parse_selected_uav_ids, selected_swarm_indexes
 from medur_swarm.uav.telemetry import live_gps_plot_points
 from medur_swarm.tasks.runner import assign_goal_tasks, assign_autogoal_tasks
 from medur_swarm.communication.dispatch import check_for_new_command, MissionPreempted
+from medur_swarm.boundary import FenceViolation
 from medur_swarm.goal_point_generator import (
     DEFAULT_BEARING_DEG,
     DEFAULT_SAFETY_MARGIN_M,
@@ -64,6 +65,8 @@ def handle_concurrent_goal_command(command_data):
             selected_indexes,
         )
         return True
+    except FenceViolation:
+        raise
     except Exception as e:
         print("[concurrent goal] failed", e)
         return False
@@ -146,7 +149,7 @@ def run_goal_command(data):
         # plot what that thread is doing.
         _plot_goal_tasks(selected_indexes, label="goal")
         return True
-    except MissionPreempted:
+    except (MissionPreempted, FenceViolation):
         raise
     except Exception as e:
         import traceback
@@ -410,6 +413,8 @@ def handle_concurrent_autogoal_command(command_data):
                 selected_uav_ids,
             )
         return ok
+    except FenceViolation:
+        raise
     except Exception as e:
         print("[concurrent autogoal] failed", e)
         return False
@@ -456,7 +461,7 @@ def run_autogoal_command(data):
         )
         _plot_goal_tasks(selected_indexes, label="autogoal")
         return True
-    except MissionPreempted:
+    except (MissionPreempted, FenceViolation):
         raise
     except Exception as e:
         import traceback
@@ -482,7 +487,7 @@ def run_autogoal_radius_command(data):
             params = getattr(state, "autogoal_params", None) or {}
             _plot_goal_tasks(params.get("selected_indexes", []), label="autogoal")
         return True
-    except MissionPreempted:
+    except (MissionPreempted, FenceViolation):
         raise
     except Exception as e:
         print("autogoalrad exception", e)

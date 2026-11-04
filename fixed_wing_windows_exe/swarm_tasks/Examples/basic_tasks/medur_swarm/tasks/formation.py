@@ -21,7 +21,11 @@ from medur_swarm.uav.guidance import (
     advance_bot_with_uav_pacing,
     pursuit_target_with_avoidance,
 )
-from medur_swarm.communication.dispatch import check_for_new_command
+from medur_swarm.communication.dispatch import (
+    apply_pending_topology_command,
+    check_for_new_command,
+)
+from medur_swarm.uav import topology
 
 
 def run_guided_circle_command(data):
@@ -51,38 +55,45 @@ def run_guided_circle_command(data):
         x, y = locatePosition.geoToCart(state.origin, config.END_DISTANCE, m)
         multiple_goals.append((x / 2, y / 2))
     print("multiple_goals", multiple_goals)
+    # UAVs this formation started with (by sys_id): a UAV added meanwhile stays idle
+    member_ids = topology.members()
     for b in state.s.swarm:
         ind = [0] * state.num_bots
         my_seq = state.last_seq
-        while 1:
-            if state.guided_circle_formation_flag:
-                state.guided_circle_formation_flag = False
-                state.guided_circle_flag = False
-                break
-            time.sleep(config.SLEEP_TIMES.get(state.num_bots))
-            check_for_new_command(my_seq)
-            for i, b in enumerate(state.s.swarm):
-                current_position = [b.x, b.y]
-                goal = multiple_goals[ind[i]]
-                advance_bot_with_uav_pacing(i, b, goal, label="guided_circle_formation")
-                dx = abs(goal[0] - current_position[0])
-                dy = abs(goal[1] - current_position[1])
-                state.circle_formation_table[i] = 1
-                # This is an intentional circular formation, not a finite
-                # fly-by route. Advance its virtual circle points locally.
-                if dx <= 5 and dy <= 5:
-                    ind[i] += 1
-                    print("inddddddd", ind)
-                    if ind[i] == len(multiple_goals):
-                        ind[i] = 0
-                # Pursuit point ahead of the bot's own heading, corrected
-                # for real UAV-to-UAV separation -- same guidance
-                # goal/search/split use, instead of the bot's raw position.
-                _drive_vehicle_towards(i, b, pursuit_target_with_avoidance(i, b))
+        # ind is indexed by swarm position: keep it on the same UAVs
+        # while UAVs are added/removed.
+        with topology.tracking((ind, 0)):
+            while 1:
+                if state.guided_circle_formation_flag:
+                    state.guided_circle_formation_flag = False
+                    state.guided_circle_flag = False
+                    break
+                time.sleep(config.SLEEP_TIMES.get(state.num_bots))
+                check_for_new_command(my_seq)
+                for i, b in enumerate(state.s.swarm):
+                    if not topology.is_member(i, member_ids):
+                        continue
+                    current_position = [b.x, b.y]
+                    goal = multiple_goals[ind[i]]
+                    advance_bot_with_uav_pacing(i, b, goal, label="guided_circle_formation")
+                    dx = abs(goal[0] - current_position[0])
+                    dy = abs(goal[1] - current_position[1])
+                    state.circle_formation_table[i] = 1
+                    # This is an intentional circular formation, not a finite
+                    # fly-by route. Advance its virtual circle points locally.
+                    if dx <= 5 and dy <= 5:
+                        ind[i] += 1
+                        print("inddddddd", ind)
+                        if ind[i] == len(multiple_goals):
+                            ind[i] = 0
+                    # Pursuit point ahead of the bot's own heading, corrected
+                    # for real UAV-to-UAV separation -- same guidance
+                    # goal/search/split use, instead of the bot's raw position.
+                    _drive_vehicle_towards(i, b, pursuit_target_with_avoidance(i, b))
 
-            if state.index == b"stop":
-                state.guided_circle_formation_flag = True
-                break
+                if state.index == b"stop":
+                    state.guided_circle_formation_flag = True
+                    break
 
 
 def run_same_altitude_command(data):
@@ -174,101 +185,130 @@ def run_loiter_point_command(data):
         x, y = locatePosition.geoToCart(state.origin, config.END_DISTANCE, m)
         multiple_goals.append((x / 2, y / 2))
     print("multiple_goals", multiple_goals)
+    member_ids = topology.members()  # same as guided_circle above
     for b in state.s.swarm:
         print("circle_formation_table", state.circle_formation_table)
         ind = [0] * state.num_bots
         step = 1
-        while 1:
-            if state.start_flag:
-                break
-            time.sleep(config.SLEEP_TIMES.get(state.num_bots))
-            for i, b in enumerate(state.s.swarm):
-                current_position = [b.x, b.y]
-                goal = multiple_goals[ind[i]]
-                if state.circle_formation_table[i] == 0:
-                    lat = state.vehicles[i].location.global_relative_frame.lat
-                    lon = state.vehicles[i].location.global_relative_frame.lon
-                    x, y = locatePosition.geoToCart(
-                        state.origin, config.END_DISTANCE, [lat, lon]
-                    )
-                    plane_points = [x / 2, y / 2]
-                    advance_bot_with_uav_pacing(i, b, goal, label="loiter_point")
-                    dx = abs(goal[0] - current_position[0])
-                    dy = abs(goal[1] - current_position[1])
-                    if state.master_flag:
-                        current_position = [b.x * 2, b.y * 2]
-                        lat, lon = locatePosition.cartToGeo(
-                            state.origin, config.END_DISTANCE, current_position
+        with topology.tracking((ind, 0)):  # same as guided_circle above
+            while 1:
+                if state.start_flag:
+                    break
+                time.sleep(config.SLEEP_TIMES.get(state.num_bots))
+                apply_pending_topology_command()
+                for i, b in enumerate(state.s.swarm):
+                    if not topology.is_member(i, member_ids):
+                        continue
+                    current_position = [b.x, b.y]
+                    goal = multiple_goals[ind[i]]
+                    if state.circle_formation_table[i] == 0:
+                        lat = state.vehicles[i].location.global_relative_frame.lat
+                        lon = state.vehicles[i].location.global_relative_frame.lon
+                        x, y = locatePosition.geoToCart(
+                            state.origin, config.END_DISTANCE, [lat, lon]
                         )
-                        if step <= len(state.vehicles):
-                            step += 1
-                            print("!!!!!!!!!!")
-                            if state.same_alt_flag:
-                                point1 = LocationGlobalRelative(
-                                    float(base_lat),
-                                    float(base_lon),
-                                    state.same_height,
-                                )
-                            else:
-                                point1 = LocationGlobalRelative(
-                                    float(base_lat),
-                                    float(base_lon),
-                                    state.different_height[i],
-                                )
-                            state.vehicles[i].simple_goto(point1)
-                        if step == 100:
-                            if state.same_alt_flag:
-                                point1 = LocationGlobalRelative(
-                                    float(base_lat),
-                                    float(base_lon),
-                                    state.same_height,
-                                )
-                            else:
-                                point1 = LocationGlobalRelative(
-                                    float(base_lat),
-                                    float(base_lon),
-                                    state.different_height[i],
-                                )
-                            state.vehicles[i].simple_goto(point1)
-                        if step != 100:
-                            current_altitude = state.vehicles[
-                                i
-                            ].location.global_relative_frame.alt
-                            distance = locatePosition.distance_bearing(
-                                state.vehicles[i].location.global_relative_frame.lat,
-                                state.vehicles[i].location.global_relative_frame.lon,
-                                float(base_lat),
-                                float(base_lon),
+                        plane_points = [x / 2, y / 2]
+                        advance_bot_with_uav_pacing(i, b, goal, label="loiter_point")
+                        dx = abs(goal[0] - current_position[0])
+                        dy = abs(goal[1] - current_position[1])
+                        if state.master_flag:
+                            current_position = [b.x * 2, b.y * 2]
+                            lat, lon = locatePosition.cartToGeo(
+                                state.origin, config.END_DISTANCE, current_position
                             )
-                            if (state.different_height[i] - 5) <= current_altitude <= (
-                                state.different_height[i] + 5
-                            ) and distance < 150:
-                                state.uav_home_pos = []
-                                step = 100
-                                for vehicle in state.vehicles:
-                                    lat = vehicle.location.global_relative_frame.lat
-                                    lon = vehicle.location.global_relative_frame.lon
-                                    x, y = locatePosition.geoToCart(
-                                        state.origin, config.END_DISTANCE, [lat, lon]
+                            if step <= len(state.vehicles):
+                                step += 1
+                                print("!!!!!!!!!!")
+                                if state.same_alt_flag:
+                                    point1 = LocationGlobalRelative(
+                                        float(base_lat),
+                                        float(base_lon),
+                                        state.same_height,
                                     )
-                                    state.uav_home_pos.append((x / 2, y / 2))
-                                state.s = sim.Simulation(
-                                    state.uav_home_pos,
-                                    num_bots=len(state.pos_array),
-                                    env_name=state.file_name,
+                                else:
+                                    point1 = LocationGlobalRelative(
+                                        float(base_lat),
+                                        float(base_lon),
+                                        state.different_height[i],
+                                    )
+                                state.vehicles[i].simple_goto(point1)
+                            if step == 100:
+                                if state.same_alt_flag:
+                                    point1 = LocationGlobalRelative(
+                                        float(base_lat),
+                                        float(base_lon),
+                                        state.same_height,
+                                    )
+                                else:
+                                    point1 = LocationGlobalRelative(
+                                        float(base_lat),
+                                        float(base_lon),
+                                        state.different_height[i],
+                                    )
+                                state.vehicles[i].simple_goto(point1)
+                            if step != 100:
+                                current_altitude = state.vehicles[
+                                    i
+                                ].location.global_relative_frame.alt
+                                distance = locatePosition.distance_bearing(
+                                    state.vehicles[i].location.global_relative_frame.lat,
+                                    state.vehicles[i].location.global_relative_frame.lon,
+                                    float(base_lat),
+                                    float(base_lon),
                                 )
-                    if i < len(state.robots):
-                        state.robots[i] = (x / 2, y / 2)
-                    msg = ",".join([f"{robot[0]},{robot[1]}" for robot in state.robots])
-                    if dx < 50 and dy < 50:
+                                if (state.different_height[i] - 5) <= current_altitude <= (
+                                    state.different_height[i] + 5
+                                ) and distance < 150:
+                                    state.uav_home_pos = []
+                                    step = 100
+                                    for vehicle in state.vehicles:
+                                        lat = vehicle.location.global_relative_frame.lat
+                                        lon = vehicle.location.global_relative_frame.lon
+                                        x, y = locatePosition.geoToCart(
+                                            state.origin, config.END_DISTANCE, [lat, lon]
+                                        )
+                                        state.uav_home_pos.append((x / 2, y / 2))
+                                    state.s = sim.Simulation(
+                                        state.uav_home_pos,
+                                        num_bots=len(state.pos_array),
+                                        env_name=state.file_name,
+                                    )
+                        if i < len(state.robots):
+                            state.robots[i] = (x / 2, y / 2)
+                        msg = ",".join([f"{robot[0]},{robot[1]}" for robot in state.robots])
+                        if dx < 50 and dy < 50:
+                            cmd = cvg.goal_area_cvg(i, b, goal)
+                            cmd += disp_field(b, neighbourhood_radius=100)
+                            cmd.exec(b)
+                            dx = abs(goal[0] - current_position[0])
+                            dy = abs(goal[1] - current_position[1])
+                            state.circle_formation_table[i] = 1
+                            if dx <= 50 and dy <= 50:
+                                ind[i] += 1
+                                if ind[i] == len(multiple_goals):
+                                    ind[i] = 0
+
+                            # Pursuit point ahead of the bot's own heading,
+                            # corrected for real UAV-to-UAV separation -- same
+                            # guidance goal/search/split use, instead of the
+                            # bot's raw position.
+                            _drive_vehicle_towards(
+                                i, b, pursuit_target_with_avoidance(i, b)
+                            )
+
+                        else:
+                            continue
+
+                    if state.circle_formation_table[i] == 1:
                         cmd = cvg.goal_area_cvg(i, b, goal)
                         cmd += disp_field(b, neighbourhood_radius=100)
                         cmd.exec(b)
                         dx = abs(goal[0] - current_position[0])
                         dy = abs(goal[1] - current_position[1])
                         state.circle_formation_table[i] = 1
-                        if dx <= 50 and dy <= 50:
+                        if dx <= 10 and dy <= 10:
                             ind[i] += 1
+                            print("index", ind)
                             if ind[i] == len(multiple_goals):
                                 ind[i] = 0
 
@@ -276,36 +316,12 @@ def run_loiter_point_command(data):
                         # corrected for real UAV-to-UAV separation -- same
                         # guidance goal/search/split use, instead of the
                         # bot's raw position.
-                        _drive_vehicle_towards(
-                            i, b, pursuit_target_with_avoidance(i, b)
-                        )
+                        _drive_vehicle_towards(i, b, pursuit_target_with_avoidance(i, b))
 
                     else:
                         continue
 
-                if state.circle_formation_table[i] == 1:
-                    cmd = cvg.goal_area_cvg(i, b, goal)
-                    cmd += disp_field(b, neighbourhood_radius=100)
-                    cmd.exec(b)
-                    dx = abs(goal[0] - current_position[0])
-                    dy = abs(goal[1] - current_position[1])
-                    state.circle_formation_table[i] = 1
-                    if dx <= 10 and dy <= 10:
-                        ind[i] += 1
-                        print("index", ind)
-                        if ind[i] == len(multiple_goals):
-                            ind[i] = 0
-
-                    # Pursuit point ahead of the bot's own heading,
-                    # corrected for real UAV-to-UAV separation -- same
-                    # guidance goal/search/split use, instead of the
-                    # bot's raw position.
-                    _drive_vehicle_towards(i, b, pursuit_target_with_avoidance(i, b))
-
-                else:
-                    continue
-
-            if state.index == b"stop":
-                state.start_flag = False
-                state.circle_formation_flag = False
-                break
+                if state.index == b"stop":
+                    state.start_flag = False
+                    state.circle_formation_flag = False
+                    break

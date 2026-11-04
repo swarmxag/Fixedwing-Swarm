@@ -233,6 +233,9 @@ const SwarmPanel = ({
         dispatch(showError(splitErrorMessages[res.body.message]));
         return;
       }
+      if (refusedForBoundary(res)) {
+        return;
+      }
       if (Boolean(res?.body?.message)) {
         dispatch(
           showNotification({
@@ -303,6 +306,19 @@ const SwarmPanel = ({
     return true;
   };
 
+  // The server refuses a goal/auto-goal/search/split that is outside the drawn
+  // geofence with "out_of_boundary|Command not sent: <reason>" and sends
+  // nothing to the swarm. Like refusedForTerrain, intercept it before the
+  // generic success branch.
+  const refusedForBoundary = (res) => {
+    const body = res?.body?.message;
+    if (typeof body !== 'string' || !body.startsWith('out_of_boundary')) {
+      return false;
+    }
+    dispatch(showError(body.slice(body.indexOf('|') + 1)));
+    return true;
+  };
+
   const handlePoint = async (message) => {
     if (selectedFeatureIds.length === 0) {
       dispatch(showError(`${message} needs a path or point`));
@@ -321,6 +337,10 @@ const SwarmPanel = ({
 
       if (res?.body?.message === 'origin_not_set') {
         dispatch(showError('Draw a geofence (Set Origin) before sending this command'));
+        return;
+      }
+
+      if (refusedForBoundary(res)) {
         return;
       }
 

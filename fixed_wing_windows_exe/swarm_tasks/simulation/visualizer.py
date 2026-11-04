@@ -1,3 +1,5 @@
+import gc
+
 from swarm_tasks.simulation.simulation import Simulation
 import swarm_tasks.envs as envs
 
@@ -6,6 +8,21 @@ from matplotlib import pyplot as plt
 from matplotlib import animation
 import numpy as np
 from shapely.geometry import Point
+
+# False: every Gui still builds and updates its figure, but off-screen (Agg
+# backend) -- no window is opened and nothing is redrawn. See set_visible().
+SHOW = True
+
+
+def set_visible(show):
+	"""Turn the plot window on or off for every Gui created afterwards.
+	Call before the first Gui; switching the backend closes open figures."""
+	global SHOW
+	SHOW = bool(show)
+	if not SHOW:
+		plt.switch_backend("Agg")
+
+
 class Gui:
 	def __init__(self, sim):
 		self.sim = sim
@@ -49,13 +66,13 @@ class Gui:
 		# regardless of environment size; it never feeds back into sim state.
 		vis_r = max(self.size) * 0.0009
 
-		if not self.trail_lines:
-			for i in range(len(self.sim.swarm)):
-				color = self.state_colors[i % len(self.state_colors)]
-				line, = self.ax.plot([], [], '-', color=color, linewidth=1, alpha=0.6)
-				self.trail_lines.append(line)
-				self.trail_x.append([])
-				self.trail_y.append([])
+		# A trail per bot, including one added to the swarm mid-mission
+		for i in range(len(self.trail_lines), len(self.sim.swarm)):
+			color = self.state_colors[i % len(self.state_colors)]
+			line, = self.ax.plot([], [], '-', color=color, linewidth=1, alpha=0.6)
+			self.trail_lines.append(line)
+			self.trail_x.append([])
+			self.trail_y.append([])
 
 		#show bots
 		for i,bot in enumerate(self.sim.swarm):
@@ -277,7 +294,8 @@ class Gui:
 		self.show_bots()
 		if(self.env_name=="rectangles1"):
 			self.show_coverage(self.area_covered,self.search_time)
-		plt.pause(0.0005)
+		if SHOW:
+			plt.pause(0.0005)
 
 	def remove_artists(self):
 		"""
@@ -359,7 +377,8 @@ class Gui:
         
 		return area_covered
 	def run(self):
-		plt.show(block=False)
+		if SHOW:
+			plt.show(block=False)
 		
 	def close(self):
 		# Close THIS Gui's own figure, not plt.gcf(). A bare plt.close()
@@ -369,4 +388,18 @@ class Gui:
 		# them on some other thread, which is where
 		# "RuntimeError: main thread is not in main loop" comes from.
 		plt.close(self.fig)
+		# Free what is left of the window now, on this (the main) thread. Left
+		# to the garbage collector it can be freed on a dronekit thread instead,
+		# and Tk freed off the main thread aborts the whole process
+		# ("Tcl_AsyncDelete: async handler deleted by the wrong thread").
+		gc.collect()
+
+
+def close_leftover_windows():
+	"""Close every plot window and free it on the calling (main) thread.
+	For a mission loop that ended without closing its own window, e.g. one
+	interrupted by a newer command."""
+	if plt.get_fignums():
+		plt.close("all")
+	gc.collect()
 		

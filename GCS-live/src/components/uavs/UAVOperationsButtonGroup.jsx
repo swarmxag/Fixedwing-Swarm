@@ -14,6 +14,7 @@ import Delete from '@material-ui/icons/Delete';
 import Assignment from '@material-ui/icons/Assignment';
 import FlightLand from '@material-ui/icons/FlightLand';
 import FlightTakeoff from '@material-ui/icons/FlightTakeoff';
+import Functions from '@material-ui/icons/Functions';
 import Home from '@material-ui/icons/Home';
 import PowerSettingsNew from '@material-ui/icons/PowerSettingsNew';
 import PlayArrow from '@material-ui/icons/PlayArrow';
@@ -51,6 +52,7 @@ import {
 import { FormControl, Input, InputLabel } from '@material-ui/core';
 import { changeGridSpacing, setTimerRunning } from '~/features/swarm/slice';
 import { showError } from '~/features/snackbar/actions';
+import { requestTerrainCalculation } from '~/features/terrain-safety/request';
 
 /**
  * Main toolbar for controlling the UAVs.
@@ -129,6 +131,36 @@ const UAVOperationsButtonGroup = ({
   const fontSize = size === 'small' ? 'small' : 'medium';
   const iconSize = size;
 
+  // "Calculate": the Takeoff input becomes the terrain-safety altitude of every
+  // UAV (nothing is flown). The Takeoff button itself no longer changes it.
+  const isTakeoffAltValid = Number.isFinite(takeoffAlts) && takeoffAlts > 0;
+  const calculateTerrain = async () => {
+    let body;
+    try {
+      body = await requestTerrainCalculation(takeoffAlts);
+    } catch (error) {
+      body = { status: 'error', error: String(error?.message ?? error) };
+    }
+
+    const messages = {
+      ok: `Terrain calculated for ${takeoffAlts} m`,
+      pending: `Terrain will be calculated for ${takeoffAlts} m once the Origin terrain is ready`,
+    };
+    dispatch(
+      showNotification({
+        message:
+          messages[body.status] ??
+          `Terrain calculation failed: ${body.error ?? 'unknown error'}`,
+        semantics:
+          body.status === 'ok'
+            ? MessageSemantics.SUCCESS
+            : body.status === 'pending'
+              ? MessageSemantics.INFO
+              : MessageSemantics.ERROR,
+      })
+    );
+  };
+
   return (
     <>
       {!hideSeparators && startSeparator && (
@@ -154,6 +186,15 @@ const UAVOperationsButtonGroup = ({
           onChange={({ target: { value } }) => changeAlt(parseInt(value))}
         />
       </FormControl>
+      <Tooltip content='Calculate terrain for the takeoff altitude (all UAVs)'>
+        <IconButton
+          disabled={!isTakeoffAltValid}
+          size={iconSize}
+          onClick={calculateTerrain}
+        >
+          <Functions fontSize={fontSize} />
+        </IconButton>
+      </Tooltip>
       <Tooltip content={'Land Mission'}>
         <IconButton disabled={isSelectionEmpty} size={iconSize} onClick={land}>
           <FlightLand fontSize={fontSize} />

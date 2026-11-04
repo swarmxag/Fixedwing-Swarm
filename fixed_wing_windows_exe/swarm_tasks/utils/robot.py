@@ -98,6 +98,11 @@ class Bot:
         x_ = self.x + step_size * np.cos(self.theta)
         y_ = self.y + step_size * np.sin(self.theta)
 
+        # Never pass THROUGH a wall, whatever the step length -- this also
+        # applies to the "unstuck" case below, which used to allow any move.
+        if self.sim.path_crosses_obstacle(self.x, self.y, x_, y_):
+            return
+
         if self.sim.check_free(
             x_, y_, self.size + 0.01, ignore=self
         ) or not self.sim.check_free(self.x, self.y, self.size - 0.01, ignore=self):
