@@ -1198,7 +1198,11 @@ def mavlink_add(uav):
     global master_udp
     data = str(str("add") + "," + str(uav))
     print(data)
-    master_udp.sendto(data.encode(), adderss.get(2))
+    # True only once the master ACKed the command; the failure reason is
+    # recorded for the request (swarm_link.collect_failures)
+    delivered = master_udp.sendto(data.encode(), adderss.get(2))
+    if not delivered:
+        return False
     """
     mavlink_sock1.sendto((data+port_array[0]).encode(), mavlink_server_address1)
     time.sleep(0.5)
@@ -1233,8 +1237,9 @@ def mavlink_remove(uav):
     global master_udp
     data = str("remove" + "," + str(uav))
     print(data)
-    master_udp.sendto(data.encode(), adderss.get(2))
-    return True
+    # True only once the master ACKed the command; the failure reason is
+    # recorded for the request (swarm_link.collect_failures)
+    return bool(master_udp.sendto(data.encode(), adderss.get(2)))
 
 
 def bot_remove(remove_uav_num):

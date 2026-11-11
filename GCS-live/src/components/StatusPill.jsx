@@ -5,6 +5,9 @@ import React from 'react';
 import { makeStyles } from '@material-ui/core/styles';
 import { colorForStatus, Status } from '@skybrush/app-theme-material-ui';
 
+import { Colors } from '~/components/colors';
+import { EXCLUDED_STATUS } from '~/components/semantics';
+
 const createStyleForStatus = (status, theme) => {
   const backgroundColor = colorForStatus(status);
   return {
@@ -50,6 +53,11 @@ const useStyles = makeStyles(
     'status-next': createStyleForStatus(Status.NEXT, theme),
     'status-success': createStyleForStatus(Status.SUCCESS, theme),
     'status-skipped': createStyleForStatus(Status.SKIPPED, theme),
+    'status-excluded': {
+      backgroundColor: Colors.excluded,
+      color: theme.palette.getContrastText(Colors.excluded),
+      fontWeight: 'bold',
+    },
     'status-warning': {
       ...createStyleForStatus(Status.WARNING, theme),
       fontWeight: 'bold',
@@ -79,6 +87,7 @@ const useStyles = makeStyles(
     'status-hollow-next': createStyleForHollowStatus(Status.NEXT),
     'status-hollow-success': createStyleForHollowStatus(Status.SUCCESS),
     'status-hollow-skipped': createStyleForHollowStatus(Status.SKIPPED),
+    'status-hollow-excluded': { color: Colors.excluded, fontWeight: 'bold' },
     'status-hollow-warning': {
       ...createStyleForHollowStatus(Status.WARNING),
       fontWeight: 'bold',
@@ -148,7 +157,7 @@ StatusPill.propTypes = {
   className: PropTypes.string,
   hollow: PropTypes.bool,
   inline: PropTypes.bool,
-  status: PropTypes.oneOf(Object.values(Status)),
+  status: PropTypes.oneOf([...Object.values(Status), EXCLUDED_STATUS]),
 };
 
 StatusPill.defaultProps = {

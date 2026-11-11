@@ -27,6 +27,7 @@ from medur_swarm.utils import read_origin
 from medur_swarm.communication import lifecycle, replica, sockets
 from medur_swarm.communication.dispatch import MissionPreempted
 from medur_swarm.uav import connection as uav_connection
+from medur_swarm.uav import distance_log
 from medur_swarm.uav import management as uav_management
 from medur_swarm.uav import topology
 from medur_swarm.uav.telemetry import sync_swarm_with_telemetry
@@ -106,6 +107,7 @@ def _bring_up_simulation():
                 env_name=state.file_name,
             )
             runner.start_goal_task_thread()
+            distance_log.start()
             break
         else:
             time.sleep(0.05)  # idle standby: don't spin a CPU core

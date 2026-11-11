@@ -53,8 +53,7 @@ def handle_concurrent_goal_command(command_data):
             goal_xy.append((x / 2, y / 2))
         guided_circle_direction = msg_parts[2]
         guided_circle_radius = msg_parts[3]
-        # Concurrent goals never pass back through the server's gate, so this
-        # is the only terrain check they get.
+        # No terrain check here: terrain_gate is currently not called.
 
         assign_goal_tasks(
             selected_indexes, goal_xy, guided_circle_radius, guided_circle_direction
@@ -127,10 +126,8 @@ def run_goal_command(data):
             "selected_indexes",
             selected_indexes,
         )
-        # Second-layer terrain gate. The server already refused an unsafe goal
-        # before transmitting it (that is where the operator sees a warning);
-        # this re-checks against each UAV's live position and its actual
-        # different_height[i], which the server does not have.
+        # Terrain gate, currently disabled: neither the server nor this computer
+        # checks a goal against terrain. Terrain safety is only the map overlay.
         # route = [(float(p[0]), float(p[1])) for p in goal_latlon]
         # ok, _ = terrain_gate.check_goals(
         #     selected_indexes, route, guided_circle_radius, label="goal"

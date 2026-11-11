@@ -42,6 +42,7 @@ const initialState: SettingsSliceState = {
     showScaleLine: true,
     theme: Theme.AUTO,
     hideInactiveSegmentsOnDarkLCD: false,
+    showHomeLocations: true,
     uavListFilters: [
       /* Each item in this array is currently a string from the UAVFilter
        * enum */

@@ -233,7 +233,7 @@ const SwarmPanel = ({
         dispatch(showError(splitErrorMessages[res.body.message]));
         return;
       }
-      if (refusedForBoundary(res)) {
+      if (refusedForHeight(res) || refusedForBoundary(res)) {
         return;
       }
       if (Boolean(res?.body?.message)) {
@@ -319,6 +319,17 @@ const SwarmPanel = ({
     return true;
   };
 
+  // The server refuses a flying command for a UAV that has no height yet with
+  // "height_not_set|<message>" and sends nothing to the swarm.
+  const refusedForHeight = (res) => {
+    const body = res?.body?.message;
+    if (typeof body !== 'string' || !body.startsWith('height_not_set')) {
+      return false;
+    }
+    dispatch(showError(body.slice(body.indexOf('|') + 1)));
+    return true;
+  };
+
   const handlePoint = async (message) => {
     if (selectedFeatureIds.length === 0) {
       dispatch(showError(`${message} needs a path or point`));
@@ -340,7 +351,7 @@ const SwarmPanel = ({
         return;
       }
 
-      if (refusedForBoundary(res)) {
+      if (refusedForHeight(res) || refusedForBoundary(res)) {
         return;
       }
 

@@ -1,7 +1,7 @@
 import * as createColor from 'color';
 import mapValues from 'lodash-es/mapValues';
 
-import { yellow } from '@material-ui/core/colors';
+import { purple, yellow } from '@material-ui/core/colors';
 
 import { Colors as ColorsBase } from '@skybrush/app-theme-material-ui';
 
@@ -20,6 +20,9 @@ export const Colors = {
   plannedTrajectory: '#08f',
 
   positionHold: yellow.A400,
+
+  /** Colour of a UAV that was excluded from the swarm */
+  excluded: purple[600],
 } as const;
 
 const convertColorsToRGBTuples = (

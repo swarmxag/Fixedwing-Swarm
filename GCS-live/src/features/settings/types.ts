@@ -69,6 +69,9 @@ export type SettingsState = {
     /** Whether to hide inactive segments on dark mode LCD clocks */
     hideInactiveSegmentsOnDarkLCD: boolean;
 
+    /** Whether to show the autopilot-reported home location of all UAVs on the map */
+    showHomeLocations: boolean;
+
     /** Filters applied to the UAV list */
     uavListFilters: UAVFilter[];
 

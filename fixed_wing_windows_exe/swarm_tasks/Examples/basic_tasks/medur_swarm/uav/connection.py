@@ -14,12 +14,12 @@ from medur_swarm import config, state
 from medur_swarm.uav import link_monitor
 from medur_swarm.uav.network import NetworkIP
 
-print("ip", NetworkIP.get_ip())
+# print("ip", NetworkIP.get_ip())
 # MAVLink is received on every interface: binding to the one address above
 # went deaf when that interface (e.g. the Ethernet cable) dropped or its
 # address changed.
-state.ip = "0.0.0.0"
-
+state.ip = NetworkIP.get_ip()
+print("IP Address: ", state.ip)
 # Guards against two connection cycles overlapping (startup and a master
 # handover in sockets.py both call vehicle_connection()).
 _connection_lock = threading.Lock()
@@ -47,7 +47,12 @@ def _connect_one(slot, sys_id, port, heartbeat_timeout):
     print(f"[connect] slot={slot} sys_id={sys_id} {endpoint} attempt started")
     started = time.monotonic()
     try:
-        vehicle = connect(endpoint, baud=115200, heartbeat_timeout=heartbeat_timeout,source_system=253)
+        vehicle = connect(
+            endpoint,
+            baud=115200,
+            heartbeat_timeout=heartbeat_timeout,
+            source_system=253,
+        )
     except Exception as e:
         return slot, sys_id, endpoint, None, e, time.monotonic() - started
     return slot, sys_id, endpoint, vehicle, None, time.monotonic() - started

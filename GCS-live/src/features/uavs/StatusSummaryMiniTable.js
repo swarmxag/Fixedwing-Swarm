@@ -19,6 +19,9 @@ import { getUAVById } from './selectors';
 // TODO: Use the internal `naText` of `MiniTable` instead
 const naText = <span className='muted'>—</span>;
 
+// Maps a bearing in degrees to the compass range [0, 360)
+const normalizeBearing = (value) => ((value % 360) + 360) % 360;
+
 const StatusSummaryMiniTable = ({
   gpsFix,
   heading,
@@ -28,6 +31,8 @@ const StatusSummaryMiniTable = ({
   position,
   distance_from_GCS,
   bearing_from_GCS,
+  distance_from_home,
+  bearing_from_home,
   dispatch,
 }) => {
   const { lat, lon, amsl, ahl, agl } = position || {};
@@ -116,7 +121,23 @@ const StatusSummaryMiniTable = ({
   if (bearing_from_GCS) {
     rows.push([
       'Bearing From GCS',
-      formatNumberSafely(bearing_from_GCS, 2, 'm', naText),
+      formatNumberSafely(normalizeBearing(bearing_from_GCS), 2, '°', naText),
+    ]);
+  }
+
+  // Zero is a legitimate value for home (UAV is at home), so check for a
+  // number instead of truthiness; undefined means home is not known yet
+  if (typeof distance_from_home === 'number') {
+    rows.push([
+      'Distance From Home',
+      formatNumberSafely(distance_from_home, 2, ' m', naText),
+    ]);
+  }
+
+  if (typeof bearing_from_home === 'number') {
+    rows.push([
+      'Bearing From Home',
+      formatNumberSafely(normalizeBearing(bearing_from_home), 2, '°', naText),
     ]);
   }
   rows.push(['Heading', formatNumberSafely(heading, 1, '°', naText)], 'sep3', [
@@ -138,6 +159,10 @@ StatusSummaryMiniTable.propTypes = {
     horizontalAccuracy: PropTypes.number,
     verticalAccuracy: PropTypes.number,
   }),
+  distance_from_GCS: PropTypes.number,
+  bearing_from_GCS: PropTypes.number,
+  distance_from_home: PropTypes.number,
+  bearing_from_home: PropTypes.number,
   heading: PropTypes.number,
   lastUpdated: PropTypes.number,
   localPosition: PropTypes.arrayOf(PropTypes.number),

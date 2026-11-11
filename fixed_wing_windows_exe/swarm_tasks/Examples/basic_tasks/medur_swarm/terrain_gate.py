@@ -69,7 +69,7 @@ TERRAIN_DIR = config.TERRAIN_DIR
 ALTITUDE_CHECK_RADIUS_M = 3000.0
 
 # How far the vehicle's own home datum may sit from the terrain data's
-# elevation at the origin before the two are treated as irreconcilable.
+# elevation at that vehicle's home before the two are treated as irreconcilable.
 # Real flight: GPS/geoid differences put these within a few metres.
 HOME_DATUM_TOLERANCE_M = 30.0
 
@@ -124,7 +124,9 @@ def _vehicle_frames(i):
         rel = loc.global_relative_frame
         glob = loc.global_frame
         lat, lon = rel.lat, rel.lon
-        position = (float(lat), float(lon)) if lat is not None and lon is not None else None
+        position = (
+            (float(lat), float(lon)) if lat is not None and lon is not None else None
+        )
         current_rel = float(rel.alt) if rel.alt is not None else None
         home_amsl = (
             float(glob.alt) - current_rel
@@ -140,6 +142,18 @@ def _vehicle_frames(i):
         return None, None, None
 
 
+def _vehicle_home_latlon(i):
+    """(lat, lon) of vehicle i's own home, or None. dronekit's home_location is a
+    cached value (None until the commands were downloaded), so this never blocks."""
+    try:
+        home = state.vehicles[i].home_location
+        if home is None or home.lat is None or home.lon is None:
+            return None
+        return float(home.lat), float(home.lon)
+    except Exception:
+        return None
+
+
 def _resolve_home_datum(i, vehicle_datum):
     """Reconcile the vehicle's home datum against the terrain data itself.
 
@@ -152,7 +166,7 @@ def _resolve_home_datum(i, vehicle_datum):
     cautions out of nothing).
 
     So when the two disagree by more than HOME_DATUM_TOLERANCE_M, prefer the
-    terrain data's elevation at the origin. That keeps the comparison
+    terrain data's elevation at the vehicle's OWN home. That keeps the comparison
     self-consistent -- terrain against terrain, with the dataset's own datum
     bias cancelling on both sides -- instead of subtracting two numbers that
     do not share a reference. In real flight the two agree and this never
@@ -160,13 +174,19 @@ def _resolve_home_datum(i, vehicle_datum):
     disagreement this large means the aircraft's home is misconfigured and
     that is worth fixing at the source.
 
+    It must be the vehicle's own home, not the origin (a corner of the fence):
+    on sloping ground those legitimately differ, and substituting the origin's
+    elevation would shift every required altitude by that difference. If the
+    vehicle's home position is not known, its datum is used as it is.
+
     Returns (home_amsl, note) where note is None unless a substitution
     happened.
     """
-    if state.origin is None or vehicle_datum is None:
+    home = _vehicle_home_latlon(i)
+    if home is None or vehicle_datum is None:
         return vehicle_datum, None
     try:
-        dem_home = _get_db().nearest(float(state.origin[0]), float(state.origin[1]))
+        dem_home = _get_db().nearest(home[0], home[1])
     except Exception:
         return vehicle_datum, None
     if dem_home is None:
@@ -180,7 +200,7 @@ def _resolve_home_datum(i, vehicle_datum):
         _datum_warned.add(i)
         print(
             f"[terrain-datum] UAV {_uav_label(i)}: home datum {vehicle_datum:.0f} m "
-            f"AMSL disagrees with terrain data ({dem_home} m at the origin) by "
+            f"AMSL disagrees with terrain data ({dem_home} m at its home) by "
             f"{difference:+.0f} m -- using the terrain value. Fix the vehicle's "
             f"home altitude; until then every clearance figure carries this error."
         )
@@ -346,19 +366,14 @@ def check_goals(selected_indexes, goals_latlon, loiter_radius_m=None, label="goa
         for alt in _altitudes_to_check(i, current_rel):
             start = position
             try:
-                blocked = False
+                # Every leg and the loiter, even after one fails: _report states the
+                # altitude that clears the WHOLE route.
                 for goal in goals_latlon:
                     verdict = tc.check_leg(db, home_amsl, start, goal, alt)
                     _record(verdict, uav, problems, cautions, required)
-                    if not verdict.safe:
-                        blocked = True
-                        break
                     start = goal
-                if not blocked:
-                    verdict = tc.check_loiter(
-                        db, home_amsl, goals_latlon[-1], radius, alt
-                    )
-                    _record(verdict, uav, problems, cautions, required)
+                verdict = tc.check_loiter(db, home_amsl, goals_latlon[-1], radius, alt)
+                _record(verdict, uav, problems, cautions, required)
             except tc.TerrainUnavailable as e:
                 problems.append(f"UAV {uav}: route leaves the mapped area ({e})")
             except Exception as e:
@@ -416,14 +431,10 @@ def check_altitude_change(proposed_heights, label="different"):
                     db, home_amsl, position, ALTITUDE_CHECK_RADIUS_M, alt
                 )
                 _record(verdict, uav, problems, cautions, required)
-                if not verdict.safe:
-                    continue
                 start = position
                 for goal in _remaining_task_goals(index):
                     verdict = tc.check_leg(db, home_amsl, start, goal, alt)
                     _record(verdict, uav, problems, cautions, required)
-                    if not verdict.safe:
-                        break
                     start = goal
             except tc.TerrainUnavailable as e:
                 problems.append(f"UAV {uav}: leaves the mapped area ({e})")

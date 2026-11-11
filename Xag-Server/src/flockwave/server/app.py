@@ -59,7 +59,7 @@ from .registries import (
 from .version import __version__ as server_version
 from .swarm import *
 from .swarm_link import ROUTER as SWARM_ROUTER, collect_failures
-from . import fence_guard
+from . import fence_guard, height_guard
 from flockwave.server.ext.mavlink.automission import AutoMissionManager
 from flockwave.server.ext.mavlink.enums import MAVCommand
 from typing import List
@@ -1205,6 +1205,17 @@ class SkybrushServer(DaemonApp):
         msg = parameters["message"].lower()
         # print(f"[GUI->SERVER] command={msg} parameters={parameters}")
 
+        async def master_snapshot():
+            import trio
+
+            return await trio.to_thread.run_sync(SWARM_ROUTER.master_snapshot)
+
+        async def height_refusal(uav_ids=None):
+            # Refusal for the GUI if a target UAV is not on the height the
+            # operator gave (empty ids: the whole swarm). Checked against what
+            # the master reports, before anything is sent, even stop.
+            return height_guard.check(uav_ids, await master_snapshot())
+
         if msg == "master":
             # Decentralised mode: without confirm=True this only returns the
             # eligibility report; with it, runs the fenced master transition.
@@ -1216,11 +1227,15 @@ class SkybrushServer(DaemonApp):
 
         if msg == "recover_resume":
             # Operator-confirmed: resume only the goal tasks the new master has
-            # re-verified against live telemetry. Never automatic.
+            # re-verified against live telemetry. Never automatic. A new master
+            # is on its default heights until it is given one.
             import trio
             from .swarm_link import ROUTER
 
-            result = await trio.to_thread.run_sync(ROUTER.resume_recovery)
+            if refused := await height_refusal():
+                result = {"ok": False, "reason": refused.split("|", 1)[1]}
+            else:
+                result = await trio.to_thread.run_sync(ROUTER.resume_recovery)
 
         if msg == "swarm_status":
             # Everything shown comes from the nodes themselves (probe), not
@@ -1343,13 +1358,14 @@ class SkybrushServer(DaemonApp):
             # was `parameters.pop()` with no key, which always raised TypeError.
             # rtl_height is validated but, as before, not used by home_socket().
             rtl_height, home_error = parse_rtl_height(parameters)
-            result = home_error if home_error else home_socket()
+            # Home flies the commanded height, so it needs one like any other.
+            result = home_error or await height_refusal() or home_socket()
 
         if msg == "share_data":
             result = share_data_func()
 
         if msg == "disperse":
-            result = disperse_socket()
+            result = await height_refusal() or disperse_socket()
 
         if msg == "check_origin":
             # Read-only status query the UI sends once on connect so it can
@@ -1361,6 +1377,8 @@ class SkybrushServer(DaemonApp):
             if get_origin() is None:
                 print("[origin reminder] Set Origin/Geofence before sending search")
                 result = "origin_not_set"
+            elif refused := await height_refusal(parameters.get("ids")):
+                result = refused
             elif refused := fence_guard.check_areas(
                 [[p[1], p[0]] for p in (parameters.get("coords") or [])[:1]],
                 parameters.get("coverage"),
@@ -1400,7 +1418,7 @@ class SkybrushServer(DaemonApp):
                 }
 
         if msg == "aggregate":
-            result = aggregate_socket()
+            result = await height_refusal() or aggregate_socket()
 
         if msg == "different":  # TODO
             ids = parameters.get("ids")
@@ -1414,13 +1432,18 @@ class SkybrushServer(DaemonApp):
             for i, id in enumerate(ids):
                 data[id] = new_altitudes[i]
             print("altitude", data)
-            # Terrain clearance for the new ladder is checked on the swarm
-            # computer (medur_swarm/terrain_gate.py), against each vehicle's
-            # own home datum, live position and current altitude -- none of
-            # which exist here.
+            # No terrain check on this command: medur_swarm/terrain_gate.py is
+            # currently not called. Terrain safety is only the map overlay
+            # (terrain_safety.py).
+            swarm_state = await master_snapshot()  # for each UAV's resulting height
             result = different_alt_socket(
                 parameters.get("alt"), parameters.get("alt_diff"), ids
             )
+            # Only once the swarm computer has acknowledged it.
+            if not delivery_failures:
+                height_guard.note_different(
+                    parameters.get("alt"), parameters.get("alt_diff"), ids, swarm_state
+                )
             # A fleet-wide "different" has ids == [], so `data` is EMPTY -- and
             # writing that through would REPLACE the altitude table (seeded with
             # UAV 1..15) with {}. check_height then raised KeyError on the next
@@ -1439,6 +1462,8 @@ class SkybrushServer(DaemonApp):
             # Terrain safety follows the GCS "Calculate" altitude and telemetry
             # (terrain_safety.py); an altitude change is picked up from telemetry.
             result = same_alt_socket(parameters["same_alt"])
+            if not delivery_failures:
+                height_guard.note_same(parameters["same_alt"])
 
         if msg == "clear_csv":
             result = clear_csv()
@@ -1447,12 +1472,16 @@ class SkybrushServer(DaemonApp):
             result = return_socket()
 
         if msg == "specific_bot_goal":
-            result = specific_bot_goal_socket(parameters["uav"], parameters["goal"])
+            result = await height_refusal(
+                [parameters["uav"]]
+            ) or specific_bot_goal_socket(parameters["uav"], parameters["goal"])
 
         if msg == "goal":
             if get_origin() is None:
                 print("[origin reminder] Set Origin/Geofence before sending goal")
                 result = "origin_not_set"
+            elif refused := await height_refusal(parameters.get("ids")):
+                result = refused
             elif refused := fence_guard.check_points(
                 [[p[1], p[0]] for p in parameters.get("coords") or []], "goal"
             ) or fence_guard.check_loiter(
@@ -1478,13 +1507,10 @@ class SkybrushServer(DaemonApp):
                 direction = (
                     1 if parameters.get("Direction", "").lower().startswith("c") else -1
                 )
-                # Terrain clearance is checked on the swarm computer, which is
-                # the only side with the vehicles -- their own home datum,
-                # live position and current altitude. Gating here as well
-                # meant two checks on different data, and they disagreed
-                # (a fleet-wide altitude change has ids == [], so the
-                # server-side altitude gate silently passed everything while
-                # the swarm computer refused it).
+                # No terrain check on this command, here or on the swarm computer:
+                # medur_swarm/terrain_gate.py is currently not called (see
+                # tasks/goal.py). Terrain safety is only the map overlay
+                # (terrain_safety.py).
                 result = goal_socket(
                     parameters.get("coords"),
                     direction,
@@ -1501,6 +1527,8 @@ class SkybrushServer(DaemonApp):
             if get_origin() is None:
                 print("[origin reminder] Set Origin/Geofence before sending autogoal")
                 result = "origin_not_set"
+            elif refused := await height_refusal(parameters.get("ids")):
+                result = refused
             elif refused := fence_guard.check_autogoal(
                 parameters.get("coords"),
                 len(parameters.get("ids") or [])
@@ -1529,7 +1557,7 @@ class SkybrushServer(DaemonApp):
                 )
 
         if msg == "home_goto":
-            result = home_goto_socket()
+            result = await height_refusal() or home_goto_socket()
 
         if msg == "plot":
             result = airport_selection(
@@ -1545,10 +1573,14 @@ class SkybrushServer(DaemonApp):
         # running mission and only the added/removed UAV is affected
         # (medur_swarm/uav/topology.py). A stop here ended the mission for
         # every UAV.
+        # `result` is True only once the swarm ACKed the command. The UAV's
+        # swarm-link flag (purple "excluded" state in the GUI) is NOT changed
+        # here: it changes when the swarm reports that it really removed / added
+        # the UAV (see _apply_swarm_link_from_status). A failed delivery is also
+        # reported to the GUI through the "delivery" field of the response.
         if msg == "remove_link":
             uav = int(parameters.get("id"))
             result = mavlink_remove(uav)
-            result = True
 
         if msg == "add_link":
             uav = int(parameters.get("id"))
@@ -1591,13 +1623,16 @@ class SkybrushServer(DaemonApp):
         #         }
 
         if msg == "loiter":
-            stop_socket()
-            await sleep(1)
-            center_latlon = parameters.get("coords")
-            direction = (
-                1 if parameters.get("direction", "").lower().startswith("a") else -1
-            )
-            result = loiter(center_latlon, direction)
+            if refused := await height_refusal():
+                result = refused
+            else:
+                stop_socket()
+                await sleep(1)
+                center_latlon = parameters.get("coords")
+                direction = (
+                    1 if parameters.get("direction", "").lower().startswith("a") else -1
+                )
+                result = loiter(center_latlon, direction)
 
         if msg == "skip":
             point = parameters.get("skip_waypoint")
@@ -1623,6 +1658,8 @@ class SkybrushServer(DaemonApp):
         if msg == "groupsplit":
             if get_origin() is None:
                 result = "no_fence_drawn"
+            elif refused := await height_refusal(parameters.get("ids")):
+                result = refused
             elif refused := fence_guard.check_areas(
                 [[p[1], p[0]] for p in parameters.get("coords") or []],
                 parameters.get("coverage"),
@@ -1710,9 +1747,11 @@ class SkybrushServer(DaemonApp):
                         int(uav_id) for uav_id in self.object_registry.ids_by_type(UAV)
                     }
                     # Group centres arrive as [lat, lon]; refuse before anything is sent.
-                    refused = fence_guard.check_areas(latlon, coverage, "split")
+                    refused = await height_refusal(
+                        assigned_ids
+                    ) or fence_guard.check_areas(latlon, coverage, "split")
                     if refused:
-                        print("[fence-guard]", refused)
+                        print("[spificsplit] refused:", refused)
                     # Only broadcast stop (affects every connected UAV) when this
                     # assignment actually covers the whole swarm.
                     if not refused and set(assigned_ids) == connected_ids:
@@ -1799,34 +1838,35 @@ class SkybrushServer(DaemonApp):
         global outer_boundary
         return outer_boundary
 
-    async def check_height(self, ids, alt, speed, res):
-        from .socket.globalVariable import changeReachHeight
+    async def check_height(self, ids, speed, res):
+        """Once airborne, sends each UAV to its first guided point at
+        takeoff_alt + slot * alt_diff, both entered by the operator at takeoff.
+        `alt` is only the height that counts as airborne."""
+        from .socket.globalVariable import get_vtol_takeoff_height
+
+        diff_alts = get_vtol_takeoff_height()
 
         uav = self.find_uav_by_id(ids[-1])
         if uav:
             while True:
                 ahl = uav.status.position.ahl
-                print(ahl)
-                if ahl > alt:
+                if ahl > diff_alts[-1] - 1:
                     for i, id in enumerate(ids):
-                        from .socket.globalVariable import getAlts, drone
+                        from .socket.globalVariable import drone
 
-                        alts = getAlts()
                         uav = self.find_uav_by_id(id)
-                        # Skip a UAV whose altitude / slot / waypoint is missing
+                        # Skip a UAV whose slot / waypoint is missing
                         # instead of raising: one unknown id must not abort the
                         # climb of every OTHER UAV in this batch.
                         if uav is None:
                             print(f"[check_height] skipping unknown UAV id {id!r}")
                             continue
                         key = int(uav.id)
-                        if key not in alts or key not in drone:
+                        if key not in drone:
                             print(
-                                f"[check_height] skipping UAV {key}: no entry in "
-                                f"{'alts' if key not in alts else 'drone'}"
+                                f"[check_height] skipping UAV {key}: no entry in drone"
                             )
                             continue
-                        alt = alts[key]
                         cur = drone[key] - 1
                         if not (0 <= cur < len(res)):
                             print(
@@ -1836,7 +1876,9 @@ class SkybrushServer(DaemonApp):
                             continue
                         print(cur)
                         coords = GPSCoordinate(
-                            lat=res[cur][0], lon=res[cur][1], ahl=alt
+                            lat=res[cur][0],
+                            lon=res[cur][1],
+                            ahl=diff_alts[i],
                         )
                         await uav.driver._send_fly_to_target_signal_single(uav, coords)
                     await sleep(5)
@@ -1908,7 +1950,16 @@ class SkybrushServer(DaemonApp):
             from .socket.globalVariable import update_Takeoff_Alt
 
             alt = parameters.pop("alt")
+            # Refused here, before the takeoff is sent: the first guided point
+            # has no default height (e.g. a GCS older than this input).
+            alt_diff = parameters.pop("alt_diff", None)
+            if not isinstance(alt_diff, (int, float)) or alt_diff < 0:
+                log.error(f"X-UAV-TAKEOFF: unusable height difference {alt_diff!r}")
+                raise ValueError("Takeoff needs a height difference of 0 or more")
             update_Takeoff_Alt(alt)
+            from .socket.globalVariable import generate_heights
+
+            generate_heights(alt, len(uav_ids), alt_diff)
 
             # Terrain safety: Takeoff only flies. The safety altitude comes from
             # the GCS "Calculate" button (X-TERRAIN-CALC-REQ, ext/terrain.py)
@@ -1927,14 +1978,20 @@ class SkybrushServer(DaemonApp):
             speed = parameters.pop("speed")
             from .VTOL.new_left import generate_XY_Positions
 
-            res = generate_XY_Positions(15, 100, 0, point)
+            res = generate_XY_Positions(len(uav_ids), 100, 0, point)
+            uav_ids = sorted(uav_ids, key=int)
+            print(uav_ids)
             log.warning(str(res))
             # protected=True: a fault in this per-sortie helper is logged and
             # swallowed instead of cancelling the application's main nursery.
             # Without it a single bad lookup here terminates the whole server,
             # which drops every UAV -- see the KeyError guarded above.
             self.run_in_background(
-                self.check_height, uav_ids, alt - 1, speed, res, protected=True
+                self.check_height,
+                uav_ids,
+                speed,
+                res,
+                protected=True,
             )
             # self.run_in_background(self.send_guided_command,uav_ids,speed,res)
 
@@ -2195,8 +2252,33 @@ class SkybrushServer(DaemonApp):
 
         swarm_link.on_command_status = on_status
 
+    def _apply_swarm_link_from_status(self, entry: dict) -> None:
+        """Updates the swarm-link flag of a UAV when the swarm reports that it
+        finished a ``remove,N`` / ``add,N`` command. Only "completed" and
+        "running" mean the change really happened; "failed", "rejected", etc.
+        leave the flag as it was (and are reported to the GUI as errors)."""
+        if entry.get("status") not in ("completed", "running"):
+            return
+        match = re.fullmatch(r"(add|remove),\s*(\d+)", entry.get("cmd") or "")
+        if not match:
+            return
+
+        linked = match.group(1) == "add"
+        number = int(match.group(2))
+        for uav_id in list(self.object_registry.ids_by_type(UAV)):
+            try:
+                if int(uav_id) != number:
+                    continue
+            except ValueError:
+                continue
+            uav = self.find_uav_by_id(uav_id)
+            if uav is not None and uav.set_swarm_link(linked):
+                self.request_to_send_UAV_INF_message_for([uav_id])
+
     def _send_swarm_command_status(self, entry: dict) -> None:
         from .swarm_link import LEGACY_NODE
+
+        self._apply_swarm_link_from_status(entry)
 
         status = entry.get("status")
         severity = self._SWARM_STATUS_SEVERITY.get(status)

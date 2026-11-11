@@ -75,7 +75,9 @@ def run_guided_circle_command(data):
                         continue
                     current_position = [b.x, b.y]
                     goal = multiple_goals[ind[i]]
-                    advance_bot_with_uav_pacing(i, b, goal, label="guided_circle_formation")
+                    advance_bot_with_uav_pacing(
+                        i, b, goal, label="guided_circle_formation"
+                    )
                     dx = abs(goal[0] - current_position[0])
                     dy = abs(goal[1] - current_position[1])
                     state.circle_formation_table[i] = 1
@@ -251,12 +253,18 @@ def run_loiter_point_command(data):
                                     i
                                 ].location.global_relative_frame.alt
                                 distance = locatePosition.distance_bearing(
-                                    state.vehicles[i].location.global_relative_frame.lat,
-                                    state.vehicles[i].location.global_relative_frame.lon,
+                                    state.vehicles[
+                                        i
+                                    ].location.global_relative_frame.lat,
+                                    state.vehicles[
+                                        i
+                                    ].location.global_relative_frame.lon,
                                     float(base_lat),
                                     float(base_lon),
                                 )
-                                if (state.different_height[i] - 5) <= current_altitude <= (
+                                if (
+                                    state.different_height[i] - 5
+                                ) <= current_altitude <= (
                                     state.different_height[i] + 5
                                 ) and distance < 150:
                                     state.uav_home_pos = []
@@ -265,7 +273,9 @@ def run_loiter_point_command(data):
                                         lat = vehicle.location.global_relative_frame.lat
                                         lon = vehicle.location.global_relative_frame.lon
                                         x, y = locatePosition.geoToCart(
-                                            state.origin, config.END_DISTANCE, [lat, lon]
+                                            state.origin,
+                                            config.END_DISTANCE,
+                                            [lat, lon],
                                         )
                                         state.uav_home_pos.append((x / 2, y / 2))
                                     state.s = sim.Simulation(
@@ -275,11 +285,12 @@ def run_loiter_point_command(data):
                                     )
                         if i < len(state.robots):
                             state.robots[i] = (x / 2, y / 2)
-                        msg = ",".join([f"{robot[0]},{robot[1]}" for robot in state.robots])
+                        msg = ",".join(
+                            [f"{robot[0]},{robot[1]}" for robot in state.robots]
+                        )
                         if dx < 50 and dy < 50:
-                            cmd = cvg.goal_area_cvg(i, b, goal)
-                            cmd += disp_field(b, neighbourhood_radius=100)
-                            cmd.exec(b)
+                            # Paced like search: bot held UAV_BOT_GAP_M ahead.
+                            advance_bot_with_uav_pacing(i, b, goal, label="loiter_ring")
                             dx = abs(goal[0] - current_position[0])
                             dy = abs(goal[1] - current_position[1])
                             state.circle_formation_table[i] = 1
@@ -300,9 +311,8 @@ def run_loiter_point_command(data):
                             continue
 
                     if state.circle_formation_table[i] == 1:
-                        cmd = cvg.goal_area_cvg(i, b, goal)
-                        cmd += disp_field(b, neighbourhood_radius=100)
-                        cmd.exec(b)
+                        # Paced like search: bot held UAV_BOT_GAP_M ahead.
+                        advance_bot_with_uav_pacing(i, b, goal, label="loiter_ring")
                         dx = abs(goal[0] - current_position[0])
                         dy = abs(goal[1] - current_position[1])
                         state.circle_formation_table[i] = 1
@@ -316,7 +326,9 @@ def run_loiter_point_command(data):
                         # corrected for real UAV-to-UAV separation -- same
                         # guidance goal/search/split use, instead of the
                         # bot's raw position.
-                        _drive_vehicle_towards(i, b, pursuit_target_with_avoidance(i, b))
+                        _drive_vehicle_towards(
+                            i, b, pursuit_target_with_avoidance(i, b)
+                        )
 
                     else:
                         continue

@@ -75,9 +75,12 @@ def compute_lookahead_target(x, y, theta, rx, ry, distance, min_lead=None):
 
 def lookahead_distance_m(i):
     """How far ahead of the BOT the UAV's waypoint sits, in metres:
-    config.UAV_LOOKAHEAD_M, or this UAV's live WP_LOITER_RAD when unset. Also
-    the gap the leash (see _leash_factor) holds the bot ahead of its UAV."""
-    return config.UAV_LOOKAHEAD_M or _uav_loiter_radius_m(i)
+    config.UAV_LOOKAHEAD_M, or this UAV's live WP_LOITER_RAD plus
+    UAV_LOOKAHEAD_RADIUS_MARGIN_M when unset, so the target stays well outside
+    the circle ArduPlane would orbit it at."""
+    return config.UAV_LOOKAHEAD_M or (
+        _uav_loiter_radius_m(i) + config.UAV_LOOKAHEAD_RADIUS_MARGIN_M
+    )
 
 
 def lookahead_distance_sim(i):
@@ -156,8 +159,9 @@ def pursuit_target_with_avoidance(i, b, distance=700):
     tx, ty = compute_lookahead_target(
         b.x, b.y, b.theta, rx / 2, ry / 2, distance=lookahead_distance_sim(i)
     )
-    # avoid_x, avoid_y = real_uav_avoidance_vector(i)
-    return (tx, ty)
+    # Same collision avoidance search and split add to their own targets.
+    avoid_x, avoid_y = real_uav_avoidance_vector(i)
+    return (tx + avoid_x, ty + avoid_y)
 
 
 def signed_uav_lead(i, b):
@@ -344,7 +348,7 @@ def smooth_bot_avoidance(i, b, goal):
 
 def _leash_factor(i, dis, signed_lead):
     """Multiplier on the bot's groundspeed step that keeps the bot
-    lookahead_distance_m(i) AHEAD of its real UAV -- the bot and the drone
+    config.UAV_BOT_GAP_M AHEAD of its real UAV -- the bot and the drone
     move according to each other instead of the bot running on alone.
 
     gap is the bot's lead over the UAV in metres: +dis while the UAV is behind
@@ -352,12 +356,13 @@ def _leash_factor(i, dis, signed_lead):
     magnitude (not the along-heading projection) keeps a UAV sitting off to the
     side mid-turn counted as distance still to close.
 
-        gap > lookahead  -> bot too far ahead: slow down (to LEASH_MIN_FACTOR,
-                            never 0 -- a frozen bot freezes the waypoint and
-                            the fixed-wing loiters on it)
-        gap = lookahead  -> 1.0: bot moves at the UAV's own speed
-        gap < lookahead  -> UAV catching up / passed: speed up (to
-                            LEASH_MAX_FACTOR) to restore the lead
+        gap > UAV_BOT_GAP_M -> bot too far ahead: slow down (to
+                               LEASH_MIN_FACTOR, never 0 -- a frozen bot
+                               freezes the waypoint and the fixed-wing
+                               loiters on it)
+        gap = UAV_BOT_GAP_M -> 1.0: bot moves at the UAV's own speed
+        gap < UAV_BOT_GAP_M -> UAV catching up / passed: speed up (to
+                               LEASH_MAX_FACTOR) to restore the lead
 
     1.0 (no correction) without telemetry to measure it.
     """
@@ -366,7 +371,7 @@ def _leash_factor(i, dis, signed_lead):
     if dis is None or not math.isfinite(dis):
         return 1.0
     gap = dis if signed_lead <= 0 else -dis
-    error = gap - lookahead_distance_m(i)
+    error = gap - config.UAV_BOT_GAP_M
     factor = 1.0 - error / config.LEASH_RAMP_M
     return max(config.LEASH_MIN_FACTOR, min(config.LEASH_MAX_FACTOR, factor))
 
@@ -490,6 +495,48 @@ def _uav_loiter_radius_m(i):
         except Exception:
             pass
     return config.UAV_DEFAULT_LOITER_RADIUS_M
+
+
+def advance_bot_on_loiter_circle(i, b, center):
+    """Goal loiter: move bot i along the WP_LOITER_RAD circle around `center`
+    to the angle its real UAV is at right now, so the bot rides on ArduPlane's
+    own GUIDED orbit (gap 0) instead of lapping generated ring points.
+
+    Moves through cmd.exec(b); per-tick travel is capped at
+    GUIDED_CIRCLE_BOT_CATCHUP x the UAV's ground speed so the bot glides onto
+    the circle rather than jumping. Read-only towards the aircraft: nothing is
+    commanded here. Returns False (caller keeps the ring-point fallback) when
+    the UAV has no GPS fix.
+    """
+    positions = live_gps_plot_points()
+    if i >= len(positions) or positions[i] is None:
+        return False
+    ux, uy = positions[i]
+    cx, cy = center
+    radius_sim = _uav_loiter_radius_m(i) / 2.0  # sim units are half-scale
+    angle = math.atan2(uy - cy, ux - cx)
+    tx = cx + radius_sim * math.cos(angle)
+    ty = cy + radius_sim * math.sin(angle)
+
+    now = time.monotonic()
+    last = state.bot_step_last_time.get(i)
+    state.bot_step_last_time[i] = now
+    dt = min(now - last, config.BOT_STEP_MAX_DT_S) if last is not None else 0.0
+    try:
+        groundspeed = float(state.vehicles[i].groundspeed or 0.0)
+    except Exception:
+        groundspeed = 0.0
+    if groundspeed <= 0:
+        groundspeed = config.GUIDED_CIRCLE_BOT_FALLBACK_SPEED_MS
+    max_step_sim = config.GUIDED_CIRCLE_BOT_CATCHUP * groundspeed * dt / 2.0
+
+    dx, dy = tx - b.x, ty - b.y
+    dist = math.hypot(dx, dy)
+    if dist < 1e-6 or max_step_sim <= 0:
+        return True
+    cmd = Cmd([dx / dist, dy / dist])  # unit vector toward the UAV's spot
+    cmd.exec(b, step_size=min(dist, max_step_sim) / min(cmd.speed, b.max_speed))
+    return True
 
 
 def waypoint_flyby_radius(i, goal, next_goal=None, is_final=False):

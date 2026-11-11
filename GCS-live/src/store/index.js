@@ -99,6 +99,20 @@ const persistConfig = {
       'takeoffHeadings',
     ]),
 
+    // Takeoff heights must be entered each session, never restored unnoticed.
+    // Filtered outbound too, to drop heights already saved by older versions.
+    createBlacklistFilter(
+      'uavControl',
+      [
+        'flyToTargetDialog.takeoffAlt',
+        'flyToTargetDialog.takeoffAltDiff',
+      ],
+      [
+        'flyToTargetDialog.takeoffAlt',
+        'flyToTargetDialog.takeoffAltDiff',
+      ]
+    ),
+
     // We do not wish to save which preflight checks the user has ticked off
     createBlacklistFilter('preflight', ['checked']),
 

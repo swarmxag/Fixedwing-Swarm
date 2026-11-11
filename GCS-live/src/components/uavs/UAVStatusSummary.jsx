@@ -11,7 +11,7 @@ import { makeStyles } from '@material-ui/core/styles';
 import LazyTooltip from '@skybrush/mui-components/lib/LazyTooltip';
 import StatusLight from '@skybrush/mui-components/lib/StatusLight';
 
-import { Status } from '~/components/semantics';
+import { EXCLUDED_STATUS, Status } from '~/components/semantics';
 import { showNotification } from '~/features/snackbar/actions';
 import { MessageSemantics } from '~/features/snackbar/types';
 import {
@@ -49,6 +49,7 @@ const getStatusSummaryInner = createSelector(
             break;
 
           case Status.GONE:
+          case EXCLUDED_STATUS:
             /* excluded from counts */
             break;
 

@@ -32,7 +32,9 @@ from medur_swarm.uav.telemetry import _resync_bot_position
 OK, STALE, LOST, DEAD = "ok", "stale", "lost", "dead"
 
 _status = {}  # sys_id -> {"state": str, "since": monotonic time}
-_realign = {}  # sys_id -> monotonic time the link came back (waiting for a fresh position)
+_realign = (
+    {}
+)  # sys_id -> monotonic time the link came back (waiting for a fresh position)
 _stream_requested = {}  # sys_id -> last time we re-asked for telemetry streams
 _reconnecting = set()  # sys_ids with a reconnect thread running
 _lock = threading.Lock()
@@ -106,7 +108,9 @@ def ready(i):
     state.goal_min_distance.pop(i, None)
     with _lock:
         _realign.pop(sys_id, None)
-    print("[link] UAV", sys_id, "bot moved to the aircraft's position; mission continues")
+    print(
+        "[link] UAV", sys_id, "bot moved to the aircraft's position; mission continues"
+    )
     return True
 
 
@@ -120,7 +124,9 @@ def _request_streams(sys_id, vehicle, now):
         vehicle._master.mav.request_data_stream_send(
             0, 0, mavutil.mavlink.MAV_DATA_STREAM_ALL, 4, 1
         )
-        print("[link] UAV", sys_id, "no position yet -- asked for telemetry streams again")
+        print(
+            "[link] UAV", sys_id, "no position yet -- asked for telemetry streams again"
+        )
     except Exception as e:
         print("[link] UAV", sys_id, "stream request failed:", repr(e))
 
@@ -153,7 +159,10 @@ def _reconnect(sys_id, old):
             print("[link] UAV", sys_id, "reconnecting", endpoint)
             try:
                 vehicle = connect(
-                    endpoint, baud=115200, heartbeat_timeout=config.LINK_RECONNECT_TIMEOUT_S,source_system=253
+                    endpoint,
+                    baud=115200,
+                    heartbeat_timeout=config.LINK_RECONNECT_TIMEOUT_S,
+                    source_system=253,
                 )
             except Exception as e:
                 print("[link] UAV", sys_id, "reconnect failed:", repr(e))
@@ -161,7 +170,13 @@ def _reconnect(sys_id, old):
                 continue
             target = int(vehicle._master.target_system)
             if target != sys_id:
-                print("[link] port of UAV", sys_id, "answered as sys_id", target, "-- refused")
+                print(
+                    "[link] port of UAV",
+                    sys_id,
+                    "answered as sys_id",
+                    target,
+                    "-- refused",
+                )
                 try:
                     vehicle.close()
                 except Exception:
@@ -176,7 +191,14 @@ def _reconnect(sys_id, old):
                     state.vehicles[idx] = vehicle
                     entry = state.uav_registry.setdefault(sys_id, {})
                     entry["vehicle"] = vehicle
-                    print("[link] UAV", sys_id, "reconnected in slot", idx, "pos_array", state.pos_array)
+                    print(
+                        "[link] UAV",
+                        sys_id,
+                        "reconnected in slot",
+                        idx,
+                        "pos_array",
+                        state.pos_array,
+                    )
                     return
             vehicle.close()  # the UAV was removed while we were connecting
             return
@@ -204,16 +226,25 @@ def check_once(now=None):
                 _status[sys_id] = {"state": new, "since": now}
                 if new == OK:
                     _realign[sys_id] = now
-                    print("[link] UAV", sys_id, "link restored after %.0f s" % (now - since))
+                    print(
+                        "[link] UAV",
+                        sys_id,
+                        "link restored after %.0f s" % (now - since),
+                    )
                 else:
                     print("[link] UAV", sys_id, "link", new)
             if new == DEAD and sys_id not in _reconnecting:
                 _reconnecting.add(sys_id)
                 start_reconnect = True
-            waiting = sys_id in _realign and getattr(vehicle, "_swarm_pos", 0.0) <= _realign[sys_id]
+            waiting = (
+                sys_id in _realign
+                and getattr(vehicle, "_swarm_pos", 0.0) <= _realign[sys_id]
+            )
             waited = waiting and now - _realign[sys_id] >= config.LINK_POSITION_WAIT_S
         if start_reconnect:
-            threading.Thread(target=_reconnect, args=(sys_id, vehicle), daemon=True).start()
+            threading.Thread(
+                target=_reconnect, args=(sys_id, vehicle), daemon=True
+            ).start()
         if waited:
             _request_streams(sys_id, vehicle, now)
     with _lock:

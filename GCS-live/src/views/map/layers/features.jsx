@@ -24,6 +24,10 @@ import {
 } from '~/features/map-features/selectors';
 import {getGeofencePolygonId} from '~/features/mission/selectors';
 import {showError} from '~/features/snackbar/actions';
+import {
+  isTakeoffMarker,
+  TAKEOFF_MARKER_COLOR,
+} from '~/features/uav-control/takeoff';
 import {FeatureType, LabelStyle} from '~/model/features';
 import {featureIdToGlobalId} from '~/model/identifiers';
 import {handleFeatureUpdatesInOpenLayers} from '~/model/openlayers';
@@ -129,7 +133,9 @@ const styleForFeature = (
   shouldShowPoints = false
 ) => {
   const {color, label, labelStyle, measure, type, filled} = feature;
-  const parsedColor = createColor(color || primaryColor);
+  const parsedColor = createColor(
+    isTakeoffMarker(feature) ? TAKEOFF_MARKER_COLOR : color || primaryColor
+  );
   const styles = [];
   const radius = 6;
 

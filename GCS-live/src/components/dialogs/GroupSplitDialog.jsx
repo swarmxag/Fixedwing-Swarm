@@ -157,9 +157,12 @@ const MultipleSelectChip = ({
         showErrorMsg(splitErrorMessages[res.body.message]);
         return;
       }
-      // Outside the geofence: the server sent nothing to the swarm.
+      // Outside the geofence or no height yet: the server sent nothing to the swarm.
       const body = res?.body?.message;
-      if (typeof body === 'string' && body.startsWith('out_of_boundary')) {
+      if (
+        typeof body === 'string' &&
+        (body.startsWith('out_of_boundary') || body.startsWith('height_not_set'))
+      ) {
         showErrorMsg(body.slice(body.indexOf('|') + 1));
         return;
       }

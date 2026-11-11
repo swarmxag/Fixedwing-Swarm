@@ -15,7 +15,9 @@ import DroneImage from '~/../assets/img/plane-icon.png';
 import DroneImageInfo from '~/../assets/img/ArmPlane.png';
 import DroneImageWarning from '~/../assets/img/drone-x-black-warning-32x32.png';
 import DroneImageError from '~/../assets/img/errorPlane.png';
+import DroneImageExcluded from '~/../assets/img/plane-icon-excluded.png';
 import SelectionGlow from '~/../assets/img/GlowPlane.png';
+import { EXCLUDED_STATUS } from '~/components/semantics';
 import { Severity } from '~/model/enums';
 // import GimbalPolygon from '~/../assets/img/up1.png';
 
@@ -24,6 +26,7 @@ const droneImages = {
   [Severity.WARNING]: DroneImageWarning,
   [Severity.ERROR]: DroneImageError,
   [Severity.CRITICAL]: DroneImageError,
+  [EXCLUDED_STATUS]: DroneImageExcluded,
 };
 
 /**

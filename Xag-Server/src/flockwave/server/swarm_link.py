@@ -343,6 +343,16 @@ class Router:
                     reasons.append("already_master")
         return {"node": node, "eligible": not reasons, "reasons": reasons, "status": status}
 
+    def master_snapshot(self):
+        """The active master's own report of its state (legacy mode too), or
+        None if it cannot be read."""
+        if self.master is None or self.load_error:
+            return None
+        ack = self.links[self.master].call(
+            "snapshot", self.address(self.master, "cmd"), timeout=0.4, retries=2
+        )
+        return ack.get("data") if ack and ack.get("ok") else None
+
     # -- master transition -------------------------------------------------
     def set_master(self, node):
         """Operator-confirmed, fenced master change. Nothing changes unless the

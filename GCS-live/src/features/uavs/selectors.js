@@ -7,7 +7,7 @@ import createCachedSelector from 're-reselect';
 
 import { createSelector } from '@reduxjs/toolkit';
 
-import { Status } from '~/components/semantics';
+import { EXCLUDED_STATUS, Status } from '~/components/semantics';
 import {
   getGPSBasedHomePositionsInMission,
   getMissionMapping,
@@ -52,6 +52,22 @@ import { createDeepResultSelector } from '~/utils/selectors';
  * @param  {Object}  state  the state of the application
  */
 export const getUAVIdList = (state) => state.uavs.order;
+
+/**
+ * Returns the UAVs that have a known autopilot-reported home location, as an
+ * array of `{ uavId, lat, lon }` objects, in UAV list order.
+ */
+export const getUAVsWithHomeLocation = createSelector(
+  getUAVIdList,
+  (state) => state.uavs.byId,
+  (order, byId) =>
+    order
+      .map((uavId) => {
+        const home = byId[uavId]?.homePosition;
+        return home ? { uavId, lat: home.lat, lon: home.lon } : undefined;
+      })
+      .filter(Boolean)
+);
 
 /**
  * Key selector function for cached selectors that cache things by UAV ID.
@@ -651,6 +667,13 @@ export const areAllUAVsInMissionWithoutErrors = createSelector(
   }
 );
 
+/**
+ * Returns whether the UAV was excluded from the swarm. Only an active UAV is
+ * reported as excluded; a gone or silent one keeps its offline appearance.
+ */
+const isExcludedFromSwarm = (uav) =>
+  uav.SwarmChainLink === false && uav.age === UAVAge.ACTIVE;
+
 export function getSingleUAVStatusLevel(uav) {
   let severity = -1;
 
@@ -663,6 +686,10 @@ export function getSingleUAVStatusLevel(uav) {
 
   if (uav.age === UAVAge.GONE) {
     return Status.OFF;
+  }
+
+  if (isExcludedFromSwarm(uav)) {
+    return EXCLUDED_STATUS;
   }
 
   if (uav.age === UAVAge.INACTIVE) {
@@ -749,6 +776,10 @@ export function getSingleUAVStatusSummary(uav) {
     } else {
       textSemantics = errorSeverityToSemantics(severity);
     }
+  } else if (isExcludedFromSwarm(uav)) {
+    // UAV was excluded from the swarm (Remove Link)
+    text = 'excluded';
+    textSemantics = EXCLUDED_STATUS;
   } else if (uav.position && Math.abs(uav.position.ahl) >= 0.3) {
     // UAV is in the air
     text = 'airborne';

@@ -38,6 +38,11 @@ interface Status extends UAVStatusInfo {
   throttle?: number;
   distance?: number;
   bearing?: number;
+  homeDistance?: number;
+  homeBearing?: number;
+  homeLat?: number;
+  homeLon?: number;
+  SwarmChainLink?: boolean;
 }
 
 /**
@@ -66,6 +71,12 @@ export default class UAV {
   _throttle?: number;
   _distance_from_GCS?: number;
   _bearing_from_GCS?: number;
+  _distance_from_home?: number;
+  _bearing_from_home?: number;
+  _homePosition?: { lat: number; lon: number };
+
+  /** False if the UAV was excluded from the swarm; undefined if not reported */
+  SwarmChainLink?: boolean;
 
   /**
    * Constructor.
@@ -153,6 +164,22 @@ export default class UAV {
    */
   get bearing_from_GCS(): number | undefined {
     return this._bearing_from_GCS;
+  }
+
+  /**
+   * Returns the distance of UAV from its autopilot-reported home position,
+   * or undefined if the home position is not known.
+   */
+  get distance_from_home(): number | undefined {
+    return this._distance_from_home;
+  }
+
+  /**
+   * Returns the bearing of UAV from its autopilot-reported home position,
+   * or undefined if the home position is not known.
+   */
+  get bearing_from_home(): number | undefined {
+    return this._bearing_from_home;
   }
 
   /**
@@ -275,6 +302,11 @@ export default class UAV {
       throttle,
       distance,
       bearing,
+      homeDistance,
+      homeBearing,
+      homeLat,
+      homeLon,
+      SwarmChainLink,
     } = status;
     let errorList: ErrorCode[];
     let updated = false;
@@ -290,6 +322,24 @@ export default class UAV {
 
     if (bearing) {
       this._bearing_from_GCS = bearing;
+    }
+
+    // Zero is a valid value here (UAV standing at home), so test for presence
+    if (typeof homeDistance === 'number') {
+      this._distance_from_home = homeDistance;
+    }
+
+    if (typeof homeBearing === 'number') {
+      this._bearing_from_home = homeBearing;
+    }
+
+    if (typeof SwarmChainLink === 'boolean' && this.SwarmChainLink !== SwarmChainLink) {
+      this.SwarmChainLink = SwarmChainLink;
+      updated = true;
+    }
+
+    if (typeof homeLat === 'number' && typeof homeLon === 'number') {
+      this._homePosition = { lat: homeLat, lon: homeLon };
     }
 
     if (position) {
@@ -427,6 +477,10 @@ export default class UAV {
       throttle: this._throttle,
       distance_from_GCS: this._distance_from_GCS,
       bearing_from_GCS: this._bearing_from_GCS,
+      SwarmChainLink: this.SwarmChainLink,
+      homePosition: this._homePosition ? { ...this._homePosition } : undefined,
+      distance_from_home: this._distance_from_home,
+      bearing_from_home: this._bearing_from_home,
     };
   }
 }

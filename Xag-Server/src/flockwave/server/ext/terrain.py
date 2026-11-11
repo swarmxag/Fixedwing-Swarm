@@ -952,7 +952,10 @@ def _observe_registered_uavs(app_instance) -> None:
         telemetry = terrain_safety.read_uav_telemetry(uav) if uav is not None else None
         if telemetry is not None:
             terrain_safety.tracker.update_uav(
-                str(uav_id), *telemetry, position=terrain_safety.read_uav_position(uav)
+                str(uav_id),
+                *telemetry,
+                position=terrain_safety.read_uav_position(uav),
+                autopilot_home=terrain_safety.read_uav_home(uav),
             )
 
 
@@ -1624,8 +1627,8 @@ async def handle_X_TERRAIN_CALC_REQ(
     message: FlockwaveMessage, sender: Client, hub: MessageHub
 ):
     """Socket.IO handler for X-TERRAIN-CALC-REQ (the GCS "Calculate" button):
-    ``alt`` becomes the safety altitude of EVERY UAV, exactly as the Takeoff
-    command used to make it -- but nothing is sent to any UAV. The new
+    ``alt`` becomes the safety altitude of every UAV ON THE GROUND -- nothing is
+    sent to any UAV, and a flying UAV keeps following its live altitude. The new
     threshold and unsafe areas are then broadcast as usual. The Takeoff
     command itself no longer changes terrain safety.
 

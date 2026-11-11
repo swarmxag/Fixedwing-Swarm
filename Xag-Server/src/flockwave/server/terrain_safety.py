@@ -57,6 +57,7 @@ __all__ = (
     "is_valid_safety_margin",
     "needs_recalculation",
     "parse_safety_margin",
+    "read_uav_home",
     "read_uav_position",
     "select_safety_altitude",
     "tracker",
@@ -233,9 +234,14 @@ class TerrainSafetyTracker:
 
     * the PLANNING Origin (`origin_fingerprint`, `reference_*`, the per-Origin
       grid lookup) -- replaced by every "Set Origin";
-    * each UAV's HOME (`_UAVState.home` / `home_terrain`) -- the first ground
-      position, then replaced ONLY by a takeoff (the Takeoff command, or a
-      takeoff noticed from telemetry). Landing and "Set Origin" never touch it.
+    * each UAV's HOME (`_UAVState.home` / `home_terrain`) -- the autopilot's own
+      home while the UAV is armed and that home is known; otherwise the first
+      ground position, then replaced ONLY by a takeoff (the Calculate button on
+      the ground, or a takeoff noticed from telemetry). Landing and "Set Origin"
+      never touch it.
+
+    The Calculate altitude is a preview for UAVs on the ground. Once a UAV is seen
+    airborne, its live AHL is what its threshold is built from.
     """
 
     def __init__(self) -> None:
@@ -400,6 +406,30 @@ class TerrainSafetyTracker:
             )
         return (st.home, st.home_terrain) != previous
 
+    def _apply_autopilot_home(
+        self, st: _UAVState, home: Tuple[float, float], uav_id: str
+    ) -> bool:
+        """The autopilot's own home (HOME_POSITION) replaces whatever was recorded:
+        AHL is measured from it, so it is the home the threshold must use. Moving
+        a few metres keeps a known terrain value if the lookup is unavailable; a
+        different place never carries the old value over. Returns whether the home
+        or its terrain changed."""
+        here = (float(home[0]), float(home[1]))
+        if st.home == here and st.home_terrain is not None:
+            return False
+        previous = (st.home, st.home_terrain)
+        same_place = (
+            st.home is not None and _distance_m(st.home, here) < HOME_RELATCH_DISTANCE_M
+        )
+        looked_up = self._lookup_home_terrain(here)
+        st.home = here
+        if looked_up is not None or not same_place:
+            st.home_terrain = looked_up
+        if (st.home, st.home_terrain) == previous:
+            return False
+        self._log_home("from autopilot", uav_id, st)
+        return True
+
     @staticmethod
     def _log_home(what: str, uav_id: str, st: _UAVState) -> None:
         if st.home is None:
@@ -559,28 +589,34 @@ class TerrainSafetyTracker:
         uav_ids: Iterable[str],
         current_agls: Optional[Dict[str, Any]] = None,
         positions: Optional[Dict[str, Any]] = None,
+        airborne: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
-        """The operator pressed Takeoff: `altitude` becomes the safety altitude
-        of the given UAVs immediately -- whatever their AHL currently is. A new
-        command always starts the climb stage over. Returns the payloads to
-        send now ([] if the altitude is invalid or no Origin terrain is active
-        yet; the command is remembered either way)."""
+        """The operator pressed Calculate: `altitude` becomes the safety altitude
+        of the given UAVs that are on the ground. It has no effect on a UAV
+        `airborne` reports as flying: its threshold keeps following its live AHL.
+        Returns the payloads to send now ([] if the altitude is invalid or no
+        Origin terrain is active yet; the command is remembered either way)."""
         if not _is_number(altitude) or altitude <= 0:
             return []
         altitude = float(altitude)
-        self.commanded_takeoff_altitude = altitude
         ids = [str(i) for i in uav_ids]
+        flags = airborne or {}
+        if not ids or any(flags.get(uav_id) is not True for uav_id in ids):
+            self.commanded_takeoff_altitude = altitude
         for uav_id in ids:
             st = self._uavs.setdefault(uav_id, _UAVState())
-            # The Takeoff command establishes the home from where the UAV stands now --
-            # unless it already took off (climbing/flying): its home stays where it left.
+            if flags.get(uav_id) is True:
+                continue
+            # Establishes the home from where the UAV stands now. Without a heartbeat
+            # a UAV that already has a command may be in the air, so its home stays.
+            on_ground = flags.get(uav_id) is False and not st.reached
             if (
                 positions
-                and st.phase is FlightPhase.PRE_TAKEOFF
+                and (st.phase is FlightPhase.PRE_TAKEOFF or on_ground)
                 and self._establish_home(st, positions.get(uav_id), uav_id)
             ):
                 self._origin_dirty = True
-            st.takeoff_alt = altitude  # from here on the home is frozen (phase is no longer pre-takeoff)
+            st.takeoff_alt = altitude
             st.reached = False
             st.calc_agl = None
             if current_agls and _is_number(current_agls.get(uav_id)):
@@ -594,21 +630,26 @@ class TerrainSafetyTracker:
         armed: Optional[bool] = None,
         airborne: Optional[bool] = None,
         position: Optional[Tuple[float, float]] = None,
+        autopilot_home: Optional[Tuple[float, float]] = None,
     ) -> Optional[Dict[str, Any]]:
         """Feeds one telemetry observation (AHL; `armed` / `airborne` when the
-        autopilot's heartbeat says; `position` = (lat, lon)). Returns the new
+        autopilot's heartbeat says; `position` = (lat, lon); `autopilot_home` =
+        the home the autopilot reported, if any). Returns the new
         payload if the threshold changed -- first sighting, reaching the takeoff
         altitude, landing, a new home, or an in-flight AHL change of at least
         ALTITUDE_RECALC_THRESHOLD -- else None.
 
-        The home changes ONLY at a takeoff: the first home is the UAV's first
-        ground position; after that a new home is set by the Takeoff command
-        (`command_takeoff`) or, for a takeoff noticed only from telemetry, from
-        the place it last stood disarmed on the ground. Landing, Set Origin and
-        moving on the ground never change it.
+        While the UAV is armed, a known `autopilot_home` is its home. Otherwise the
+        home changes ONLY at a takeoff: the first home is the UAV's first ground
+        position; after that a new home is set by Calculate on the ground
+        (`command_takeoff`) or, when the UAV is seen airborne, from the place it
+        last stood disarmed on the ground. Landing, Set Origin and moving on the
+        ground never change it. (The autopilot's home is not used while disarmed:
+        it may still be the home of the previous flight.)
 
-        While climbing, AHL is only compared with the commanded altitude; it
-        never changes the safety altitude.
+        As soon as `airborne` is True the threshold follows the live AHL, also
+        during the climb. Without heartbeat information (`airborne` None), AHL is
+        only compared with the Calculate altitude until it reaches it.
         """
         ahl = float(ahl) if _is_number(ahl) else None
         st = self._uavs.get(uav_id)
@@ -617,10 +658,21 @@ class TerrainSafetyTracker:
             st = self._uavs[uav_id] = _UAVState()
         st.current_agl = ahl
 
-        if st.phase is FlightPhase.PRE_TAKEOFF and not airborne:
+        use_autopilot_home = armed is True and _valid_position(autopilot_home)
+        if use_autopilot_home and self._apply_autopilot_home(
+            st, autopilot_home, uav_id  # type: ignore[arg-type]
+        ):
+            changed = True
+            self._origin_dirty = True
+
+        if not st.reached and not airborne:
             if armed is not True and _valid_position(position):
                 st.ground_position = (float(position[0]), float(position[1]))  # type: ignore[index]
-            if self._latch_home(st, position, uav_id):
+            if (
+                st.phase is FlightPhase.PRE_TAKEOFF
+                and not use_autopilot_home
+                and self._latch_home(st, position, uav_id)
+            ):
                 changed = True
                 self._origin_dirty = True
 
@@ -631,24 +683,26 @@ class TerrainSafetyTracker:
             elif needs_recalculation(st.calc_agl, ahl):
                 st.calc_agl = ahl
                 changed = True
-        elif st.takeoff_alt is not None:
-            if (
-                ahl is not None
-                and ahl >= st.takeoff_alt - TAKEOFF_REACHED_TOLERANCE_M - _EPSILON
-            ):
-                st.reached, st.calc_agl = True, ahl
-                changed = True
         elif airborne and ahl is not None:
-            # Seen flying with no Takeoff command on record (launched some other
-            # way, or the server restarted mid-flight): the 50 m default would
-            # be wrong for a UAV that is already up there, so use telemetry.
-            # If it was seen on the ground first, this takeoff sets its home.
-            if st.ground_position is not None and self._establish_home(
-                st, st.ground_position, uav_id
+            # Seen flying: only the live AHL says how high it really is, whatever
+            # altitude was entered with Calculate. If it was seen on the ground
+            # first and the autopilot's home is not known, this takeoff sets its home.
+            if (
+                not use_autopilot_home
+                and st.ground_position is not None
+                and self._establish_home(st, st.ground_position, uav_id)
             ):
                 self._origin_dirty = True
             st.reached, st.calc_agl = True, ahl
             changed = True
+        elif st.takeoff_alt is not None:
+            if (
+                armed is not False
+                and ahl is not None
+                and ahl >= st.takeoff_alt - TAKEOFF_REACHED_TOLERANCE_M - _EPSILON
+            ):
+                st.reached, st.calc_agl = True, ahl
+                changed = True
 
         return self.uav_payload(uav_id) if changed else None
 
@@ -735,6 +789,12 @@ def read_uav_position(uav: Any) -> Optional[Tuple[float, float]]:
     return (float(here[0]), float(here[1])) if _valid_position(here) else None  # type: ignore[arg-type]
 
 
+def read_uav_home(uav: Any) -> Optional[Tuple[float, float]]:
+    """(lat, lon) of the home the UAV's autopilot reported, or None if not known."""
+    home = getattr(uav, "home", None)
+    return (float(home[0]), float(home[1])) if _valid_position(home) else None
+
+
 # --- app hooks --------------------------------------------------------------------
 
 
@@ -779,7 +839,10 @@ def on_uav_status_updated(app: Any, uav_ids: Iterable[str]) -> None:
             if telemetry is None:
                 continue
             payload = tracker.update_uav(
-                str(uav_id), *telemetry, position=read_uav_position(uav)
+                str(uav_id),
+                *telemetry,
+                position=read_uav_position(uav),
+                autopilot_home=read_uav_home(uav),
             )
             if payload is not None:
                 payloads.append(payload)
@@ -796,14 +859,15 @@ def on_uav_status_updated(app: Any, uav_ids: Iterable[str]) -> None:
 
 def on_takeoff_commanded(app: Any, altitude: Any, uav_ids: Iterable[str]) -> None:
     """Called the moment the GCS "Calculate" button sends ``X-TERRAIN-CALC-REQ``
-    (with its ``alt``; ext/terrain.py). Updates the safety altitude as a Takeoff
-    to that altitude would, and schedules the new threshold for broadcast right
-    away. Empty `uav_ids` means every UAV. Never raises.
+    (with its ``alt``; ext/terrain.py). Updates the safety altitude of the UAVs on
+    the ground (flying UAVs keep following their live AHL) and schedules the new
+    threshold for broadcast right away. Empty `uav_ids` means every UAV. Never raises.
     """
     try:
         ids = [str(i) for i in uav_ids]
         agls = {}
         positions = {}
+        airborne = {}
         if not ids:
             from flockwave.server.model.uav import UAV
 
@@ -813,8 +877,9 @@ def on_takeoff_commanded(app: Any, altitude: Any, uav_ids: Iterable[str]) -> Non
             telemetry = read_uav_telemetry(uav) if uav is not None else None
             if telemetry is not None:
                 agls[uav_id] = telemetry[0]
+                airborne[uav_id] = telemetry[2]
             positions[uav_id] = read_uav_position(uav) if uav is not None else None
-        payloads = tracker.command_takeoff(altitude, ids, agls, positions)
+        payloads = tracker.command_takeoff(altitude, ids, agls, positions, airborne)
         if payloads:
             app.run_in_background(publish_payloads, app, payloads)
     except Exception:

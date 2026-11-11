@@ -37,7 +37,11 @@ from medur_swarm.uav.guidance import (
 from medur_swarm.uav.telemetry import live_gps_plot_points, print_sim_vs_real_latlon
 from medur_swarm.tasks.runner import (
     assign_mission_tasks,
-    removed_area_end,
+    keep_diverted_search_work,
+    claim_nearest_leftover_area,
+    takeover_in_progress,
+    takeover_search_done,
+    taking_over,
     start_deferred_redistribution_round,
     synchronize_mission_topology,
 )
@@ -233,6 +237,7 @@ def _run_split_movement(selected_uav_ids, plan_backup=None):
     state.removed_uav_grid = []
     state.removed_grid_path_length = []
     state.removed_grid_path_end = []
+    state.removed_area_claimed = []
     state.deferred_removed_segments = []
     state.uncovered_area_points = []
     state.uncovered_area_filename = []
@@ -246,6 +251,14 @@ def _run_split_movement(selected_uav_ids, plan_backup=None):
     state.remove_bot_array = []
     selected_indexes = selected_swarm_indexes(selected_uav_ids)
     selected_index_set = set(selected_indexes)
+    # A bot can still have a background task from an earlier command (a
+    # concurrent search, a goal, a circle). It keeps its old line_index, and
+    # this split has just rewritten the path file it reads, so the bot would
+    # start from that stale index (the lane's 2nd point) while the loop below
+    # treats it as "diverted" and never moves it. Same clean-up search does.
+    with state.active_goal_tasks_lock:
+        for i in selected_indexes:
+            state.active_goal_tasks.pop(i, None)
     print(
         "[split] selected_uav_ids",
         selected_uav_ids,
@@ -308,6 +321,8 @@ def _run_split_movement(selected_uav_ids, plan_backup=None):
     print("grid_path_array", state.grid_path_array)
     current_goals = [None] * len(state.pos_array)
     diverted_indexes = set()
+    # Diverted UAVs whose unfinished lane is already kept for the others.
+    diverted_preserved = set()
     # Tell apply_different_heights this loop owns these bots' movement (covers
     # both plain 'split' and 'specificsplit', which converge here), so a
     # concurrent 'different' only re-targets their altitude -- picked up by the
@@ -330,9 +345,20 @@ def _run_split_movement(selected_uav_ids, plan_backup=None):
             num_lines,
             current_goals,
             planned_paths_by_bot,
-            index_sets=(diverted_indexes,),
+            index_sets=(diverted_indexes, diverted_preserved),
         )
-        start_deferred_redistribution_round(selected_indexes)
+        # A UAV sent to a goal (or another task) leaves its lane unfinished:
+        # keep that lane for the UAVs still flying, and leave the diverted
+        # ones out of every "all finished" check and out of the hand-out.
+        keep_diverted_search_work(
+            selected_indexes,
+            diverted_indexes,
+            diverted_preserved,
+            state.all_uav_csv_grid_array,
+            state.grid_path_array,
+        )
+        active_indexes = [x for x in selected_indexes if x not in diverted_indexes]
+        start_deferred_redistribution_round(active_indexes)
         selected_index_set = set(selected_indexes)
         # Keep the "this loop owns these bots" set aligned after any add/remove.
         state.foreground_mission_indexes = set(selected_indexes)
@@ -360,174 +386,24 @@ def _run_split_movement(selected_uav_ids, plan_backup=None):
                 continue
             if not link_monitor.ready(i):
                 continue  # link down: hold the bot at its lane point
-            if len(state.checkall_removed_grid_path_array_start_val) == len(
-                state.pos_array
-            ):
-                if all(
-                    c == 1 for c in state.checkall_removed_grid_path_array_start_val
+            # Self-healing: a UAV that has finished its own lane (or an area
+            # it took over) takes the nearest leftover area of a lost/diverted
+            # UAV straight away -- the first to finish gets the nearest one.
+            # Nothing left: it holds where it finished (as before).
+            if state.grid_path_array[i] >= int(
+                num_lines[i]
+            ) and not takeover_in_progress(i):
+                if not claim_nearest_leftover_area(
+                    i, b, num_lines[i], active_indexes, state.grid_path_array, num_lines
                 ):
-                    state.landing_flag = True
-            else:
-                # print("length oflen(checkall_removed_grid_path_array_start_val",len(checkall_removed_grid_path_array_start_val))
-                pass
-            if (
-                all(
-                    state.grid_path_array[x] >= int(num_lines[x])
-                    for x in selected_indexes
-                )
-                and state.removed_grid_path_length != []
-                and not state.removed_grid_path_array_flag
-            ):
-                print("removed_grid_path_length", state.removed_grid_path_length)
-                allocation, remaining_points_list = allocate_drones(
-                    [
-                        removed_area_end(x, num_lines[i])
-                        for x in range(len(state.removed_grid_path_length))
-                    ],
-                    state.removed_grid_path_length,
-                    len(selected_indexes),
-                )
-                print(
-                    "allocation,remaining_points_list",
-                    allocation,
-                    remaining_points_list,
-                )
-                for x, v in enumerate(remaining_points_list):
-                    print("x", x)
-                    if state.removed_grid_path_length[x] == 1:
-                        start_index = state.removed_grid_path_length[x]
-                    else:
-                        start_index = state.removed_grid_path_length[x] - 1
-                    print("start_index", start_index)
-                    print("JJJ", allocation[x])
-                    area_end = removed_area_end(x, num_lines[i])
-                    if (allocation[x] == 0) and state.removed_grid_path_length[
-                        x
-                    ] != area_end:
-                        state.uncovered_area_points.append(
-                            state.removed_grid_path_length[x]
-                        )
-                        state.uncovered_area_filename.append(state.removed_uav_grid[x])
-                        state.uncovered_area_end.append(area_end)
-                        print(
-                            "uncovered_area_points",
-                            x,
-                            v,
-                            state.uncovered_area_points,
-                            state.uncovered_area_filename,
-                        )
-                        continue
-                    elif allocation[x] == 0:
-                        continue
-                    add_points = math.ceil(remaining_points_list[x] / allocation[x])
-                    print("add_points", math.ceil(add_points))
-                    end_index = start_index + add_points + 1
-                    print("end_index", math.ceil(end_index))
-                    for m in range(allocation[x]):
-                        print(
-                            "removed_grid_path_array_index",
-                            state.removed_grid_path_array_index,
-                        )
-                        if m != 0:
-                            end_index += add_points
-                        if end_index > area_end:
-                            end_index = area_end
-                        state.removed_grid_path_array[
-                            state.removed_grid_path_array_index
-                        ] = (start_index, end_index)
-                        state.removed_grid_path_array_start_val[
-                            state.removed_grid_path_array_index
-                        ] = start_index
-                        state.removed_grid_filename[
-                            state.removed_grid_path_array_index
-                        ] = state.removed_uav_grid[x]
-                        print(
-                            "removed_grid_path_array",
-                            state.removed_grid_path_array,
-                            state.removed_grid_path_array_start_val,
-                            state.removed_grid_filename,
-                        )
-                        start_index = end_index
-                        state.removed_grid_path_array_index += 1
-                print(
-                    "removed_grid_path_array!!!!!",
-                    state.removed_grid_path_array,
-                    state.removed_grid_path_array_start_val,
-                    state.removed_grid_filename,
-                )
-                state.removed_grid_path_array_flag = True
-
-            if (
-                all(
-                    state.grid_path_array[x] >= int(num_lines[x])
-                    for x in selected_indexes
-                )
-                and not state.removed_grid_path_length != []
-            ):
-                state.landing_flag = True
-            if state.removed_grid_path_array_flag:
-                if state.removed_grid_path_array_start_val[i] == 0:
                     state.checkall_removed_grid_path_array_start_val[i] = 1
-                    print(
-                        "checkall_removed_grid_path_array_start_val",
-                        state.checkall_removed_grid_path_array_start_val,
-                    )
+                    if takeover_search_done(
+                        active_indexes, state.grid_path_array, num_lines, num_lines[i]
+                    ):
+                        state.landing_flag = True
                     continue
-                if (
-                    state.removed_grid_path_array_start_val[i]
-                    == state.removed_grid_path_array[i][1]
-                ):
-                    state.checkall_removed_grid_path_array_start_val[i] = 1
-                    if state.uncovered_area_points != []:
-                        print("uncovered_area_points", state.uncovered_area_points)
-                        for u, uncovered_area_point in enumerate(
-                            state.uncovered_area_points
-                        ):
-                            state.removed_grid_path_array[i] = (
-                                uncovered_area_point,
-                                int(num_lines[i]) + 1,
-                            )
-                            print(
-                                "removed_grid_path_array",
-                                state.removed_grid_path_array,
-                            )
-                            state.removed_grid_path_array_start_val[i] = (
-                                state.uncovered_area_points[u]
-                            )
-                            state.removed_grid_filename[i] = (
-                                state.uncovered_area_filename[u]
-                            )
-                            uncovered_end = (
-                                state.uncovered_area_end[u]
-                                if u < len(state.uncovered_area_end)
-                                else int(num_lines[i])
-                            )
-                            state.removed_grid_path_array[i] = (
-                                state.uncovered_area_points[u],
-                                uncovered_end,
-                            )
-                            print(
-                                "removed_grid_path_array_start_val",
-                                state.removed_grid_path_array_start_val,
-                                state.removed_grid_filename,
-                            )
-                            state.checkall_removed_grid_path_array_start_val[i] = 0
-                            state.uncovered_area_points.pop(u)
-                            state.uncovered_area_filename.pop(u)
-                            if u < len(state.uncovered_area_end):
-                                state.uncovered_area_end.pop(u)
-                            # One area per finished UAV: popping while the
-                            # loop went on overwrote this one with the next
-                            # and dropped every other waiting area.
-                            break
-                    else:
-                        continue
-            if (
-                state.grid_path_array[i] >= int(num_lines[i])
-                and not state.removed_grid_path_array_flag
-            ):
-                continue
-            if state.removed_grid_path_array_flag:
+            bot_taking_over = taking_over(i, state.grid_path_array, num_lines)
+            if bot_taking_over:
                 goal_lat_lon = read_specific_line(
                     state.removed_grid_filename[i],
                     state.removed_grid_path_array_start_val[i],
@@ -550,7 +426,7 @@ def _run_split_movement(selected_uav_ids, plan_backup=None):
             next_goal = None
             is_final = False
             try:
-                if state.removed_grid_path_array_flag:
+                if bot_taking_over:
                     next_index = state.removed_grid_path_array_start_val[i] + 1
                     is_final = next_index >= state.removed_grid_path_array[i][1]
                     if not is_final:
@@ -604,7 +480,7 @@ def _run_split_movement(selected_uav_ids, plan_backup=None):
                     )
                 if (
                     state.grid_path_array[i] >= int(num_lines[i])
-                    and not state.removed_grid_path_array_flag
+                    and not bot_taking_over
                 ):
                     continue
                 signed_lead = signed_uav_lead(i, b)
@@ -625,7 +501,7 @@ def _run_split_movement(selected_uav_ids, plan_backup=None):
                         )
                 elif (
                     state.grid_path_array[i] >= int(num_lines[i])
-                    and state.removed_grid_path_array_flag
+                    and bot_taking_over
                 ):
                     state.removed_grid_path_array_start_val[i] += 1
                     print(
@@ -649,9 +525,17 @@ def _run_split_movement(selected_uav_ids, plan_backup=None):
                 rx, ry = locatePosition.geoToCart(
                     state.origin, config.END_DISTANCE, [lat_v, lon_v]
                 )
-                tx, ty = compute_lookahead_target(
-                    b.x, b.y, b.theta, rx / 2, ry / 2, distance=lookahead_distance_sim(i)
-                )
+                if is_final and already_at_goal:
+                    # The bot sits on its LAST point and waits for the real
+                    # UAV to fly through it (uav_reached_waypoint). A point
+                    # ahead of a parked bot swings with its jittering heading
+                    # and the UAV only orbits it, never arriving -- so the
+                    # lane never finishes. Send the UAV to the point itself.
+                    tx, ty = goal
+                else:
+                    tx, ty = compute_lookahead_target(
+                        b.x, b.y, b.theta, rx / 2, ry / 2, distance=lookahead_distance_sim(i)
+                    )
                 # Collision avoidance: nudge the target away from every
                 # OTHER real UAV's live GPS position within range. Computed
                 # straight from telemetry (real_uav_avoidance_vector), not

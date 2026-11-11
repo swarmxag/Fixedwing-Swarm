@@ -1039,10 +1039,7 @@ class MAVLinkDriver(UAVDriver["MAVLinkUAV"]):
     async def _send_takeoff_signal_single(
         self, uav: "MAVLinkUAV", *, scheduled: bool = False, transport=None
     ) -> None:
-        from flockwave.server.socket.globalVariable import (
-            vtol_takeoff_height,
-            getTakeoffAlt,
-        )
+        from flockwave.server.socket.globalVariable import get_vtol_takeoff_height
 
         if scheduled:
             # Ignore this; scheduled takeoffs are managed by the ScheduledTakeoffManager
@@ -1057,11 +1054,11 @@ class MAVLinkDriver(UAVDriver["MAVLinkUAV"]):
         # Wait a bit to give the autopilot some time to start the motors, just
         # in case. Not sure whether this is needed.
         # await sleep(1)
-        # alt = vtol_takeoff_height[int(uav.id)]
-        alt = getTakeoffAlt()
+        alt = get_vtol_takeoff_height()
+        # alt = getTakeoffAlt()
         # Send the takeoff command
         # await uav.set_mode(15)
-        await uav.takeoff_to_relative_altitude(alt, channel=channel)
+        await uav.takeoff_to_relative_altitude(alt[int(uav.id) - 1], channel=channel)
 
     async def _start_capture_cam_signal(
         self, uav: "MAVLinkUAV", *, scheduled: bool = False, transport=None
@@ -1182,6 +1179,16 @@ class MAVLinkUAV(UAVBase):
         #: Stores the time when we attempted to schedule a request to configure
         #: the data streams for the last time
         self._last_data_stream_configuration_attempted_at = None
+
+        #: Monotonic time when we last asked the autopilot for its home position
+        self._last_home_position_requested_at: Optional[float] = None
+
+        #: Whether the UAV was armed at the last heartbeat
+        self._was_armed = False
+
+        #: Whether the UAV armed and the autopilot has not answered with its home
+        #: since then; arming can move the home, so ours may be out of date
+        self._home_refresh_pending = False
 
         #: Stores a mapping of each MAVLink message type received from the drone
         #: to the most recent copy of the message of that type. Some of these
@@ -1695,6 +1702,11 @@ class MAVLinkUAV(UAVBase):
         if not self.get_last_message(MAVMessageType.AUTOPILOT_VERSION):
             self.driver.run_in_background(self._request_autopilot_capabilities)
 
+        # Ask for the autopilot's home position, but only while armed
+        self._request_home_position_if_needed(
+            armed=bool(message.base_mode & MAVModeFlag.SAFETY_ARMED)
+        )
+
         # If we haven't received a SYS_STATUS message for a while but we keep
         # on receiving heartbeats, chances are that the data streams are not
         # configured correctly so we configure them.
@@ -1753,6 +1765,56 @@ class MAVLinkUAV(UAVBase):
             gcsLocation=location.position,
         )
         self.notify_updated()
+
+    def handle_message_home_position(self, message: MAVLinkMessage):
+        """Handles an incoming MAVLink HOME_POSITION message, which carries the
+        autopilot's own home (arming / RTL) position.
+        """
+        # lat / lon are in degrees * 1e7; a 0,0 or out-of-range value means that
+        # the autopilot has no valid home yet, which set_home() rejects.
+        if self.set_home(message.latitude / 1e7, message.longitude / 1e7):
+            self._home_refresh_pending = False
+            self._store_message(message)
+            self.notify_updated()
+
+    def _request_home_position_if_needed(self, armed: bool) -> None:
+        """Asks the autopilot to send its home position, but only if the UAV is
+        armed and we do not know the home yet or it has just armed (arming can
+        move the home), at most once every few seconds. Called from the heartbeat
+        handler, so the request is repeated until the autopilot answers (and again
+        after a server restart or autopilot reboot, as long as the UAV is armed).
+        Until the answer arrives, a home we already had stays in use.
+        """
+        if armed and not self._was_armed:
+            self._home_refresh_pending = True
+        self._was_armed = armed
+
+        if not armed or (self.home is not None and not self._home_refresh_pending):
+            return
+
+        now = monotonic()
+        last = self._last_home_position_requested_at
+        if last is not None and now - last < 5:
+            return
+
+        self._last_home_position_requested_at = now
+        self.driver.run_in_background(self._request_home_position)
+
+    async def _request_home_position(self) -> None:
+        """Sends a MAV_CMD_REQUEST_MESSAGE command for HOME_POSITION."""
+        try:
+            await self.driver.send_command_long(
+                self,
+                MAVCommand.REQUEST_MESSAGE,
+                param1=MAVMessageType.HOME_POSITION,
+            )
+        except TooSlowError:
+            # Will be retried after the next heartbeat; nothing to report
+            pass
+        except Exception:
+            self.driver.log.exception(
+                "Failed to request home position", extra={"id": log_id_for_uav(self)}
+            )
 
     def handle_message_gps_raw_int(self, message: MAVLinkMessage):
         num_sats = message.satellites_visible
@@ -2352,6 +2414,13 @@ class MAVLinkUAV(UAVBase):
         the data streams.
         """
         self._configure_data_streams_soon(force=True)
+
+        # The autopilot's home is reset on reboot; forget ours so it is
+        # re-requested with the next heartbeat
+        self.clear_home()
+        self._last_home_position_requested_at = None
+        self._was_armed = False
+        self._home_refresh_pending = False
 
         # No need to request the autopilot capabilities here; we do it after
         # every heartbeat if we don't have them yet. See the comment in

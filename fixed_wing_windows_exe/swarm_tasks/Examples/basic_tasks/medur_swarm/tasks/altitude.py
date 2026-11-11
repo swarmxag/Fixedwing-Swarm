@@ -2,13 +2,14 @@
 live (idle bots get an explicit background altitude task) or picked up on
 the fly by whatever task is already driving a busy bot."""
 
+import time
+
 from swarm_tasks.modules.dispersion import disp_field
 from swarm_tasks.tasks import area_coverage as cvg
 
 from medur_swarm import state
 from medur_swarm.communication import lifecycle
 from medur_swarm.utils import parse_selected_uav_ids, selected_swarm_indexes
-from medur_swarm.uav.guidance import _drive_vehicle_towards
 
 
 def apply_different_heights(decoded_index):
@@ -37,6 +38,7 @@ def apply_different_heights(decoded_index):
     selected_indexes = selected_swarm_indexes(selected_uav_ids)
 
     state.same_alt_flag = False
+    state.different_step = step  # a re-added UAV is layered with this step
     for bot_index in selected_indexes:
         if bot_index < len(state.different_height):
             state.different_height[bot_index] = height + step * bot_index
@@ -84,39 +86,127 @@ def handle_concurrent_different_command(command_data):
         return False
 
 
+# ArduPilot's altitude-only GUIDED command (Plane 4.1+): changes the target
+# altitude and keeps the current GUIDED position target, so the aircraft keeps
+# circling exactly where it is. Verified in SITL on Plane 4.8 (ACCEPTED, climbed
+# 100 -> 120 m, loiter centre unchanged).
+MAV_CMD_GUIDED_CHANGE_ALTITUDE = 43001
+MAV_FRAME_GLOBAL_RELATIVE_ALT = 3  # same altitude reference as simple_goto
+ALTITUDE_RESEND_S = 3.0  # resend until reached, in case a packet is lost
+ALTITUDE_TIMEOUT_S = 120.0
+ALTITUDE_TOLERANCE_M = 1.5
+
+_ack_listening = set()
+_last_ack = {}  # id(vehicle) -> MAV_RESULT of its last altitude command
+_ACK_NAMES = {
+    0: "ACCEPTED",
+    1: "TEMPORARILY_REJECTED",
+    2: "DENIED",
+    3: "UNSUPPORTED",
+    4: "FAILED",
+}
+
+
+def _listen_for_altitude_acks(vehicle):
+    if id(vehicle) in _ack_listening:
+        return
+    _ack_listening.add(id(vehicle))
+
+    @vehicle.on_message("COMMAND_ACK")
+    def _ack(_self, _name, msg):
+        if msg.command == MAV_CMD_GUIDED_CHANGE_ALTITUDE:
+            _last_ack[id(vehicle)] = msg.result
+
+
+def _send_altitude_change(vehicle, target_alt):
+    """Altitude only -- no position is sent, so nothing can move the aircraft
+    sideways. param3 (climb rate) 0 = autopilot default."""
+    _listen_for_altitude_acks(vehicle)
+    msg = vehicle.message_factory.command_int_encode(
+        vehicle._master.target_system,
+        vehicle._master.target_component,
+        MAV_FRAME_GLOBAL_RELATIVE_ALT,
+        MAV_CMD_GUIDED_CHANGE_ALTITUDE,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        float(target_alt),
+    )
+    vehicle.send_mavlink(msg)
+
+
 def _drive_altitude_task(i, b, task, completed):
-    """Holds the bot at its current (x,y) -- via a goal fixed at its own
-    position, plus real disp_field repulsion so several idle bots
-    re-staging altitude at once don't drift into each other -- while it
-    climbs/descends to its just-updated different_height[i]. Completes
-    (frees the bot back to fully idle) once the real vehicle reports being
-    within tolerance of the target altitude, mirroring the original
-    blocking loop's own completion check."""
-    goal_position = (b.x, b.y)
-    cmd = cvg.goal_area_cvg(i, b, goal_position)
+    """Idle UAV, new height: change ONLY its altitude, with the altitude-only
+    GUIDED command, and send no position at all -- it keeps circling where it
+    already is. (This used to simple_goto the bot's (x, y), which could be an
+    old bot position or a point on the loiter circle, so the aircraft could be
+    moved somewhere nobody planned.) Completes once the real altitude is
+    within ALTITUDE_TOLERANCE_M of different_height[i]. Not in GUIDED: nothing
+    is sent and the task ends, with a message."""
+    # The plotted bot just holds where it is (as before); the aircraft no
+    # longer follows it.
+    cmd = cvg.goal_area_cvg(i, b, (b.x, b.y))
     cmd += disp_field(b, neighbourhood_radius=100)
     cmd.exec(b)
-    # The bot's own position must be passed EXPLICITLY. Calling this with no
-    # guidance_position means "no target this tick", which falls back to
-    # state.uav_lookahead_points[i] -- the last target some earlier command
-    # left behind -- and commands nothing at all when there isn't one. A bot
-    # that has not flown a goal yet this session therefore got no simple_goto,
-    # so the aircraft was never told to change altitude and simply never
-    # climbed. Passing (b.x, b.y) is what the docstring above already says
-    # this does: hold station here and change height.
-    _drive_vehicle_towards(i, b, (b.x, b.y))
-    if (
+    if not (
         state.master_flag
         and i < len(state.vehicles)
         and i < len(state.different_height)
     ):
-        try:
-            current_alt = state.vehicles[i].location.global_relative_frame.alt
-        except Exception:
-            current_alt = None
-        if (
-            current_alt is not None
-            and abs(current_alt - state.different_height[i]) <= 1.5
-        ):
-            completed.append(i)
-            print("[altitude-task] reached target altitude for UAV", state.pos_array[i])
+        return
+    vehicle = state.vehicles[i]
+    uav = state.pos_array[i] if i < len(state.pos_array) else i
+    target_alt = state.different_height[i]
+    now = time.monotonic()
+    started = task.setdefault("started", now)
+    try:
+        current_alt = vehicle.location.global_relative_frame.alt
+        mode = vehicle.mode.name
+    except Exception:
+        return  # telemetry hiccup: try again next tick
+    if (
+        current_alt is not None
+        and abs(current_alt - target_alt) <= ALTITUDE_TOLERANCE_M
+    ):
+        completed.append(i)
+        print("[altitude-task] reached target altitude for UAV", uav, target_alt)
+        return
+    if mode != "GUIDED":
+        completed.append(i)
+        print(
+            f"[altitude-task] UAV {uav} is in {mode}, not GUIDED -- altitude-only "
+            f"change not sent (no position is ever sent instead)"
+        )
+        return
+    if now - started > ALTITUDE_TIMEOUT_S:
+        completed.append(i)
+        print(
+            f"[altitude-task] UAV {uav} did not reach {target_alt} m within "
+            f"{ALTITUDE_TIMEOUT_S:.0f} s (now {current_alt} m) -- giving up"
+        )
+        return
+    result = _last_ack.get(id(vehicle))
+    if result not in (None, 0) and task.get("reported_ack") != result:
+        task["reported_ack"] = result
+        print(
+            f"[altitude-task] UAV {uav} rejected the altitude change: "
+            f"{_ACK_NAMES.get(result, result)}"
+        )
+    if (
+        task.get("target") != target_alt
+        or now - task.get("sent", 0.0) >= ALTITUDE_RESEND_S
+    ):
+        if task.get("target") != target_alt:
+            print(
+                f"[altitude-task] UAV {uav}: altitude-only change "
+                f"{current_alt} -> {target_alt} m (position unchanged)"
+            )
+        _last_ack.pop(id(vehicle), None)
+        _send_altitude_change(vehicle, target_alt)
+        task["target"] = target_alt
+        task["sent"] = now

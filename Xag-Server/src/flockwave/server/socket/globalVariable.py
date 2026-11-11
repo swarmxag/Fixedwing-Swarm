@@ -19,33 +19,8 @@ mission_index: int = 0
 speed_match = False
 reached_height = False
 
-vtol_takeoff_height = {
-    # 5:30,
-    # 7:35,
-    # 8:40,
-    # 11:45,
-    # 14:50,
-    # 15:30,
-    # 20:35,
-    # 22:40,
-    # 24:45,
-    # 25:50,
-    1: 30,
-    2: 35,
-    3: 40,
-    4: 45,
-    5: 50,
-    6: 30,
-    7: 35,
-    8: 40,
-    9: 45,
-    10: 50,
-    11: 55,
-    12: 60,
-    13: 65,
-    14: 70,
-    15: 75,
-}
+vtol_takeoff_height = []
+
 alts: dict[int, int] = {
     1: 100,
     2: 110,
@@ -127,6 +102,18 @@ airspeed_failure_ms = 26
 
 radius = 200
 clock_anticlock = 1
+
+
+def generate_heights(start_height, num_drones, difference):
+    global vtol_takeoff_height
+    return vtol_takeoff_height.extend(
+        [start_height + i * difference for i in range(num_drones)]
+    )
+
+
+def get_vtol_takeoff_height():
+    global vtol_takeoff_height
+    return vtol_takeoff_height
 
 
 def changeRadius(rad):

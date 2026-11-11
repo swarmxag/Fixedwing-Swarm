@@ -49,7 +49,9 @@ def normalize_active_uav_order():
         return False
     combined = []
     for idx, sys_id in enumerate(state.pos_array):
-        height = state.different_height[idx] if idx < len(state.different_height) else 300
+        height = (
+            state.different_height[idx] if idx < len(state.different_height) else 300
+        )
         pop_flag = state.pop_flag_arr[idx] if idx < len(state.pop_flag_arr) else 1
         combined.append((int(sys_id), state.vehicles[idx], height, pop_flag))
     combined.sort(key=lambda item: item[0])
@@ -69,7 +71,9 @@ def add_uav_to_swarm(sys_id):
         connection_str = connection_string_for_sysid(sys_id)
         print("[add-link] connection", sys_id, connection_str)
         if link_monitor.reconnecting(sys_id):
-            print("[add-link] UAV", sys_id, "is already being reconnected automatically")
+            print(
+                "[add-link] UAV", sys_id, "is already being reconnected automatically"
+            )
             return False
         # connect() can take 30 s+ (heartbeat wait + parameter download).
         # Holding the topology/task locks through it froze every other UAV's
@@ -85,7 +89,9 @@ def add_uav_to_swarm(sys_id):
                 old.close()  # frees its UDP port for the new link
             except Exception:
                 pass
-        vehicle = connect(connection_str, baud=115200, heartbeat_timeout=30,source_system=253)
+        vehicle = connect(
+            connection_str, baud=115200, heartbeat_timeout=30, source_system=253
+        )
         link_monitor.attach(vehicle)
         # The topology and active task indexes must stay in the same frame.
         # active_goal_tasks_lock is initialized before commands can arrive.
@@ -93,7 +99,9 @@ def add_uav_to_swarm(sys_id):
             if sys_id in state.pos_array:
                 idx = state.pos_array.index(sys_id)
                 state.vehicles[idx] = vehicle
-                state.uav_registry.setdefault(sys_id, {})["vehicle"] = state.vehicles[idx]
+                state.uav_registry.setdefault(sys_id, {})["vehicle"] = state.vehicles[
+                    idx
+                ]
                 state.uav_registry[sys_id]["active"] = True
                 state.uav_registry[sys_id]["index"] = idx
                 state.uav_task_state[sys_id] = "IDLE"
@@ -107,7 +115,9 @@ def add_uav_to_swarm(sys_id):
                 return True
             lat = vehicle.location.global_relative_frame.lat
             lon = vehicle.location.global_relative_frame.lon
-            x, y = locatePosition.geoToCart(state.origin, config.END_DISTANCE, [lat, lon])
+            x, y = locatePosition.geoToCart(
+                state.origin, config.END_DISTANCE, [lat, lon]
+            )
             insert_index = len(state.pos_array)
             # A reconnected UAV is appended so an active mission's compacted
             # indexes are not disturbed. It must nevertheless retain the
@@ -118,12 +128,27 @@ def add_uav_to_swarm(sys_id):
             state.pos_array.append(sys_id)
             state.vehicles.append(vehicle)
             state.s.add_bot(insert_index, (x / 2, y / 2))
-            if restored_height is not None:
-                state.different_height.append(restored_height)
-            elif state.different_height:
-                state.different_height.append(state.different_height[-1])
+            # different_height[i] is UAV i's height, so the new UAV's height
+            # must land at insert_index. The list can be longer than the fleet
+            # (state.py starts it with 15 entries): a plain append put the
+            # height past the end of the fleet while this UAV read a stale
+            # default. Cut the list to the fleet first.
+            del state.different_height[insert_index:]
+            while 0 < len(state.different_height) < insert_index:  # fleet > list
+                state.different_height.append(
+                    state.different_height[-1] + state.different_step
+                )
+            # Same rule as the copter code: the last UAV's height + the step
+            # of the last "different" command (the UAV it left is not restored).
+            if state.different_height:
+                new_height = state.different_height[-1] + state.different_step
             else:
-                state.different_height.append(300)
+                new_height = restored_height if restored_height is not None else 300
+            state.different_height.append(new_height)
+            print(
+                "[add-link] UAV", sys_id, "height", new_height,
+                "(was", restored_height, "before removal)",
+            )
             state.pop_flag_arr.append(1)
             # Empty (idle) per-UAV state for the new slot, same locked step
             topology.apply_addition(insert_index)
@@ -160,7 +185,12 @@ def remove_uav_from_swarm(remove_bot_num):
         with state.swarm_topology_lock, state.active_goal_tasks_lock:
             remove_bot_num = int(remove_bot_num)
             if remove_bot_num not in state.pos_array:
-                print("[remove-link] not found", remove_bot_num, "pos_array", state.pos_array)
+                print(
+                    "[remove-link] not found",
+                    remove_bot_num,
+                    "pos_array",
+                    state.pos_array,
+                )
                 return False
             pop_bot_index = state.pos_array.index(remove_bot_num)
             state.remove_bot_index = pop_bot_index
@@ -199,13 +229,20 @@ def remove_uav_from_swarm(remove_bot_num):
             for vehicle in state.vehicles:
                 lat = vehicle.location.global_relative_frame.lat
                 lon = vehicle.location.global_relative_frame.lon
-                x, y = locatePosition.geoToCart(state.origin, config.END_DISTANCE, [lat, lon])
+                x, y = locatePosition.geoToCart(
+                    state.origin, config.END_DISTANCE, [lat, lon]
+                )
                 state.uav_home_pos.append((x / 2, y / 2))
             state.remove_flag = False
             state.uav_removed = True
             state.pop_bot_index = None
             register_active_uavs()
-            print("[remove-link] remaining pos_array", state.pos_array, "num_bots", state.num_bots)
+            print(
+                "[remove-link] remaining pos_array",
+                state.pos_array,
+                "num_bots",
+                state.num_bots,
+            )
             return True
     except Exception as e:
         print("[remove-link] failed", remove_bot_num, e)
@@ -236,6 +273,16 @@ def handle_concurrent_add_command(command_data):
         return False
 
 
+def _report_topology_failure(action):
+    """Tell the server (via the command lifecycle) that a foreground add/remove
+    did not happen. Reporting only: it changes no UAV state or motion. Without
+    it the command was reported "completed" even when the UAV was not found or
+    could not be connected, and the GCS would show the wrong swarm membership."""
+    from medur_swarm.communication import lifecycle
+
+    lifecycle.fail_current("topology_change_failed:%s" % action)
+
+
 def run_remove_command(data):
     """Foreground 'remove' dispatch-loop handler ("Remove UAV"). Falls
     through unconditionally -- the original set `data = b"index"` and let
@@ -247,7 +294,8 @@ def run_remove_command(data):
     decoded_index = data.decode("utf-8")
     f, remove_bot_num = decoded_index.split(",", 1)
     print("remove_bot_num", remove_bot_num, state.pos_array)
-    remove_uav_from_swarm(remove_bot_num)
+    if not remove_uav_from_swarm(remove_bot_num):
+        _report_topology_failure("remove")
 
 
 def run_add_command(data):
@@ -257,7 +305,8 @@ def run_add_command(data):
         return
     decoded_index = data.decode("utf-8")
     f, sys_id = decoded_index.split(",", 1)
-    add_uav_to_swarm(sys_id)
+    if not add_uav_to_swarm(sys_id):
+        _report_topology_failure("add")
 
 
 def remove_vehicle():
@@ -303,7 +352,9 @@ def remove_vehicle():
             cmd.exec(b)
             if state.master_flag:
                 value = [b.x * 2, b.y * 2]
-                lat, lon = locatePosition.cartToGeo(state.origin, config.END_DISTANCE, value)
+                lat, lon = locatePosition.cartToGeo(
+                    state.origin, config.END_DISTANCE, value
+                )
 
                 if state.same_alt_flag:
                     point1 = LocationGlobalRelative(lat, lon, state.same_height)
@@ -316,7 +367,11 @@ def remove_vehicle():
                     print("vehicle", vehicle, state.num_bots)
                     alt[i] = vehicle.location.global_relative_frame.alt
                     print("alt[vehicle]", alt[i])
-                    if state.different_height[i] - 1.5 <= alt[i] <= state.different_height[i] + 1.5:
+                    if (
+                        state.different_height[i] - 1.5
+                        <= alt[i]
+                        <= state.different_height[i] + 1.5
+                    ):
                         alt_count[i] = 1
                         print(alt_count, "alt_count")
                         if all(count == 1 for count in alt_count):

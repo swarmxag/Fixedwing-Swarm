@@ -64,6 +64,9 @@ export const getDesiredTakeoffHeadingAccuracy = (state) =>
 /**
  * Returns the currently selected display language for the application.
  */
+export const shouldShowHomeLocations = (state) =>
+  state.settings.display.showHomeLocations ?? true;
+
 export const getDisplayLanguage = (state) => state.settings.display.language;
 
 /**

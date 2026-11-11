@@ -10,6 +10,8 @@ with whatever the rest of the swarm is doing.
 
 import csv
 import math
+import os
+import shutil
 import threading
 import time
 import traceback
@@ -23,6 +25,7 @@ from medur_swarm.utils import generate_points, read_specific_line
 from medur_swarm.uav.guidance import (
     _drive_vehicle_towards,
     _uav_loiter_radius_m,
+    advance_bot_on_loiter_circle,
     advance_bot_with_uav_pacing,
     pursuit_target_with_avoidance,
     signed_uav_lead,
@@ -47,6 +50,7 @@ def _reset_mission_state():
     state.removed_uav_grid = []
     state.removed_grid_path_length = []
     state.removed_grid_path_end = []
+    state.removed_area_claimed = []
     state.deferred_removed_segments = []
     state.removed_grid_path_array = [0] * len(state.pos_array)
     state.removed_grid_path_array_start_val = [0] * len(state.pos_array)
@@ -77,6 +81,7 @@ def clear_all_active_tasks():
     lifecycle.note_cancel_all()
     with state.active_goal_tasks_lock:
         state.active_goal_tasks.clear()
+    mission_leftover_areas.clear()  # nobody left to take them over
     # Drop the stored "Automate Goals" layout too, so a later on-board
     # radius change doesn't silently resurrect a stopped loiter formation.
     state.autogoal_params = None
@@ -206,6 +211,8 @@ def assign_mission_tasks(csv_paths_by_index, label):
     index simply overwrites whatever task (of any type) that index had
     before, matching the "new command terminates the old one, never
     resumes it" behavior goal already has."""
+    global _mission_counter
+    _mission_counter += 1
     with state.active_goal_tasks_lock:
         for bot_index, csv_path in csv_paths_by_index.items():
             try:
@@ -221,13 +228,116 @@ def assign_mission_tasks(csv_paths_by_index, label):
                 "csv_path": csv_path,
                 "line_index": 0,
                 "num_lines": num_lines,
+                # Drones of one command share leftover lanes only with each
+                # other (see _keep_lost_mission_lane / _mission_takeover).
+                "mission_id": _mission_counter,
             }
     print(f"[{label}-task] assigned", csv_paths_by_index)
+
+
+_mission_counter = 0
+# Unfinished lanes of background mission-task drones that were removed (lost),
+# each {"mission_id", "csv_path", "start", "end", "claimed"}. Taken over by a
+# drone of the same command that finishes (see _mission_takeover).
+mission_leftover_areas = []
+
+
+def _keep_lost_mission_lane(task):
+    """A background search/split drone is being removed: keep the rest of
+    its lane (or of the area it had taken over) for its mission's other
+    drones. A copy of the file is kept, because a later command rewrites it."""
+    if not task or task.get("type") != "mission":
+        return
+    line_index = int(task.get("line_index", 0))
+    end = int(task.get("num_lines", 0))
+    if line_index >= end or task.get("mission_id") is None:
+        return
+    area = {
+        "mission_id": task["mission_id"],
+        "csv_path": _keep_lane_copy(task["csv_path"]),
+        "start": line_index - 1 if line_index > 1 else line_index,
+        "end": end,
+        "claimed": False,
+    }
+    mission_leftover_areas.append(area)
+    print(
+        f"[takeover] kept the unfinished lane of the removed drone: "
+        f"{os.path.basename(str(task['csv_path']))} rows {area['start']}..{end}"
+    )
+
+
+def _mission_time_to(k, task, point):
+    """How far mission drone k flies before it can be at `point`: the rest of
+    its task's points, then on to `point` (same airspeed -> distance ~ time)."""
+    bot = state.s.swarm[k]
+    line_index = int(task.get("line_index", 0))
+    end = int(task.get("num_lines", 0))
+    rest = _lane_points(task["csv_path"])[line_index:end] if line_index < end else []
+    length, (ex, ey) = _path_left(bot.x, bot.y, rest)
+    return length + math.hypot(point[0] - ex, point[1] - ey)
+
+
+def _mission_takeover(i, b, task):
+    """Mission drone i has finished its task's last point. Give it the
+    unclaimed leftover lane of its own command that it reaches soonest -- if
+    no other drone of that command still flying would get there first.
+    Returns "taken" (task now flies the area), "wait" (an area is pending but
+    another drone is nearer; keep the task alive, so it can still take one
+    later) or "done" (nothing left for it)."""
+    mission_id = task.get("mission_id")
+    pending = [
+        a for a in mission_leftover_areas
+        if not a["claimed"] and a["mission_id"] == mission_id
+    ]
+    if not pending:
+        return "done"
+    others = [
+        (k, t) for k, t in state.active_goal_tasks.items()
+        if k != i and t.get("type") == "mission" and t.get("mission_id") == mission_id
+        and k < len(state.s.swarm)
+    ]
+    best = None
+    for area in pending:
+        points = _lane_points(area["csv_path"])
+        if area["start"] >= len(points):
+            area["claimed"] = True  # nothing readable left in it
+            continue
+        point = points[area["start"]]
+        mine = math.hypot(point[0] - b.x, point[1] - b.y)
+        sooner = min(
+            ((_mission_time_to(k, t, point), k) for k, t in others), default=None
+        )
+        if sooner is not None and sooner[0] < mine:
+            key = (area["csv_path"], area["start"], sooner[1])
+            if key not in _takeover_wait_logged:
+                _takeover_wait_logged.add(key)
+                print(
+                    f"[takeover] {os.path.basename(area['csv_path'])} waits for UAV "
+                    f"{state.pos_array[sooner[1]]} ({sooner[0] * 2:.0f} m to go) -- "
+                    f"nearer than finished UAV {state.pos_array[i]} ({mine * 2:.0f} m)"
+                )
+            continue
+        if best is None or mine < best[0]:
+            best = (mine, area)
+    if best is None:
+        return "wait" if any(not a["claimed"] for a in pending) else "done"
+    mine, area = best
+    area["claimed"] = True
+    task["csv_path"] = area["csv_path"]
+    task["line_index"] = area["start"]
+    task["num_lines"] = area["end"]
+    print(
+        f"[takeover] UAV {state.pos_array[i]} finished -> takes over "
+        f"{os.path.basename(area['csv_path'])} rows {area['start']}..{area['end']} "
+        f"(start point {mine * 2:.0f} m away)"
+    )
+    return "taken"
 
 
 def remove_goal_task_index(removed_index):
     with state.active_goal_tasks_lock:
         lifecycle.note_task_removed(removed_index)
+        _keep_lost_mission_lane(state.active_goal_tasks.get(removed_index))
         if removed_index in state.active_goal_tasks:
             del state.active_goal_tasks[removed_index]
         shifted_tasks = {}
@@ -253,6 +363,19 @@ def _preserve_removed_search_work(m, selected_indexes, all_csv_paths, grid_index
     to the next round (see start_deferred_redistribution_round). A UAV that
     is not flying this mission (idle, or just added) leaves nothing."""
     if m not in selected_indexes:
+        return
+    if takeover_in_progress(m):
+        # It was flying an area it had taken over: the rest of that area goes
+        # straight back on the list, for the next UAV that finishes.
+        segment = state.removed_grid_path_array[m]
+        next_line = state.removed_grid_path_array_start_val[m]
+        state.removed_uav_grid.append(state.removed_grid_filename[m])
+        state.removed_grid_path_length.append(next_line)
+        state.removed_grid_path_end.append(segment[1])
+        print(
+            "[takeover] kept the rest of a taken-over area",
+            (state.removed_grid_filename[m], next_line, segment[1]),
+        )
         return
     if state.removed_grid_path_array_flag:
         segment = (
@@ -312,10 +435,277 @@ def start_deferred_redistribution_round(selected_indexes):
 
 def removed_area_end(x, default_end):
     """Last line (exclusive) of removed area x; the end of the file unless
-    the area is the rest of a segment (see state.removed_grid_path_end)."""
+    the area is the rest of a segment (see state.removed_grid_path_end).
+
+    For a whole-file area that is the line count of THAT area's own file, read
+    from disk -- default_end (the calling UAV's own line count) is only the
+    fallback. Lanes of different UAVs are not always the same length, so using
+    the caller's count could cut a taken-over lane short or read past its end."""
     ends = state.removed_grid_path_end
     end = ends[x] if x < len(ends) else None
-    return int(default_end) if end is None else int(end)
+    if end is not None:
+        return int(end)
+    try:
+        with open(state.removed_uav_grid[x], newline="") as f:
+            return sum(1 for _ in csv.reader(f))
+    except Exception:
+        return int(default_end)
+
+
+# --- Self-healing: first finisher takes over the nearest leftover area -------
+#
+# Leftover areas (state.removed_uav_grid & co.) come from UAVs that were lost
+# or diverted to another task mid-lane. Each area is taken over WHOLE by ONE
+# UAV: the first UAV to finish its own lane takes the area whose start point is
+# nearest to it, the next finisher the next nearest, and so on. A UAV that
+# finishes a taken-over area may take another. UAVs with nothing left hold
+# where they finished. Bookkeeping per UAV i reuses the redistribution arrays:
+#   removed_grid_filename[i]              file of the area it flies
+#   removed_grid_path_array[i]            (start, end) rows of that area
+#   removed_grid_path_array_start_val[i]  row it is flying to now
+
+
+def takeover_in_progress(i):
+    """True while UAV i is flying an area it has taken over."""
+    seg = (
+        state.removed_grid_path_array[i]
+        if 0 <= i < len(state.removed_grid_path_array)
+        else 0
+    )
+    return bool(seg) and state.removed_grid_path_array_start_val[i] < seg[1]
+
+
+def taking_over(i, grid_indexes, line_counts):
+    """UAV i has finished its own lane and flies (or has flown) a taken-over
+    area: read its points from removed_grid_filename[i], not its own lane."""
+    if grid_indexes[i] < int(line_counts[i]):
+        return False
+    seg = (
+        state.removed_grid_path_array[i]
+        if 0 <= i < len(state.removed_grid_path_array)
+        else 0
+    )
+    return bool(seg)
+
+
+def _leftover_area_rows(x, default_end):
+    """(start, end) rows of leftover area x. The start is one row before the
+    point the UAV was heading to, so the takeover flies that whole leg, the
+    same convention as the old allocation."""
+    next_line = int(state.removed_grid_path_length[x])
+    start = next_line - 1 if next_line > 1 else max(next_line, 0)
+    return start, removed_area_end(x, default_end), next_line
+
+
+def unclaimed_leftover_areas(default_end):
+    """Indexes of leftover areas no UAV has taken yet and with work left."""
+    claimed = state.removed_area_claimed
+    claimed.extend([False] * (len(state.removed_uav_grid) - len(claimed)))
+    areas = []
+    for x in range(len(state.removed_uav_grid)):
+        if claimed[x]:
+            continue
+        start, end, next_line = _leftover_area_rows(x, default_end)
+        if next_line < end:
+            areas.append(x)
+        else:
+            claimed[x] = True  # nothing left in it; don't re-read it every tick
+    return areas
+
+
+_lane_rows_cache = {}
+_takeover_wait_logged = set()
+
+
+def _lane_points(path):
+    """All (x, y) points of a lane file, cached until the file changes."""
+    try:
+        stamp = os.path.getmtime(path)
+    except OSError:
+        return []
+    cached = _lane_rows_cache.get(path)
+    if cached and cached[0] == stamp:
+        return cached[1]
+    points = []
+    try:
+        with open(path, newline="") as f:
+            for row in csv.reader(f):
+                points.append((float(row[0]), float(row[1])))
+    except Exception as e:
+        print("[takeover] could not read lane", path, e)
+    _lane_rows_cache[path] = (stamp, points)
+    return points
+
+
+def _path_left(x, y, points):
+    """Length of flying from (x, y) through every point in order; returns
+    (length, last point)."""
+    length = 0.0
+    for px, py in points:
+        length += math.hypot(px - x, py - y)
+        x, y = px, py
+    return length, (x, y)
+
+
+def _time_to_area(k, area_start, grid_indexes, line_counts):
+    """How far UAV k has to fly before it can be at area_start: the rest of
+    its own lane (or of the area it is taking over), then from where that ends
+    to area_start. All UAVs fly at the same airspeed, so distance ~ time."""
+    bot = state.s.swarm[k]
+    if grid_indexes[k] < int(line_counts[k]):
+        rest = _lane_points(state.all_uav_csv_grid_array[k])[int(grid_indexes[k]):]
+    elif takeover_in_progress(k):
+        seg = state.removed_grid_path_array[k]
+        start = state.removed_grid_path_array_start_val[k]
+        rest = _lane_points(state.removed_grid_filename[k])[start:seg[1]]
+    else:
+        rest = []
+    length, (ex, ey) = _path_left(bot.x, bot.y, rest)
+    return length + math.hypot(area_start[0] - ex, area_start[1] - ey)
+
+
+def claim_nearest_leftover_area(
+    i, bot, default_end, active_indexes=None, grid_indexes=None, line_counts=None
+):
+    """UAV i has just finished (its own lane, or a taken-over area). A leftover
+    area goes to the UAV that can be at its start soonest -- counting what each
+    UAV still searching has left to fly, not only the UAVs already free. UAV i
+    takes the nearest area it is that UAV for; an area another UAV will reach
+    sooner waits for that UAV, which takes it when it finishes. Returns True
+    if UAV i got an area."""
+    best = None
+    for x in unclaimed_leftover_areas(default_end):
+        start, end, _ = _leftover_area_rows(x, default_end)
+        try:
+            row = read_specific_line(state.removed_uav_grid[x], start)
+            px, py = float(row[0][0]), float(row[0][1])
+        except Exception as e:
+            print("[takeover] could not read area start", state.removed_uav_grid[x], e)
+            continue
+        distance = math.hypot(px - bot.x, py - bot.y)
+        if active_indexes is not None:
+            others = [
+                (_time_to_area(k, (px, py), grid_indexes, line_counts), k)
+                for k in active_indexes
+                if k != i and k < len(state.s.swarm)
+            ]
+            sooner = min(others) if others else None
+            if sooner is not None and sooner[0] < distance:
+                key = (str(state.removed_uav_grid[x]), start, sooner[1])
+                if key not in _takeover_wait_logged:
+                    _takeover_wait_logged.add(key)
+                    uav_k = state.pos_array[sooner[1]] if sooner[1] < len(state.pos_array) else sooner[1]
+                    uav_i = state.pos_array[i] if i < len(state.pos_array) else i
+                    print(
+                        f"[takeover] {os.path.basename(str(state.removed_uav_grid[x]))} "
+                        f"rows {start}..{end} waits for UAV {uav_k} "
+                        f"({sooner[0] * 2:.0f} m to go) -- nearer than free UAV {uav_i} "
+                        f"({distance * 2:.0f} m)"
+                    )
+                continue
+        if best is None or distance < best[0]:
+            best = (distance, x, start, end)
+    if best is None:
+        return False
+    distance, x, start, end = best
+    state.removed_area_claimed[x] = True
+    state.removed_grid_filename[i] = state.removed_uav_grid[x]
+    state.removed_grid_path_array[i] = (start, end)
+    state.removed_grid_path_array_start_val[i] = start
+    state.checkall_removed_grid_path_array_start_val[i] = 0
+    uav = state.pos_array[i] if i < len(state.pos_array) else i
+    print(
+        f"[takeover] UAV {uav} finished -> takes over the nearest leftover area "
+        f"{os.path.basename(str(state.removed_uav_grid[x]))} rows {start}..{end} "
+        f"(start point {distance * 2:.0f} m away)"
+    )
+    return True
+
+
+def takeover_search_done(active_indexes, grid_indexes, line_counts, default_end):
+    """Every UAV still searching has finished its own lane and any area it took
+    over, and no leftover area is waiting for a UAV."""
+    for x in active_indexes:
+        if grid_indexes[x] < int(line_counts[x]) or takeover_in_progress(x):
+            return False
+    return not unclaimed_leftover_areas(default_end)
+
+
+def _keep_lane_copy(path):
+    """Copy a lane file aside and return the copy's path (or `path` itself if
+    the copy fails). A diverted UAV's own file is overwritten as soon as it is
+    given a new search, but its unfinished lane must stay readable until the
+    other UAVs have flown it."""
+    try:
+        folder = os.path.join(os.path.dirname(path), "removed")
+        os.makedirs(folder, exist_ok=True)
+        stem = os.path.splitext(os.path.basename(path))[0]
+        copy = os.path.join(folder, f"{stem}_diverted_{time.strftime('%Y%m%d_%H%M%S')}.csv")
+        shutil.copy2(path, copy)
+        return copy
+    except Exception as e:
+        print("[mission-topology] could not copy diverted lane", path, e)
+        return path
+
+
+def keep_diverted_search_work(
+    selected_indexes, diverted_indexes, preserved, all_csv_paths, grid_indexes
+):
+    """UAVs of a running search/split that have been given a goal (or another
+    concurrent task) stop flying their lane. Treat that like a removal as far
+    as the lane goes: keep the unfinished part, once, so the UAVs that finish
+    their own lanes take it over (search.py/split.py allocation).
+
+    diverted_indexes: the loop's set of UAVs it no longer drives; updated here.
+    preserved: the loop's set of diverted UAVs whose lane is already kept.
+    Both are remapped by synchronize_mission_topology (pass them as index_sets).
+    Diverted UAVs are also marked finished in the redistribution round, so they
+    never hold it up."""
+    for i in selected_indexes:
+        if i in state.active_goal_tasks:
+            diverted_indexes.add(i)
+    checkall = state.checkall_removed_grid_path_array_start_val
+    for i in selected_indexes:
+        if i not in diverted_indexes:
+            continue
+        if i < len(checkall):
+            checkall[i] = 1
+        if i in preserved:
+            continue
+        preserved.add(i)
+        paths = list(all_csv_paths)
+        if 0 <= i < len(paths) and paths[i]:
+            paths[i] = _keep_lane_copy(paths[i])
+        before = len(state.removed_uav_grid), len(state.deferred_removed_segments)
+        _preserve_removed_search_work(i, selected_indexes, paths, grid_indexes)
+        kept = (len(state.removed_uav_grid), len(state.deferred_removed_segments)) != before
+        print(
+            f"[mission-topology] UAV {state.pos_array[i] if i < len(state.pos_array) else i} "
+            f"diverted from the search -- its unfinished lane "
+            f"{'will be searched by the UAVs that finish' if kept else 'had nothing left'}"
+        )
+
+
+def remap_allocation_to_active(active_indexes):
+    """The redistribution allocation hands out segments to slots 0..n-1 in
+    order, which is only the right bot when the UAVs still searching are
+    exactly bots 0..n-1. With UAVs diverted (or a subset search) they are not,
+    so move each slot's segment to the real bot index it belongs to.
+    A no-op when active_indexes == [0..n-1], i.e. the normal case."""
+    active = list(active_indexes)
+    if active == list(range(len(active))):
+        return
+    for values in (
+        state.removed_grid_path_array,
+        state.removed_grid_path_array_start_val,
+        state.removed_grid_filename,
+    ):
+        source = list(values)
+        moved = [0] * max(len(source), len(state.pos_array))
+        for slot, bot in enumerate(active):
+            if slot < len(source) and bot < len(moved):
+                moved[bot] = source[slot]
+        values[:] = moved
 
 
 def synchronize_mission_topology(
@@ -485,6 +875,203 @@ def _ring_entry_index(i, circle_points, center):
     return nearest
 
 
+# --- Loiter rings: separate radius per UAV circling the same goal -----------
+#
+# Each UAV that starts circling a goal another UAV is also circling (or flying
+# to) gets its own WP_LOITER_RAD: base + slot * GUIDED_CIRCLE_RING_STEP_M, with
+# base = the lowest original radius in that group. The original value (sign
+# kept: ArduPlane reads it as the circle direction) is restored as soon as the
+# UAV is no longer circling. Parameter writes run on a side thread because
+# dronekit waits for the autopilot to confirm them.
+#
+# sys id -> {"vehicle": vehicle, "original": signed WP_LOITER_RAD}
+_ring_originals = {}
+_ring_lock = threading.Lock()
+
+
+def _same_goal(a, b):
+    """Two sim-frame points within GUIDED_CIRCLE_SAME_GOAL_M metres."""
+    return (
+        a is not None
+        and b is not None
+        and 2.0 * math.hypot(a[0] - b[0], a[1] - b[1]) <= config.GUIDED_CIRCLE_SAME_GOAL_M
+    )
+
+
+def _original_loiter_radius(i):
+    """UAV i's own signed WP_LOITER_RAD before any ring was applied, or None."""
+    sys_id = state.pos_array[i]
+    with _ring_lock:
+        if sys_id in _ring_originals:
+            return _ring_originals[sys_id]["original"]
+    try:
+        value = float(state.vehicles[i].parameters["WP_LOITER_RAD"])
+        return value if value != 0 else None
+    except Exception:
+        return None
+
+
+def _write_loiter_radius(vehicle, value, why):
+    def write():
+        try:
+            vehicle.parameters["WP_LOITER_RAD"] = value
+            print(f"[loiter-ring] WP_LOITER_RAD -> {value:.0f} m ({why})")
+        except Exception as e:
+            print(f"[loiter-ring] WP_LOITER_RAD write failed ({why})", e)
+
+    threading.Thread(target=write, daemon=True, name="loiter-ring-param").start()
+
+
+def _commanded_height(i):
+    if state.same_alt_flag:
+        return float(state.same_height)
+    if i < len(state.different_height):
+        return float(state.different_height[i])
+    return None
+
+
+def _ring_candidates(base):
+    """Ring radii to try, in order. Normal mode: GUIDED_CIRCLE_RING_COUNT
+    rings spread over base .. base + GUIDED_CIRCLE_RING_BAND_M, then (only if
+    every one is blocked) rings outside the band every RING_STEP_M. Same
+    altitude mode: base + k * RING_STEP_M, since height can't separate them."""
+    step = config.GUIDED_CIRCLE_RING_STEP_M
+    if state.same_alt_flag:
+        return [base + k * step for k in range(len(state.vehicles) + 1)]
+    count = max(1, int(config.GUIDED_CIRCLE_RING_COUNT))
+    band = config.GUIDED_CIRCLE_RING_BAND_M
+    in_band = [base + band * k / (count - 1) for k in range(count)] if count > 1 else [base]
+    outer = [in_band[-1] + step * (k + 1) for k in range(len(state.vehicles))]
+    return in_band + outer
+
+
+def _pick_ring(i, center, base):
+    """(slot, radius) for UAV i. Preferred ring = UAV i's height rank among
+    every UAV on this goal (circling or still flying to it) mod
+    GUIDED_CIRCLE_RING_COUNT, so with the 10 m height step drones sharing a
+    ring are 3 steps (30 m) apart in height whatever order they arrive in.
+    If that ring already has a UAV within GUIDED_CIRCLE_RING_MIN_VERTICAL_M
+    of this height (the group changed, same altitude, uneven heights), the
+    first unblocked candidate is used instead. Caller holds
+    active_goal_tasks_lock."""
+    my_height = _commanded_height(i)
+    occupants = []  # (ring radius, height) of UAVs circling this goal
+    group = [(my_height if my_height is not None else 0.0, i)]
+    for j, other in state.active_goal_tasks.items():
+        if j == i:
+            continue
+        if other.get("type") == "guided_circle":
+            if not _same_goal(other.get("center"), center):
+                continue
+            ring = other.get("ring")
+            if ring:
+                occupants.append((ring["radius"], _commanded_height(j)))
+        elif not (
+            other.get("type") == "goal"
+            and other.get("goals")
+            and _same_goal(other["goals"][-1], center)
+        ):
+            continue
+        h = _commanded_height(j)
+        group.append((h if h is not None else 0.0, j))
+    rank = sorted(group).index(
+        (my_height if my_height is not None else 0.0, i)
+    )
+    candidates = _ring_candidates(base)
+
+    def blocked(radius):
+        return any(
+            abs(r - radius) < 1.0
+            and (
+                h is None
+                or my_height is None
+                or abs(h - my_height) < config.GUIDED_CIRCLE_RING_MIN_VERTICAL_M
+            )
+            for r, h in occupants
+        )
+
+    if not state.same_alt_flag:
+        preferred = rank % max(1, int(config.GUIDED_CIRCLE_RING_COUNT))
+        if not blocked(candidates[preferred]):
+            return preferred, candidates[preferred]
+    for slot, radius in enumerate(candidates):
+        if not blocked(radius):
+            return slot, radius
+    return len(candidates) - 1, candidates[-1]
+
+
+def _assign_loiter_ring(i, center):
+    """Give UAV i its own ring radius around `center`. Returns the ring dict
+    stored on the circle task, or None when rings are off or not possible.
+    Caller holds active_goal_tasks_lock."""
+    if not config.GUIDED_CIRCLE_RINGS or not state.master_flag:
+        return None
+    if i >= len(state.vehicles):
+        return None
+    own = _original_loiter_radius(i)
+    if own is None:
+        return None
+    base = None
+    group_radii = [abs(own)]
+    for j, other in state.active_goal_tasks.items():
+        if j == i:
+            continue
+        if other.get("type") == "guided_circle":
+            if not _same_goal(other.get("center"), center):
+                continue
+            ring = other.get("ring")
+            if ring:
+                base = ring["base"]  # already circling: keep its base
+        elif other.get("type") == "goal" and other.get("goals"):
+            if not _same_goal(other["goals"][-1], center):
+                continue
+            if j < len(state.vehicles):
+                radius = _original_loiter_radius(j)
+                if radius is not None:
+                    group_radii.append(abs(radius))
+    if base is None:
+        base = min(group_radii)
+    slot, radius = _pick_ring(i, center, base)
+    sys_id = state.pos_array[i]
+    vehicle = state.vehicles[i]
+    with _ring_lock:
+        _ring_originals.setdefault(sys_id, {"vehicle": vehicle, "original": own})
+    signed = math.copysign(radius, own)
+    if abs(signed - own) > 0.5:
+        _write_loiter_radius(vehicle, signed, f"UAV {sys_id} ring slot {slot}")
+    print(
+        f"[loiter-ring] UAV {sys_id} slot {slot}: radius {radius:.0f} m "
+        f"(base {base:.0f}, own {abs(own):.0f})"
+    )
+    return {"slot": slot, "base": base, "radius": radius}
+
+
+def _restore_loiter_rings():
+    """Put back the original WP_LOITER_RAD of every UAV no longer circling.
+    Caller holds active_goal_tasks_lock."""
+    with _ring_lock:
+        if not _ring_originals:
+            return
+        entries = list(_ring_originals.items())
+    for sys_id, entry in entries:
+        still_circling = False
+        for j, task in state.active_goal_tasks.items():
+            if (
+                task.get("type") == "guided_circle"
+                and j < len(state.vehicles)
+                and state.vehicles[j] is entry["vehicle"]
+            ):
+                still_circling = True
+                break
+        if still_circling:
+            continue
+        with _ring_lock:
+            _ring_originals.pop(sys_id, None)
+        _write_loiter_radius(
+            entry["vehicle"], entry["original"], f"UAV {sys_id} restored"
+        )
+
+
 def _start_guided_circle_task(i, task):
     """Transitions a completed goal task into a loitering circle around its
     final goal point. Mirrors the original (dead) foreground guided_circle
@@ -561,8 +1148,11 @@ def _start_guided_circle_task(i, task):
         start_index,
         f"({entry_distance_m:.0f} m away)",
     )
+    ring = _assign_loiter_ring(i, center)
     return {
         "type": "guided_circle",
+        # Own ring around this goal (slot/base/radius), None without rings.
+        "ring": ring,
         "circle_points": circle_points,
         "circle_index": start_index,
         # The ring's centre (= the final goal point, sim frame). This is what
@@ -759,6 +1349,19 @@ def _drive_guided_circle_task(i, b, task, completed):
         except Exception as e:
             print("[guided-circle] ring redraw failed for UAV", state.pos_array[i], e)
 
+    # Bot rides the real UAV's own GUIDED orbit: placed on the WP_LOITER_RAD
+    # circle at the UAV's live angle round the goal (gap 0), moved through
+    # cmd.exec. Only without a GPS fix does it fall back to lapping
+    # circle_points below.
+    # Collision avoidance while circling: the commanded centre is pushed away
+    # from any other UAV inside UAV_COLLISION_AVOID_RADIUS_M (same push search
+    # uses), which moves ArduPlane's whole circle away from it while close.
+    avoid_x, avoid_y = real_uav_avoidance_vector(i)
+    commanded_center = (center[0] + avoid_x, center[1] + avoid_y)
+    if advance_bot_on_loiter_circle(i, b, center):
+        _drive_vehicle_towards(i, b, commanded_center)
+        return
+
     circle_index = task.get("circle_index", 0) % len(circle_points)
     goal_position = circle_points[circle_index]
     # Wide dispersion term (matches the reference implementation's loiter
@@ -786,7 +1389,7 @@ def _drive_guided_circle_task(i, b, task, completed):
     # for transit only: here it sits ahead of a bot lapping the ring, so the
     # aircraft would orbit that point instead of the goal. The bot keeps lapping
     # circle_points above purely for the plot overlay.
-    _drive_vehicle_towards(i, b, center)
+    _drive_vehicle_towards(i, b, commanded_center)
 
 
 def _drive_mission_task(i, b, task, completed):
@@ -794,9 +1397,16 @@ def _drive_mission_task(i, b, task, completed):
     num_lines = task.get("num_lines", 0)
     label = task.get("label", "mission")
     if line_index >= num_lines:
-        completed.append(i)
-        print(f"[{label}-task] completed UAV", state.pos_array[i])
-        return
+        # Self-healing: before stopping, take over a lost drone's lane.
+        outcome = _mission_takeover(i, b, task)
+        if outcome == "wait":
+            return  # hold here; another drone is nearer to the pending lane
+        if outcome == "done":
+            completed.append(i)
+            print(f"[{label}-task] completed UAV", state.pos_array[i])
+            return
+        line_index = task["line_index"]
+        num_lines = task["num_lines"]
     try:
         goal_lat_lon = read_specific_line(task["csv_path"], line_index)
     except Exception as e:
@@ -872,6 +1482,16 @@ def _drive_mission_task(i, b, task, completed):
     # UAV-to-UAV separation -- same guidance goal/search/split all use now,
     # instead of the CSV-line-anchored curve/line look-ahead this used to
     # compute from the bot's own position alone.
+    if is_last_point and already_at_goal and state.master_flag:
+        # The bot sits on its LAST point waiting for the real UAV to fly
+        # through it (uav_reached_waypoint). A point ahead of a parked bot
+        # swings with its jittering heading and the UAV only orbits it, never
+        # arriving -- so send the UAV to the point itself (plus avoidance).
+        avoid_x, avoid_y = real_uav_avoidance_vector(i)
+        _drive_vehicle_towards(
+            i, b, (goal_position[0] + avoid_x, goal_position[1] + avoid_y)
+        )
+        return
     _drive_vehicle_towards(i, b, pursuit_target_with_avoidance(i, b))
 
 
@@ -893,6 +1513,8 @@ def _goal_task_runner():
             # exclusive. A selected-UAV command therefore takes effect at the
             # next tick at the latest, with no stale command after replacement.
             with state.active_goal_tasks_lock:
+                # Before the empty check, so a stop still restores the radius.
+                _restore_loiter_rings()
                 tasks_snapshot = list(state.active_goal_tasks.items())
                 if not tasks_snapshot:
                     continue

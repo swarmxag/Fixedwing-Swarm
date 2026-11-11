@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 from abc import ABCMeta, abstractproperty
 from typing import (
     Any,
@@ -87,6 +89,39 @@ class UAVStatusInfo(TimestampMixin, metaclass=ModelMeta):
             "minimum": 0.0,
             "maximum": 1000000000.0,
         }
+        homeBearing = {
+            "title": "Bearing From Home",
+            "description": "Bearing of a UAV from its autopilot-reported home position",
+            "type": "float",
+            "minimum": 0.0,
+            "maximum": 360.0,
+        }
+        homeDistance = {
+            "title": "Distance From Home",
+            "description": "Distance of a UAV from its autopilot-reported home position",
+            "type": "float",
+            "minimum": 0.0,
+            "maximum": 1000000000.0,
+        }
+        SwarmChainLink = {
+            "title": "Swarm link",
+            "description": "False if the UAV was excluded from the swarm",
+            "type": "boolean",
+        }
+        homeLat = {
+            "title": "Home latitude",
+            "description": "Latitude of the autopilot-reported home position",
+            "type": "float",
+            "minimum": -90.0,
+            "maximum": 90.0,
+        }
+        homeLon = {
+            "title": "Home longitude",
+            "description": "Longitude of the autopilot-reported home position",
+            "type": "float",
+            "minimum": -180.0,
+            "maximum": 180.0,
+        }
         throttle = {
             "title": "Throttle percentage of UAV",
             "description": "Throttle percentage of UAV",
@@ -116,6 +151,11 @@ class UAVStatusInfo(TimestampMixin, metaclass=ModelMeta):
         schema["properties"]["wind_direction"] = wind_direction
         schema["properties"]["bearing"] = bearingFromGCS
         schema["properties"]["distance"] = distanceFromGCS
+        schema["properties"]["homeBearing"] = homeBearing
+        schema["properties"]["homeDistance"] = homeDistance
+        schema["properties"]["SwarmChainLink"] = SwarmChainLink
+        schema["properties"]["homeLat"] = homeLat
+        schema["properties"]["homeLon"] = homeLon
         mappers = {"heading": scaled_by(10), "debug": as_base64}
 
     debug: bytes
@@ -141,6 +181,14 @@ class UAVStatusInfo(TimestampMixin, metaclass=ModelMeta):
     wind_speed: float
     bearing: float
     distance: float
+    SwarmChainLink: bool
+    """False if the UAV was excluded from the swarm (Remove Link)."""
+    homeBearing: float
+    """Bearing from the home position, in degrees (0-360). Absent from the
+    status while the home position of the UAV is not known."""
+    homeDistance: float
+    """Distance from the home position, in meters. Absent from the status while
+    the home position of the UAV is not known."""
 
     def __init__(
         self, id: Optional[str] = None, timestamp: Optional[TimestampLike] = None
@@ -176,6 +224,7 @@ class UAVStatusInfo(TimestampMixin, metaclass=ModelMeta):
         self.wind_speed = 0.0
         self.bearing = 0.0
         self.distance = 0.0
+        self.SwarmChainLink = True
 
     @property
     def position_xyz(self) -> Optional[PositionXYZ]:
@@ -248,6 +297,7 @@ class UAVBase(UAV):
         self._driver = driver
         self._id = id
         self._status = UAVStatusInfo(id=id)
+        self._home: Optional[tuple[float, float]] = None
         _gimbal_ip = {
             "01": "192.168.6.211",
             "02": "192.168.6.212",
@@ -423,8 +473,6 @@ class UAVBase(UAV):
     def distance_bearing(
         self, homeLattitude, homeLongitude, destinationLattitude, destinationLongitude
     ) -> list[float]:
-        import math
-
         R = 6371e3  # Radius of earth in metres
         rlat1 = homeLattitude * (math.pi / 180)
         rlat2 = destinationLattitude * (math.pi / 180)
@@ -446,9 +494,81 @@ class UAVBase(UAV):
             rlat2
         ) * math.cos(rlon2 - rlon1)
         bearing = math.atan2(y, x)  # bearing in radians
-        bearingDegrees = bearing * (180 / math.pi)
+        # atan2 yields -180..180; normalize to a compass bearing in 0..360
+        bearingDegrees = (bearing * (180 / math.pi)) % 360
         out = [distance, bearingDegrees]
         return out
+
+    def set_swarm_link(self, linked: bool) -> bool:
+        """Records whether the UAV is part of the swarm. Called once the swarm
+        has confirmed an add / remove, never on the mere request.
+
+        Returns:
+            whether the state changed
+        """
+        linked = bool(linked)
+        if self._status.SwarmChainLink == linked:
+            return False
+        self._status.SwarmChainLink = linked
+        self._status.update_timestamp()
+        return True
+
+    @property
+    def home(self) -> Optional[tuple[float, float]]:
+        """The (latitude, longitude) of the home position reported by the
+        autopilot, or ``None`` if it is not known.
+        """
+        return self._home
+
+    def set_home(self, lat: float, lon: float) -> bool:
+        """Stores the home position reported by the autopilot and refreshes the
+        distance and bearing from home.
+
+        Invalid positions (non-finite, out of range, or the 0,0 "null island"
+        that autopilots use for "no home") are ignored.
+
+        Returns:
+            whether the home position was accepted
+        """
+        if (
+            lat is None
+            or lon is None
+            or not (math.isfinite(lat) and math.isfinite(lon))
+            or abs(lat) > 90
+            or abs(lon) > 180
+            or (lat == 0 and lon == 0)
+        ):
+            return False
+
+        self._home = (lat, lon)
+        self._status.homeLat = lat
+        self._status.homeLon = lon
+        self._update_home_metrics(self._status.position)
+        self._status.update_timestamp()
+        return True
+
+    def clear_home(self) -> None:
+        """Forgets the home position (e.g., after the autopilot rebooted)."""
+        self._home = None
+        for key in ("homeDistance", "homeBearing", "homeLat", "homeLon"):
+            self._status._json.pop(key, None)
+
+    def _update_home_metrics(self, position: Optional[GPSCoordinate]) -> None:
+        """Updates the distance and bearing from home in the status based on the
+        given position, if both the home and the position are known.
+        """
+        if self._home is None or position is None:
+            return
+
+        lat, lon = position.lat, position.lon
+        if lat is None or lon is None or (lat == 0 and lon == 0):
+            return
+
+        [distance, bearing] = self.distance_bearing(
+            self._home[0], self._home[1], lat, lon
+        )
+        self._status.homeDistance = distance
+        self._status.homeBearing = bearing
 
     def update_status(
         self,
@@ -531,8 +651,7 @@ class UAVBase(UAV):
                 )
                 self._status.bearing = bearing
                 self._status.distance = distance
-                # print(self._status.bearing)
-                # print(self._status.distance)
+            self._update_home_metrics(position)
         if position_xyz is not None:
             if self._status.position_xyz is None:
                 self._status.position_xyz = PositionXYZ()

@@ -41,6 +41,10 @@ import {
   updateFeatureVisibility,
 } from '~/features/map-features/slice';
 import useDropdown from '~/hooks/useDropdown';
+import {
+  isTakeoffMarker,
+  TAKEOFF_MARKER_COLOR,
+} from '~/features/uav-control/takeoff';
 import { getNameOfFeatureType, getIconOfFeatureType } from '~/model/features';
 import { featureIdToGlobalId } from '~/model/identifiers';
 import { fitCoordinatesIntoMapView } from '~/signals';
@@ -180,7 +184,13 @@ const FeatureListEntry = (props) => {
       data-id={id}
       onClick={onSelectFeature}
     >
-      <ListItemIcon style={{ color, minWidth: 0, marginRight: '16px' }}>
+      <ListItemIcon
+        style={{
+          color: isTakeoffMarker(feature) ? TAKEOFF_MARKER_COLOR : color,
+          minWidth: 0,
+          marginRight: '16px',
+        }}
+      >
         <IconOfFeatureType />
       </ListItemIcon>
       {label ? (

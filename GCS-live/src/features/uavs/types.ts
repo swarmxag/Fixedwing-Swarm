@@ -48,6 +48,10 @@ export type StoredUAV = {
   throttle?: number;
   distance_from_GCS?: number;
   bearing_from_GCS?: number;
+  homePosition?: { lat: number; lon: number };
+  SwarmChainLink?: boolean;
+  distance_from_home?: number;
+  bearing_from_home?: number;
 };
 
 export enum UAVDetailsDialogTab {

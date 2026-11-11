@@ -13,7 +13,9 @@ import { type FlyToTargetParameters } from './types';
 type UAVControlSliceState = ReadonlyDeep<{
   flyToTargetDialog: {
     open: boolean;
-    takeoffAlt: number;
+    // Both blank until the operator enters them: takeoff has no default height
+    takeoffAlt: number | null;
+    takeoffAltDiff: number | null;
     initialValues: FlyToTargetParameters;
   };
   missionUpload: {
@@ -26,7 +28,8 @@ type UAVControlSliceState = ReadonlyDeep<{
 const initialState: UAVControlSliceState = {
   flyToTargetDialog: {
     open: false,
-    takeoffAlt: 2.5,
+    takeoffAlt: null,
+    takeoffAltDiff: null,
     initialValues: {
       coords: '',
       mode: 'relative',
@@ -50,6 +53,10 @@ const { actions, reducer } = createSlice({
 
     changeTakeOffAlt(state, action) {
       state.flyToTargetDialog.takeoffAlt = action.payload;
+    },
+
+    changeTakeOffAltDiff(state, action) {
+      state.flyToTargetDialog.takeoffAltDiff = action.payload;
     },
 
     openFlyToTargetDialog(
@@ -80,6 +87,7 @@ export const {
   closeFlyToTargetDialog,
   openFlyToTargetDialog,
   changeTakeOffAlt,
+  changeTakeOffAltDiff,
   updateUavNumberToMission,
   updateMissionNumberToMission,
   updateMissionAltToMission,

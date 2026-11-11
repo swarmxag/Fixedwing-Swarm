@@ -621,5 +621,5 @@ class FenceToYAML:
 
         with open(filename, "w") as f:
             f.write(yaml_text)
-        print(f"✅ YAML updated at: {filename}")
+        print(f" YAML updated at: {filename}")
         return self.origin, yaml_text

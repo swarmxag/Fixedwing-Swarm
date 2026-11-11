@@ -74,10 +74,6 @@ HEARTBEAT_IP = [
     "192.168.0.165",
 ]
 
-# --- Altitude staggering ---------------------------------------------------
-
-HOME_HEIGHT = [50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 170, 180, 190]
-
 # --- Coordinate conversion --------------------------------------------------
 
 END_DISTANCE = 500000
@@ -146,14 +142,19 @@ GROUNDSPEED_PACING = True
 # Groundspeed pacing alone never lets the bot react to WHERE its UAV is, so
 # once the UAV fell behind (a turn, a slow climb, a late handoff) the bot kept
 # going at full speed and the gap only grew (observed: lead -1.3 km). The leash
-# scales the bot's step so it holds UAV_LOOKAHEAD_M ahead of its UAV: it slows
+# scales the bot's step so it holds UAV_BOT_GAP_M ahead of its UAV: it slows
 # for a lagging UAV and pulls ahead of one catching up.
 LEASH_PACING = True
-# Waypoint distance ahead of the BOT, metres; also the gap the leash holds.
-# None -> each UAV's live WP_LOITER_RAD.
+# Gap the leash holds between the bot and its UAV, metres. About 20 m of it is
+# used up by a 1 s telemetry delay, so 75 flies as roughly 55 m.
+UAV_BOT_GAP_M = 75.0
+# Waypoint distance ahead of the BOT, metres. None -> each UAV's live
+# WP_LOITER_RAD + UAV_LOOKAHEAD_RADIUS_MARGIN_M. A target only just outside the
+# loiter circle makes ArduPlane fly alongside it, so keep the margin generous.
 UAV_LOOKAHEAD_M = None
+UAV_LOOKAHEAD_RADIUS_MARGIN_M = 200.0
 # Gap error (m) over which the factor goes from 1.0 to its clamp.
-LEASH_RAMP_M = 300.0
+LEASH_RAMP_M = 60.0
 LEASH_MIN_FACTOR = 0.15  # never 0: a frozen bot freezes the waypoint
 LEASH_MAX_FACTOR = 1.5
 
@@ -192,6 +193,31 @@ GOAL_RECEDE_MARGIN_M = 100.0
 # so a mid-flight radius change is reflected on the plot instead of leaving a
 # stale circle at the old size. Metres.
 CIRCLE_RADIUS_REDRAW_TOLERANCE_M = 5.0
+# Goal loiter: the bot rides the real UAV's orbit on the WP_LOITER_RAD circle
+# (guidance.advance_bot_on_loiter_circle). Per-tick bot travel is capped at
+# this many times the UAV's ground speed, so it glides onto the circle.
+GUIDED_CIRCLE_BOT_CATCHUP = 3.0
+# Ground speed used for that cap when telemetry reports 0, m/s.
+GUIDED_CIRCLE_BOT_FALLBACK_SPEED_MS = 20.0
+# Loiter rings (tasks/runner.py _assign_loiter_ring/_pick_ring): each UAV
+# circling a goal gets its own WP_LOITER_RAD, written back to the original
+# when it stops circling. False -> no parameter writes.
+#
+# Normal mode: RING_COUNT rings spread over (lowest radius in the group) ..
+# + RING_BAND_M; a UAV takes the first ring with nobody on it within
+# RING_MIN_VERTICAL_M of its height. With the 10 m different_height step:
+# rings 600/650/700, drones on one ring 30 m apart in height, 10 drones fit
+# in the band. Only if all are blocked: rings outside it every RING_STEP_M.
+# Same-altitude mode: base + k * RING_STEP_M (height can't separate them).
+# Simulated closest approach, same height, 18/25 m/s: 50 m apart ~47 m,
+# 60 m ~57 m without avoidance (about 90-100 m with it); 10 m apart ~9 m.
+GUIDED_CIRCLE_RINGS = True
+GUIDED_CIRCLE_RING_COUNT = 3
+GUIDED_CIRCLE_RING_BAND_M = 100.0
+GUIDED_CIRCLE_RING_MIN_VERTICAL_M = 25.0
+GUIDED_CIRCLE_RING_STEP_M = 60.0
+# Final goals closer than this (metres) count as the same goal for rings.
+GUIDED_CIRCLE_SAME_GOAL_M = 50.0
 
 # This is only a maximum for original grid waypoints. It is capped by the
 # next leg length, and is never used for dense Bezier interpolation points.
@@ -215,6 +241,17 @@ UAV_CURVE_LOOKAHEAD_M = 0.0
 # control tick, but only while the real UAV is AHEAD of its bot (signed lead
 # > 0); set False for a quiet console.
 BOT_SYNC_DEBUG = True
+
+# CSV log of each listed UAV's distance to its bot and its look-ahead point
+# (read-only, see uav/distance_log.py). DISTANCE_LOG_UAV_IDS are UAV numbers in
+# pos_array; one file per UAV per program start. A UAV not connected writes
+# only the header. False turns it off.
+DISTANCE_LOG_ENABLED = True
+DISTANCE_LOG_UAV_IDS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+DISTANCE_LOG_INTERVAL_S = 0.5
+DISTANCE_LOG_DIR = os.path.join(
+    os.path.expanduser("~"), "Documents", "swarm_env", "distance_logs"
+)
 
 # Show the matplotlib reference plot window. False keeps every plot
 # computation (the figure is still built and updated off-screen) but never

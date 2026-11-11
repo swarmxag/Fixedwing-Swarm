@@ -4,11 +4,13 @@ import React from 'react';
 
 import CircularProgress from '@material-ui/core/CircularProgress';
 import { makeStyles } from '@material-ui/core/styles';
-import { Colors, Status } from '@skybrush/app-theme-material-ui';
+import { Status } from '@skybrush/app-theme-material-ui';
 import SemanticAvatar from '@skybrush/mui-components/lib/SemanticAvatar';
 
 import { BatteryFormatter } from '~/components/battery';
 import BatteryIndicator from '~/components/BatteryIndicator';
+import { Colors } from '~/components/colors';
+import { EXCLUDED_STATUS } from '~/components/semantics';
 import StatusPill from '~/components/StatusPill';
 
 import SecondaryStatusLight from './SecondaryStatusLight';
@@ -18,6 +20,10 @@ import { useAudio, useInterval, useMount } from 'react-use';
 import { showError } from '~/features/snackbar/actions';
 
 const AUDIO_REPEAT_INTERVAL_SEC = 2;
+
+// Purple avatar of a UAV excluded from the swarm. It is an inline style because
+// SemanticAvatar lets any className we pass replace its own status classes.
+const excludedAvatarStyle = { backgroundColor: Colors.excluded, color: '#fff' };
 
 const AlertSound = () => {
   const [audio, state, controls] = useAudio(<audio src={alertSoundResource} />);
@@ -141,8 +147,19 @@ const ComplexAvatar = ({
       >
         {shouldPlayAlert && <AlertSound />}
         <SemanticAvatar
-          status={editing ? Status.NEXT : status}
+          status={
+            editing
+              ? Status.NEXT
+              : status === EXCLUDED_STATUS
+              ? Status.OFF
+              : status
+          }
           {...AvatarProps}
+          style={
+            !editing && status === EXCLUDED_STATUS
+              ? { ...AvatarProps?.style, ...excludedAvatarStyle }
+              : AvatarProps?.style
+          }
         >
           <div className={classes.avatarContent}>
             {label === undefined ? id : label}
@@ -208,6 +225,7 @@ ComplexAvatar.propTypes = {
     'rth',
     'error',
     'critical',
+    EXCLUDED_STATUS,
   ]),
   text: PropTypes.string,
   textSemantics: PropTypes.oneOf([
@@ -218,6 +236,7 @@ ComplexAvatar.propTypes = {
     'rth',
     'error',
     'critical',
+    EXCLUDED_STATUS,
   ]),
 };
 

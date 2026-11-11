@@ -107,6 +107,20 @@ const DisplayTabPresentation = ({ t, ...props }) => (
       </FormGroup>
 
       <FormGroup>
+        <Header>{t('settings.display.homeLocations')}</Header>
+        <FormControlLabel
+          label={t('settings.display.showHomeLocations')}
+          control={
+            <Checkbox
+              checked={props.showHomeLocations !== false}
+              name='showHomeLocations'
+              onChange={props.onCheckboxToggled}
+            />
+          }
+        />
+      </FormGroup>
+
+      <FormGroup>
         <Header>{t('settings.display.flatEarthCoordinateSystem')}</Header>
         <CoordinateSystemFields
           origin={props.origin}
@@ -187,6 +201,7 @@ DisplayTabPresentation.propTypes = {
   optimizeUIForTouch: PropTypes.bool,
   orientation: PropTypes.number,
   hideInactiveSegmentsOnDarkLCD: PropTypes.bool,
+  showHomeLocations: PropTypes.bool,
   showMouseCoordinates: PropTypes.bool,
   showScaleLine: PropTypes.bool,
   t: PropTypes.func,

@@ -17,34 +17,20 @@ from medur_swarm.communication.dispatch import apply_pending_topology_command
 from medur_swarm.uav import topology
 
 
-def _drive_home_leg(i, b, goal, height=None):
+def _drive_home_leg(i, b, goal):
     """Pace the bot toward `goal` (same field composition as
     goal/search/split) and send the real UAV a pursuit point corrected for
-    other real UAVs' separation -- but keep the home-specific fixed
-    per-slot altitude (config.HOME_HEIGHT), not the same_alt_flag/
-    different_height altitude every other command uses, since that's the
-    altitude home has always returned at. `height` is that slot's altitude
-    as taken when the command started (see _home_heights)."""
+    other real UAVs' separation, at the commanded altitude every other
+    command flies (same_alt_flag / different_height)."""
     advance_bot_with_uav_pacing(i, b, goal, label="home")
     if state.master_flag and i < len(state.vehicles):
         target = pursuit_target_with_avoidance(i, b)
         position = target if target is not None else (b.x, b.y)
         current_position = (position[0] * 2, position[1] * 2)
         lat, lon = locatePosition.cartToGeo(state.origin, config.END_DISTANCE, current_position)
-        alt = config.HOME_HEIGHT[i] if height is None else height
+        alt = state.same_height if state.same_alt_flag else state.different_height[i]
         point1 = LocationGlobalRelative(lat, lon, alt)
         state.vehicles[i].simple_goto(point1)
-
-
-def _home_heights():
-    """Each UAV's HOME_HEIGHT slot by sys_id, taken when home starts, so a UAV
-    keeps its return altitude when one ahead of it is removed (its slot
-    index then shifts)."""
-    return {
-        int(sys_id): config.HOME_HEIGHT[k]
-        for k, sys_id in enumerate(state.pos_array)
-        if k < len(config.HOME_HEIGHT)
-    }
 
 
 def run_home_command(data):
@@ -78,7 +64,6 @@ def run_home_command(data):
     state.index = "data"
     # UAVs this return started with (by sys_id): a UAV added meanwhile stays idle
     member_ids = topology.members()
-    home_heights = _home_heights()
     # bot_array_home is indexed by swarm position: keep it on the same
     # UAVs while UAVs are added/removed.
     with topology.tracking((bot_array_home, 0)):
@@ -116,9 +101,7 @@ def run_home_command(data):
                     state.home_flag = False
                     break
 
-                _drive_home_leg(
-                    i, b, goal, home_heights.get(int(state.pos_array[i]))
-                )
+                _drive_home_leg(i, b, goal)
 
             if state.index == b"stop":
                 state.home_flag1 = True
@@ -143,7 +126,6 @@ def run_home_return_final_leg(data):
     all_bot_reach_flag_home = False
     state.index = "data"
     member_ids = topology.members()
-    home_heights = _home_heights()
     # Same for the final leg; an added UAV counts as arrived (it is idle).
     with topology.tracking((bot_array_home, 1)):
         while 1:
@@ -176,9 +158,7 @@ def run_home_return_final_leg(data):
                 if all_bot_reach_flag_home == True:
                     break
 
-                _drive_home_leg(
-                    i, b, goal, home_heights.get(int(state.pos_array[i]))
-                )
+                _drive_home_leg(i, b, goal)
 
             if state.index == b"stop":
                 state.home_flag1 = False

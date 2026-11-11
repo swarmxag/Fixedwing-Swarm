@@ -60,6 +60,9 @@ uav_home_pos = []
 
 same_height = 100
 same_alt_flag = False
+# Step of the last "different" command. A re-added UAV gets the last UAV's
+# height + this step (management.add_uav_to_swarm; same rule as the copter code).
+different_step = 10
 different_height = [
     200,
     210,
@@ -153,6 +156,10 @@ removed_grid_path_length = []
 # redistribution). A UAV removed while flying a redistributed segment leaves
 # only the rest of that segment, which ends before the end of the file.
 removed_grid_path_end = []
+# Parallel to removed_uav_grid: True once a UAV that finished its own lane has
+# taken that area over (see runner.claim_nearest_leftover_area). Shorter than
+# removed_uav_grid means "not claimed" for the missing entries.
+removed_area_claimed = []
 # Segments left by UAVs removed during a redistribution round, each
 # (csv file, next line, end line); redistributed once that round is done.
 deferred_removed_segments = []

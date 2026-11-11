@@ -155,6 +155,7 @@
       "enableExperimentalFeatures": "Enable experimental features (advanced)",
       "flatEarthCoordinateSystem": "Flat Earth coordinate system",
       "hideInactiveSegmentsOnDarkLCD": "Enhance contrast on dark mode LCD clocks",
+      "homeLocations": "Home locations on map",
       "language": "Language",
       "mapOrigin": "Map origin",
       "mapWidgets": "Map widgets",
@@ -162,6 +163,7 @@
       "operationModes": "Operation modes",
       "optimizeForSingleUAV": "Optimize the interface for single UAV operation",
       "optimizeUIForTouch": "Optimize the interface for touchscreen devices",
+      "showHomeLocations": "Show home location of all UAVs",
       "showMouseCoordinates": "Show mouse coordinates",
       "showScaleLine": "Show scale line"
     },

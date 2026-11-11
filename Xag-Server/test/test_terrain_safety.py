@@ -3,8 +3,9 @@ and its wiring into the terrain extension (flockwave.server.ext.terrain).
 
 Three stages per UAV:
   1. no Takeoff command yet        -> safety altitude 50 m   (initial_50m)
-  2. Takeoff commanded, climbing   -> the commanded `alt`    (takeoff_altitude)
-  3. AHL reached the commanded alt -> the actual AHL         (telemetry_agl)
+  2. Calculate pressed, on the ground -> the entered `alt`   (takeoff_altitude)
+  3. Seen airborne, or (without a heartbeat) AHL reached the entered alt
+                                   -> the actual AHL         (telemetry_agl)
 """
 
 import inspect
@@ -199,13 +200,20 @@ def test_during_climb_safety_altitude_stays_at_the_commanded_altitude():
         assert p["safetyThresholdAMSL"] == 408.0
 
 
-def test_climb_is_not_decided_by_heartbeat_or_ground_state():
+def test_on_the_ground_the_entered_altitude_stays_whatever_the_heartbeat_says():
     t = make_tracker()
     t.command_takeoff(80, ["1"])
-    # armed/airborne flags only matter for landing and for un-commanded flight
-    assert t.update_uav("1", 20.0, armed=True, airborne=True) is None
-    assert t.update_uav("1", 20.0, armed=False, airborne=False) is None
+    assert t.update_uav("1", 0.0, armed=True, airborne=False) is None
+    assert t.update_uav("1", 0.0, armed=False, airborne=False) is None
     assert t.uav_payload("1")["safetyAltitude"] == 80.0
+
+
+def test_airborne_uav_follows_live_altitude_during_the_climb():
+    t = make_tracker()
+    t.command_takeoff(80, ["1"])
+    p = t.update_uav("1", 20.0, armed=True, airborne=True)
+    assert p["safetyAltitude"] == 20.0
+    assert p["altitudeSource"] == "telemetry_agl"
 
 
 # --- Test 6: reaching the takeoff altitude -------------------------------------------
@@ -968,3 +976,180 @@ def test_select_safety_altitude_follows_the_flight_stage():
     assert S(FlightPhase.CLIMBING, 300.0, 120.0) == (300.0, "takeoff_altitude")  # the calculated altitude while climbing
     assert S(FlightPhase.FLYING, 300.0, 200.0) == (200.0, "telemetry_agl")  # flying: the real height
     assert S(FlightPhase.FLYING, 300.0, None) == (300.0, "takeoff_altitude")  # no usable height yet
+
+
+# --- The Calculate altitude is only a preview on the ground --------------------------
+
+HERE = (22.5, 76.5)
+ELSEWHERE = (22.55, 76.5)  # about 5.5 km north of HERE
+
+
+def make_homes_tracker(terrain=lambda lat, lon: 300.0) -> TerrainSafetyTracker:
+    t = TerrainSafetyTracker()
+    t.set_home_terrain_lookup(terrain)
+    assert t.set_origin("fp-A", 400.0, (22.0, 76.0), MARGIN)
+    return t
+
+
+def test_threshold_follows_real_altitude_when_it_levels_below_the_entered_one():
+    t = make_homes_tracker()
+    t.update_uav("1", 0.0, armed=False, airborne=False, position=HERE)
+    t.command_takeoff(500, ["1"], {"1": 0.0}, {"1": HERE}, {"1": False})
+    for ahl in (50.0, 150.0, 300.0):
+        t.update_uav("1", ahl, armed=True, airborne=True, position=HERE)
+    p = t.uav_payload("1")
+    assert p["safetyAltitude"] == 300.0
+    assert p["safetyThresholdAMSL"] == 300.0 + 300.0 - MARGIN
+
+
+def test_lowest_uav_of_a_height_ladder_sets_the_effective_threshold():
+    t = make_homes_tracker()
+    ids = ["1", "2", "3"]
+    for uav_id in ids:
+        t.update_uav(uav_id, 0.0, armed=False, airborne=False, position=HERE)
+    t.command_takeoff(100, ids, {}, {i: HERE for i in ids}, {i: False for i in ids})
+    for uav_id, ahl in zip(ids, (60.0, 80.0, 100.0)):
+        t.update_uav(uav_id, ahl, armed=True, airborne=True, position=HERE)
+    assert t.effective_payload()["safetyThresholdAMSL"] == 300.0 + 60.0 - MARGIN
+
+
+def test_uav_levelling_just_below_the_entered_altitude_still_follows_a_descent():
+    t = make_homes_tracker()
+    t.update_uav("1", 0.0, armed=False, airborne=False, position=HERE)
+    t.command_takeoff(100, ["1"], {}, {"1": HERE}, {"1": False})
+    for ahl in (99.6, 70.0, 50.0):
+        t.update_uav("1", ahl, armed=True, airborne=True, position=HERE)
+    assert t.uav_payload("1")["safetyAltitude"] == 50.0
+
+
+@pytest.mark.parametrize("entered", [100.0, 500.0])
+def test_calculate_has_no_effect_on_a_flying_uav(entered):
+    t = make_homes_tracker()
+    t.update_uav("1", 0.0, armed=False, airborne=False, position=HERE)
+    t.update_uav("1", 300.0, armed=True, airborne=True, position=HERE)
+    t.command_takeoff(entered, ["1"], {"1": 300.0}, {"1": HERE}, {"1": True})
+    assert t.uav_payload("1")["safetyAltitude"] == 300.0
+    assert t.commanded_takeoff_altitude is None
+    t.update_uav("1", 300.0, armed=True, airborne=True, position=HERE)
+    assert t.uav_payload("1")["safetyAltitude"] == 300.0
+
+
+def test_calculate_with_a_mixed_fleet_only_changes_the_uav_on_the_ground():
+    t = make_homes_tracker()
+    t.update_uav("1", 0.0, armed=False, airborne=False, position=HERE)
+    t.update_uav("2", 0.0, armed=False, airborne=False, position=HERE)
+    t.update_uav("1", 300.0, armed=True, airborne=True, position=HERE)
+    t.command_takeoff(
+        200, ["1", "2"], {}, {"1": HERE, "2": HERE}, {"1": True, "2": False}
+    )
+    assert t.uav_payload("1")["safetyAltitude"] == 300.0
+    assert t.uav_payload("2")["safetyAltitude"] == 200.0
+
+
+# --- Home ----------------------------------------------------------------------------
+
+
+def test_uav_moved_after_calculate_gets_its_home_where_it_really_takes_off():
+    t = make_homes_tracker()
+    t.update_uav("1", 0.0, armed=False, airborne=False, position=HERE)
+    t.command_takeoff(100, ["1"], {}, {"1": HERE}, {"1": False})
+    t.update_uav("1", 0.0, armed=False, airborne=False, position=ELSEWHERE)
+    assert t.saved_homes()["1"][0] == HERE  # only a takeoff moves the home
+    t.update_uav("1", 20.0, armed=True, airborne=True, position=ELSEWHERE)
+    assert t.saved_homes()["1"][0] == ELSEWHERE
+
+
+def test_calculate_again_on_the_ground_re_establishes_the_home():
+    t = make_homes_tracker()
+    t.command_takeoff(100, ["1"], {}, {"1": HERE}, {"1": False})
+    t.command_takeoff(100, ["1"], {}, {"1": ELSEWHERE}, {"1": False})
+    assert t.saved_homes()["1"][0] == ELSEWHERE
+
+
+def test_calculate_without_a_heartbeat_keeps_the_home_of_a_commanded_uav():
+    t = make_homes_tracker()
+    t.command_takeoff(100, ["1"], {}, {"1": HERE})
+    t.command_takeoff(100, ["1"], {}, {"1": ELSEWHERE})
+    assert t.saved_homes()["1"][0] == HERE
+
+
+def test_server_restart_mid_flight_uses_the_autopilot_home():
+    t = make_homes_tracker()
+    p = t.update_uav(
+        "1", 300.0, armed=True, airborne=True, position=ELSEWHERE, autopilot_home=HERE
+    )
+    assert p["referenceSource"] == "uav_home"
+    assert p["referenceTerrainElevation"] == 300.0
+    assert p["safetyThresholdAMSL"] == 300.0 + 300.0 - MARGIN
+    assert t.saved_homes()["1"][0] == HERE
+
+
+def test_server_restart_mid_flight_without_autopilot_home_keeps_the_fallback():
+    t = make_homes_tracker()
+    p = t.update_uav("1", 300.0, armed=True, airborne=True, position=ELSEWHERE)
+    assert p["referenceSource"] == "origin_corner"
+    assert "1" not in t.saved_homes()
+
+
+def test_position_in_the_air_never_becomes_the_home():
+    t = make_homes_tracker()
+    t.command_takeoff(100, ["1"], {"1": 300.0}, {"1": ELSEWHERE}, {"1": True})
+    assert "1" not in t.saved_homes()
+    t.update_uav("1", 300.0, armed=True, airborne=True, position=ELSEWHERE)
+    assert "1" not in t.saved_homes()
+    assert t.uav_payload("1")["safetyAltitude"] == 300.0
+
+
+def test_home_from_before_a_re_arm_elsewhere_is_replaced_by_the_new_answer():
+    t = make_homes_tracker()
+    t.update_uav(
+        "1", 0.0, armed=True, airborne=False, position=ELSEWHERE, autopilot_home=HERE
+    )
+    assert t.saved_homes()["1"][0] == HERE  # the old one stays until the answer
+    p = t.update_uav(
+        "1",
+        0.0,
+        armed=True,
+        airborne=False,
+        position=ELSEWHERE,
+        autopilot_home=ELSEWHERE,
+    )
+    assert p is not None
+    assert t.saved_homes()["1"][0] == ELSEWHERE
+
+
+def test_autopilot_home_is_not_used_while_disarmed():
+    t = make_homes_tracker()
+    t.update_uav(
+        "1", 0.0, armed=False, airborne=False, position=HERE, autopilot_home=ELSEWHERE
+    )
+    assert t.saved_homes()["1"][0] == HERE
+
+
+def test_autopilot_home_takes_precedence_at_takeoff():
+    t = make_homes_tracker()
+    t.update_uav("1", 0.0, armed=False, airborne=False, position=ELSEWHERE)
+    t.update_uav(
+        "1", 20.0, armed=True, airborne=True, position=ELSEWHERE, autopilot_home=HERE
+    )
+    assert t.saved_homes()["1"][0] == HERE
+
+
+def test_unchanged_autopilot_home_sends_no_new_payload():
+    t = make_homes_tracker()
+    t.update_uav(
+        "1", 300.0, armed=True, airborne=True, position=HERE, autopilot_home=HERE
+    )
+    assert (
+        t.update_uav(
+            "1", 301.0, armed=True, airborne=True, position=HERE, autopilot_home=HERE
+        )
+        is None
+    )
+
+
+def test_read_uav_home():
+    assert ts.read_uav_home(SimpleNamespace(home=HERE)) == HERE
+    assert ts.read_uav_home(SimpleNamespace(home=None)) is None
+    assert ts.read_uav_home(SimpleNamespace(home=(0.0, 0.0))) is None
+    assert ts.read_uav_home(SimpleNamespace()) is None

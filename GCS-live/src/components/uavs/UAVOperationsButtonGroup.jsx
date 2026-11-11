@@ -34,7 +34,11 @@ import {
   openUAVDetailsDialog,
   setMissionFromServer,
 } from '~/features/uavs/details';
-import { createUAVOperationThunks, getTakeOff } from '~/utils/messaging';
+import {
+  createUAVOperationThunks,
+  getTakeOff,
+  getTakeOffDiff,
+} from '~/utils/messaging';
 import {
   getLandingMissionId,
   getPreferredCommunicationChannelIndex,
@@ -44,7 +48,10 @@ import { updateAutoPanSettings, stopAutoPan } from '~/features/map/autopan';
 import { getFeatureById } from '~/features/map-features/selectors';
 import { showNotification } from '~/features/snackbar/slice';
 import { MessageSemantics } from '~/features/snackbar/types';
-import { changeTakeOffAlt } from '~/features/uav-control/slice';
+import {
+  changeTakeOffAlt,
+  changeTakeOffAltDiff,
+} from '~/features/uav-control/slice';
 import {
   createNewSavedLocation,
   editSavedLocation,
@@ -72,8 +79,10 @@ const UAVOperationsButtonGroup = ({
   autopan,
   landingFeature,
   changeAlt,
+  changeAltDiff,
   startTimer,
   takeoffAlts,
+  takeoffAltDiff,
 }) => {
   const isSelectionEmpty = isEmpty(selectedUAVIds) && !broadcast;
   const isSelectionSingle = selectedUAVIds.length === 1 && !broadcast;
@@ -182,10 +191,25 @@ const UAVOperationsButtonGroup = ({
           name='takeoff-alt'
           type='number'
           inputMode='numeric'
-          value={takeoffAlts}
+          placeholder='Takeoff'
+          value={Number.isFinite(takeoffAlts) ? takeoffAlts : ''}
           onChange={({ target: { value } }) => changeAlt(parseInt(value))}
         />
       </FormControl>
+      <Tooltip content='Height difference between UAVs at the first guided point: takeoff height + UAV position x difference'>
+        <FormControl variant='standard' style={{ marginLeft: 8, width: 64 }}>
+          <Input
+            name='takeoff-alt-diff'
+            type='number'
+            inputMode='numeric'
+            placeholder='Diff'
+            value={Number.isFinite(takeoffAltDiff) ? takeoffAltDiff : ''}
+            onChange={({ target: { value } }) =>
+              changeAltDiff(parseFloat(value))
+            }
+          />
+        </FormControl>
+      </Tooltip>
       <Tooltip content='Calculate terrain for the takeoff altitude (all UAVs)'>
         <IconButton
           disabled={!isTakeoffAltValid}
@@ -380,7 +404,9 @@ UAVOperationsButtonGroup.propTypes = {
   t: PropTypes.func,
   landingFeature: PropTypes.func,
   changeAlt: PropTypes.func,
+  changeAltDiff: PropTypes.func,
   takeoffAlts: PropTypes.number,
+  takeoffAltDiff: PropTypes.number,
   startTimer: PropTypes.func,
 };
 
@@ -395,6 +421,7 @@ export default connect(
       return landingFeature?.points;
     },
     takeoffAlts: getTakeOff(state),
+    takeoffAltDiff: getTakeOffDiff(state),
   }),
   // mapDispatchToProps
   (dispatch) => ({
@@ -408,6 +435,9 @@ export default connect(
     ),
     changeAlt(alt) {
       dispatch(changeTakeOffAlt(alt));
+    },
+    changeAltDiff(diff) {
+      dispatch(changeTakeOffAltDiff(diff));
     },
     startTimer: () => dispatch(setTimerRunning(true)),
     dispatch,

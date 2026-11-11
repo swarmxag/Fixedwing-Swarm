@@ -16,6 +16,7 @@ import store from '~/store';
 import makeLogger from './logging';
 import {getSelectedFeatureIds, getFeatureById} from '~/features/map-features/selectors';
 import {getSpeed} from "~/features/swarm/selectors";
+import { getTakeoffProblem, TAKEOFF_MARKER_ID } from '~/features/uav-control/takeoff';
 
 const logger = makeLogger('messaging');
 
@@ -140,6 +141,24 @@ const performMassOperation =
     // an option that intructs the server to do a broadcast to all UAVs.
 
     try {
+      if (type == 'X-UAV-TAKEOFF') {
+        const state = store.getState();
+        const problem = getTakeoffProblem(
+          getFeatureById(state, TAKEOFF_MARKER_ID),
+          getTakeOff(state),
+          getTakeOffDiff(state)
+        );
+        if (problem) {
+          store.dispatch(
+            showNotification({
+              message: problem,
+              semantics: MessageSemantics.ERROR,
+            })
+          );
+          return;
+        }
+      }
+
       const finalArgs = mapper ? mapper(args) : args;
       const isBroadcast = Boolean(finalArgs?.transport?.broadcast);
       const needsConfirmation =
@@ -164,7 +183,7 @@ const performMassOperation =
       if (type == 'X-UAV-TAKEOFF') {
         // const selectedFeatureIds = getSelectedFeatureIds(store.getState())
         // const featureId = selectedFeatureIds[0]
-        const data = getFeatureById(store.getState(),'marker');
+        const data = getFeatureById(store.getState(), TAKEOFF_MARKER_ID);
         msg = {
           type,
           // Number(): a persisted marker can hold its points as strings, and
@@ -172,6 +191,7 @@ const performMassOperation =
           // on a str rather than coercing.
           coords: [Number(data.points[0][1]), Number(data.points[0][0])],
           alt:getTakeOff(store.getState()),
+          alt_diff: getTakeOffDiff(store.getState()),
           speed: getSpeed(store.getState()),
           ids: uavs,
           ...finalArgs,
@@ -446,5 +466,8 @@ export function createUAVOperationThunks({
 
 export const getTakeOff = (state) =>
   state.uavControl.flyToTargetDialog.takeoffAlt;
+
+export const getTakeOffDiff = (state) =>
+  state.uavControl.flyToTargetDialog.takeoffAltDiff;
 
 export const getMissionState = (state) => state.uavControl.missionUpload;
