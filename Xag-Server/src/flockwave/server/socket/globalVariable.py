@@ -19,7 +19,8 @@ mission_index: int = 0
 speed_match = False
 reached_height = False
 
-vtol_takeoff_height = []
+# UAV id (int) -> takeoff / first guided-point height of the LAST takeoff.
+vtol_takeoff_height = {}
 
 alts: dict[int, int] = {
     1: 100,
@@ -104,11 +105,18 @@ radius = 200
 clock_anticlock = 1
 
 
-def generate_heights(start_height, num_drones, difference):
+def generate_heights(start_height, uav_ids, difference):
+    """Height of every UAV of THIS takeoff, keyed by UAV id: the selected UAVs
+    sorted by id get start_height, start_height + difference, ... Replaces the
+    previous takeoff's table (it used to be appended to a list read by
+    `id - 1`: a second takeoff got the first one's heights, and a selection
+    other than UAVs 1..N read past the end of the list)."""
     global vtol_takeoff_height
-    return vtol_takeoff_height.extend(
-        [start_height + i * difference for i in range(num_drones)]
-    )
+    ordered = sorted(int(uav_id) for uav_id in uav_ids)
+    vtol_takeoff_height = {
+        uav_id: start_height + i * difference for i, uav_id in enumerate(ordered)
+    }
+    return vtol_takeoff_height
 
 
 def get_vtol_takeoff_height():

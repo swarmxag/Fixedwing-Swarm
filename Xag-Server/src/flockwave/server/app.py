@@ -1844,41 +1844,44 @@ class SkybrushServer(DaemonApp):
         `alt` is only the height that counts as airborne."""
         from .socket.globalVariable import get_vtol_takeoff_height
 
-        diff_alts = get_vtol_takeoff_height()
+        # {UAV id: height} of THIS takeoff. Kept here: a later takeoff replaces
+        # the table, not this one.
+        heights = get_vtol_takeoff_height()
+        # ids are sorted by id. Wait for the UAV that climbs highest.
+        top_id = max(ids, key=lambda u: heights.get(int(u), float("-inf")))
+        top_height = heights.get(int(top_id))
 
-        uav = self.find_uav_by_id(ids[-1])
-        if uav:
+        uav = self.find_uav_by_id(top_id)
+        if uav and top_height is not None:
             while True:
                 ahl = uav.status.position.ahl
-                if ahl > diff_alts[-1] - 1:
+                if ahl is not None and ahl > top_height - 1:
                     for i, id in enumerate(ids):
-                        from .socket.globalVariable import drone
-
                         uav = self.find_uav_by_id(id)
-                        # Skip a UAV whose slot / waypoint is missing
+                        # Skip a UAV whose height / waypoint is missing
                         # instead of raising: one unknown id must not abort the
                         # climb of every OTHER UAV in this batch.
                         if uav is None:
                             print(f"[check_height] skipping unknown UAV id {id!r}")
                             continue
                         key = int(uav.id)
-                        if key not in drone:
-                            print(
-                                f"[check_height] skipping UAV {key}: no entry in drone"
-                            )
+                        if key not in heights:
+                            print(f"[check_height] skipping UAV {key}: no takeoff height")
                             continue
-                        cur = drone[key] - 1
-                        if not (0 <= cur < len(res)):
+                        # i-th selected UAV -> i-th generated point (there is one
+                        # point per selected UAV), not a fixed slot by id: with a
+                        # selection other than UAVs 1..N the slot fell outside
+                        # the generated points and the UAV was skipped.
+                        if not (0 <= i < len(res)):
                             print(
-                                f"[check_height] skipping UAV {key}: slot {cur} "
+                                f"[check_height] skipping UAV {key}: position {i} "
                                 f"outside the {len(res)} generated waypoints"
                             )
                             continue
-                        print(cur)
                         coords = GPSCoordinate(
-                            lat=res[cur][0],
-                            lon=res[cur][1],
-                            ahl=diff_alts[i],
+                            lat=res[i][0],
+                            lon=res[i][1],
+                            ahl=heights[key],
                         )
                         await uav.driver._send_fly_to_target_signal_single(uav, coords)
                     await sleep(5)
@@ -1959,7 +1962,7 @@ class SkybrushServer(DaemonApp):
             update_Takeoff_Alt(alt)
             from .socket.globalVariable import generate_heights
 
-            generate_heights(alt, len(uav_ids), alt_diff)
+            generate_heights(alt, uav_ids, alt_diff)
 
             # Terrain safety: Takeoff only flies. The safety altitude comes from
             # the GCS "Calculate" button (X-TERRAIN-CALC-REQ, ext/terrain.py)

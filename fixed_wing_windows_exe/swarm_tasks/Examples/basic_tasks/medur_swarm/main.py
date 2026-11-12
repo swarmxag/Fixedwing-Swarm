@@ -62,22 +62,23 @@ def _load_origin():
 
 
 def _bring_up_master():
-    """Connect every vehicle, wait for all of them to be armed and above
-    10 m, then take the first GPS fix. Mirrors the original script's
-    top-level `if master_flag:` block exactly."""
+    """Connect every vehicle, wait until each one reports a GPS position, then
+    take the first GPS fix.
+
+    It used to wait until EVERY connected UAV was armed and above 10 m. With
+    only some UAVs taken off, the command loop then never started: every
+    command (height, goal, ...) was received and queued but never run. A UAV
+    still on the ground is not flown by commands that do not select it."""
     if not state.master_flag:
         return
     uav_connection.vehicle_connection()
     uav_management.register_active_uavs()
     while True:
-        all_armed = [False] * len(
-            state.vehicles
-        )  # Assume all vehicles are armed initially
-        for i, vehicle in enumerate(state.vehicles):
-            alt = vehicle.location.global_relative_frame.alt
-            if vehicle.armed and alt is not None and alt > 10:
-                all_armed[i] = True
-        if all(all_armed):
+        have_position = []
+        for vehicle in state.vehicles:
+            location = vehicle.location.global_relative_frame
+            have_position.append(location.lat is not None and location.lon is not None)
+        if all(have_position):
             try:
                 uav_connection.fetch_location()
                 break
@@ -158,7 +159,10 @@ def _dispatch_one(data):
         return True
 
     formation.run_guided_circle_command(data)
-    formation.run_same_altitude_command(data)
+    # Same as before: nothing after 'same' runs for that command (the old
+    # handler always ended in an exception that stopped the chain here).
+    if formation.run_same_altitude_command(data):
+        return True
 
     if data.startswith(b"different"):
         altitude.apply_different_heights(data.decode("utf-8"))

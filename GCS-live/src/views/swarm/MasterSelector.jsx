@@ -113,9 +113,18 @@ const MasterSelector = () => {
     );
   }
   if (status.legacy) {
+    // The swarm program reports how many UAVs it has connected; "running"
+    // alone (program answering) says nothing about the UAVs.
+    const legacyNode = status.nodes?.[0];
+    const uavCount = legacyNode?.status?.uavs;
     return (
       <Typography variant='caption'>
         Swarm: single-computer mode (no node table)
+        {legacyNode && !legacyNode.reachable
+          ? ' · swarm program not responding'
+          : uavCount != null
+          ? ` · ${uavCount} UAV${uavCount === 1 ? '' : 's'} connected`
+          : ''}
       </Typography>
     );
   }
@@ -201,6 +210,10 @@ const MasterSelector = () => {
               title={`${n.ip}${st.queued ? ` · ${st.queued} queued` : ''}`}
             >
               UAV {n.id} · {role}
+              {/* Only the master connects UAVs, so only its count means anything. */}
+              {n.reachable && st.role === 'master' && st.uavs != null
+                ? ` · ${st.uavs} UAV${st.uavs === 1 ? '' : 's'}`
+                : ''}
             </Button>
           );
         })}

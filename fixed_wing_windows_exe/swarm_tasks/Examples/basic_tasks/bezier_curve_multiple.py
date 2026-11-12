@@ -1,3 +1,4 @@
+import math
 import numpy as np
 import csv, os, sys
 import simplekml
@@ -386,13 +387,17 @@ class BezierCurveMultiple:
         # of lateral room, so scale this with the configured turn radius (kept
         # at least the original 250 m so small-radius behaviour is unchanged).
         meters_for_extended_lines = max(250.0, 2.2 * self.TURN_RADIUS)
-        gap_between_rectangles = 50
-
+        # No gaps between UAV strips: each UAV's lines are spaced evenly INSIDE
+        # its own strip -- the same method the split generators use. Every UAV
+        # gets the same number of lines, never more than grid_spacing apart,
+        # with half a line spacing of margin at each strip edge (so lines of
+        # neighbouring UAVs are one line spacing apart too). The old layout
+        # started each strip's lines on its south edge and repeated them every
+        # grid_spacing while <= the top edge: uneven line counts per UAV,
+        # 50/150 m spacings across strips and an unsearched band at the north.
         full_width, full_height = self.coverage_area, self.coverage_area
 
-        total_gap_height = (num_rectangles - 1) * gap_between_rectangles
-        available_height = full_height - total_gap_height
-        rectangle_height = available_height / num_rectangles
+        rectangle_height = full_height / num_rectangles
 
         center_point = Point(center_lat, center_lon)
 
@@ -400,23 +405,29 @@ class BezierCurveMultiple:
 
         west_edge = distance(meters=full_width / 2).destination(center_point, 270)
 
+        num_lines = (
+            max(1, math.ceil(rectangle_height / grid_spacing - 1e-9))
+            if grid_spacing
+            else 1
+        )
+        line_gap = rectangle_height / num_lines
+
         for i in range(num_rectangles):
             top_offset = (
                 (i * rectangle_height) - (full_height / 2) + (rectangle_height / 2)
             )
 
             top_center = distance(meters=top_offset).destination(center_point, 0)
-            top = distance(meters=rectangle_height / 2).destination(top_center, 0)
             bottom = distance(meters=rectangle_height / 2).destination(top_center, 180)
 
             csv_data = []
 
-            current_lat = bottom.latitude
-            line_number = 0
-
-            while current_lat <= top.latitude:
-                line_number += 1
-                current_point = Point(current_lat, west_edge.longitude)
+            for k in range(num_lines):
+                line_number = k + 1
+                line_point = distance(meters=(k + 0.5) * line_gap).destination(
+                    bottom, 0
+                )
+                current_point = Point(line_point.latitude, west_edge.longitude)
                 east_point = distance(meters=full_width).destination(current_point, 90)
                 if line_number % 2 == 1:
                     csv_data.append((current_point.latitude, current_point.longitude))
@@ -435,10 +446,6 @@ class BezierCurveMultiple:
                         current_point, 250
                     )
                     csv_data.append((point_225.latitude, point_225.longitude))
-
-                current_lat = (
-                    distance(meters=grid_spacing).destination(current_point, 0).latitude
-                )
             csv_datas.append(csv_data)
 
         # Grid points kept in memory only (self._grid_by_slot), keyed by

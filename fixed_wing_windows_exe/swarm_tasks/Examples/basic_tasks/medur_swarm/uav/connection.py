@@ -18,7 +18,8 @@ from medur_swarm.uav.network import NetworkIP
 # MAVLink is received on every interface: binding to the one address above
 # went deaf when that interface (e.g. the Ethernet cable) dropped or its
 # address changed.
-state.ip = NetworkIP.get_ip()
+# state.ip = NetworkIP.get_ip()
+state.ip = "127.0.0.1"
 print("IP Address: ", state.ip)
 # Guards against two connection cycles overlapping (startup and a master
 # handover in sockets.py both call vehicle_connection()).

@@ -1,7 +1,9 @@
-"""'different' command: per-bot altitude re-staggering, applied either
-live (idle bots get an explicit background altitude task) or picked up on
-the fly by whatever task is already driving a busy bot."""
+"""'different' command (and the sender 'same' uses): change ONLY the height of
+the selected UAVs, whatever they are doing -- the height table that every
+running command reads is updated, and ArduPlane's altitude-only GUIDED command
+is sent to each of them. No task, no position, nothing interrupted."""
 
+import threading
 import time
 
 from swarm_tasks.modules.dispersion import disp_field
@@ -48,18 +50,21 @@ def apply_different_heights(decoded_index):
         "for indexes",
         selected_indexes,
     )
-    with state.active_goal_tasks_lock:
-        busy_indexes = set(state.active_goal_tasks.keys())
-    # A foreground search/split/specificsplit loop flies its bots itself (they
-    # are held out of active_goal_tasks on purpose), and already re-reads
-    # different_height[i] every tick when it issues simple_goto -- so the array
-    # update above is all those bots need. Assigning them a separate altitude
-    # task instead makes the foreground loop treat them as "diverted" and drop
-    # them from the mission permanently, so count them as busy here.
-    busy_indexes |= set(state.foreground_mission_indexes)
-    idle_indexes = [i for i in selected_indexes if i not in busy_indexes]
-    if idle_indexes:
-        assign_altitude_tasks(idle_indexes)
+    # Height only, for EVERY selected UAV -- idle, on a goal, loitering, in a
+    # search/split, anything. No task is assigned and no position is sent, so
+    # whatever a UAV is doing carries on untouched (its own commands already
+    # use the new different_height[i]). The altitude-only command is sent to
+    # all of them because once ArduPlane has received one, it ignores the
+    # height of later position commands (SITL, Plane 4.8: asked 140 m by
+    # simple_goto, stayed at the 120 m of the earlier altitude-only command).
+    if state.master_flag:
+        request_altitude_change(
+            [
+                (i, state.different_height[i])
+                for i in selected_indexes
+                if i < len(state.different_height)
+            ]
+        )
     return True
 
 
@@ -138,6 +143,112 @@ def _send_altitude_change(vehicle, target_alt):
         float(target_alt),
     )
     vehicle.send_mavlink(msg)
+
+
+# --- Altitude sender: height changes without tasks -------------------------
+# One background thread resends the altitude-only command every
+# ALTITUDE_RESEND_S until the UAV is within ALTITUDE_TOLERANCE_M of its new
+# height (or ALTITUDE_TIMEOUT_S), then forgets it. It is NOT a task: it never
+# appears in active_goal_tasks, never sends a position, never marks a UAV
+# busy, so a running goal / loiter / search / split is never interrupted.
+
+_pending_lock = threading.Lock()
+_pending = {}  # id(vehicle) -> {"vehicle", "uav", "target", "started", "sent"}
+_sender_thread = None
+
+
+def request_altitude_change(index_heights):
+    """index_heights: [(swarm index, height m relative to home), ...]. A newer
+    request for the same UAV replaces the older one."""
+    for i, target in index_heights:
+        if not (0 <= i < len(state.vehicles)):
+            continue
+        vehicle = state.vehicles[i]
+        uav = state.pos_array[i] if i < len(state.pos_array) else i
+        try:
+            mode = vehicle.mode.name
+        except Exception:
+            mode = None
+        if mode != "GUIDED":
+            print(
+                f"[altitude] UAV {uav} is in {mode}, not GUIDED -- height {target} m "
+                f"stored, not sent (no position is ever sent instead)"
+            )
+            continue
+        with _pending_lock:
+            _pending[id(vehicle)] = {
+                "vehicle": vehicle,
+                "uav": uav,
+                "target": float(target),
+                "started": time.monotonic(),
+                "sent": 0.0,
+            }
+        print(
+            f"[altitude] UAV {uav}: height -> {target} m "
+            f"(altitude only, current operation unchanged)"
+        )
+    _ensure_sender()
+
+
+def _ensure_sender():
+    global _sender_thread
+    if _sender_thread is None or not _sender_thread.is_alive():
+        _sender_thread = threading.Thread(
+            target=_sender_loop, daemon=True, name="altitude-sender"
+        )
+        _sender_thread.start()
+
+
+def _sender_loop():
+    while True:
+        time.sleep(0.5)
+        with _pending_lock:
+            jobs = list(_pending.items())
+        for key, job in jobs:
+            try:
+                _altitude_step(key, job)
+            except Exception as e:  # e.g. the UAV was removed and its link closed
+                print("[altitude] sender stopped for UAV", job["uav"], repr(e))
+                _drop(key, job)
+
+
+def _drop(key, job):
+    with _pending_lock:
+        if _pending.get(key) is job:
+            del _pending[key]
+
+
+def _altitude_step(key, job):
+    vehicle, uav, target = job["vehicle"], job["uav"], job["target"]
+    now = time.monotonic()
+    alt = vehicle.location.global_relative_frame.alt
+    if alt is not None and abs(alt - target) <= ALTITUDE_TOLERANCE_M:
+        print(f"[altitude] UAV {uav} reached {target} m")
+        _drop(key, job)
+        return
+    mode = vehicle.mode.name
+    if mode != "GUIDED":
+        print(f"[altitude] UAV {uav} left GUIDED ({mode}) -- stopped sending {target} m")
+        _drop(key, job)
+        return
+    if now - job["started"] > ALTITUDE_TIMEOUT_S:
+        print(
+            f"[altitude] UAV {uav} did not reach {target} m within "
+            f"{ALTITUDE_TIMEOUT_S:.0f} s (now {alt} m) -- giving up"
+        )
+        _drop(key, job)
+        return
+    result = _last_ack.get(key)
+    if result not in (None, 0) and job.get("reported") != result:
+        job["reported"] = result
+        print(
+            f"[altitude] UAV {uav} rejected the altitude change: "
+            f"{_ACK_NAMES.get(result, result)}"
+        )
+    if now - job["sent"] >= ALTITUDE_RESEND_S:
+        _last_ack.pop(key, None)
+        _send_altitude_change(vehicle, target)
+        job["sent"] = now
 
 
 def _drive_altitude_task(i, b, task, completed):

@@ -99,54 +99,30 @@ def run_guided_circle_command(data):
 
 
 def run_same_altitude_command(data):
-    """'same' command: level every bot to one shared altitude. Preserved
-    verbatim including a pre-existing latent bug -- `alt`/`alt_count`
-    are read here but never assigned anywhere reachable beforehand, so
-    the completion check raises NameError the first time this runs (with
-    master_flag True); that exception propagates out to main.py's own
-    per-iteration exception handler exactly as it did in the original
-    single-file script."""
+    """'same' command: every UAV to one shared height -- height ONLY.
+
+    Running commands already use state.same_height while same_alt_flag is set,
+    so they carry on untouched; the altitude-only command is sent to every UAV
+    (see tasks/altitude.py) so ArduPlane really flies it. No position is sent.
+
+    (It used to send UAV 1 to its bot's position and then raise NameError on
+    the next line -- `alt`/`alt_count` were never defined -- so the command
+    never completed.) Returns True when it handled the command."""
     if not data.startswith(b"same"):
-        return
+        return False
     print("msg", data)
     decoded_index = data.decode("utf-8")  # Assuming utf-8 encoding, adjust if needed
     data1, height = decoded_index.split(",")
     print(data1, height)
     state.same_alt_flag = True
     state.same_height = int(height)
-    while True:
-        for i, b in enumerate(state.s.swarm):
-            cmd = potf.velocity(
-                b.get_position(),
-                b.sim,
-                weights=potf.field_weights,
-                order=2,
-                max_dist=5,
-            )
-            cmd.exec(b)
-            if state.master_flag:
-                value = [b.x * 2, b.y * 2]
-                lat, lon = locatePosition.cartToGeo(
-                    state.origin, config.END_DISTANCE, value
-                )
-                if state.same_alt_flag:
-                    point1 = LocationGlobalRelative(lat, lon, state.same_height)
-                else:
-                    point1 = LocationGlobalRelative(lat, lon, state.different_height[i])
-                state.vehicles[i].simple_goto(point1)
+    if state.master_flag:
+        from medur_swarm.tasks.altitude import request_altitude_change
 
-                if state.same_height - 1.5 <= alt[i] <= state.same_height + 1.5:
-                    alt_count[i] = 1
-                    if all(count == 1 for count in alt_count):
-                        state.index = "data"
-                        data = b"data"
-                        state.same_alt_flag = True
-                        break
-
-        if state.index == b"stop":
-            state.index = "data"
-            data = b"index"
-            break
+        request_altitude_change(
+            [(i, state.same_height) for i in range(len(state.vehicles))]
+        )
+    return True
 
 
 def run_loiter_point_command(data):

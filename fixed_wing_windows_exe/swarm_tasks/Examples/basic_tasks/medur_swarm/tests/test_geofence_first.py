@@ -110,7 +110,7 @@ class StartupSurvivesOldOrigin(unittest.TestCase):
             m.uav_connection.fetch_location = fetch
             m.uav_management.register_active_uavs = lambda: None
             v = types.SimpleNamespace(armed=True, location=types.SimpleNamespace(
-                global_relative_frame=types.SimpleNamespace(alt=20.0)))
+                global_relative_frame=types.SimpleNamespace(lat=26.39, lon=70.9, alt=20.0)))
             state.vehicles = [v]
             state.master_flag = True
             m._bring_up_master()

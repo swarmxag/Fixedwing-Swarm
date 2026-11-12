@@ -1054,11 +1054,17 @@ class MAVLinkDriver(UAVDriver["MAVLinkUAV"]):
         # Wait a bit to give the autopilot some time to start the motors, just
         # in case. Not sure whether this is needed.
         # await sleep(1)
-        alt = get_vtol_takeoff_height()
+        heights = get_vtol_takeoff_height()  # {UAV id: height} of this takeoff
+        height = heights.get(int(uav.id))
+        if height is None:
+            raise RuntimeError(
+                f"No takeoff height for UAV {uav.id}: send Takeoff from the GCS "
+                f"with this UAV selected"
+            )
         # alt = getTakeoffAlt()
         # Send the takeoff command
         # await uav.set_mode(15)
-        await uav.takeoff_to_relative_altitude(alt[int(uav.id) - 1], channel=channel)
+        await uav.takeoff_to_relative_altitude(height, channel=channel)
 
     async def _start_capture_cam_signal(
         self, uav: "MAVLinkUAV", *, scheduled: bool = False, transport=None
